@@ -1,0 +1,4 @@
+xatlas vendored from https://github.com/jpcy/xatlas
+commit: f700c7790aaa030e794b52ba7791a05c085faf0c
+license: MIT (see LICENSE)
+files: xatlas.h, xatlas.cpp

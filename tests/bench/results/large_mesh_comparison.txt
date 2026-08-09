@@ -1,0 +1,99 @@
+##################### /tmp/roi100k.ply  (res 2048) #####################
+----- END-TO-END: halfmesh vs xatlas -----
+# atlasbench report
+
+- **mesh**: `/tmp/roi100k.ply`
+- **tier**: small | **resolution**: 2048 | **stage**: all
+- **engines**: halfmesh, xatlas
+
+## Segmentation
+
+| engine | charts | seam len | planarity (rad) | compactness | coverage | time (s) |
+|---|--:|--:|--:|--:|:--:|--:|
+| halfmesh | 11723 | 1756.941 | 0.0667 | 3.640 | yes | 34.218 |
+| xatlas | 10177 | 1927.570 | 0.1220 | 3.543 | yes | 84.702 |
+
+## Parametrization
+
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+|---|--:|--:|--:|--:|--:|:--:|--:|
+| halfmesh | 0 | 4.007 | 1.000 | 1.031 | 1.094 | yes | 0.566 |
+| xatlas | 40685 | 4.033 | 1.000 | 1.026 | 1.244 | yes | — |
+
+## Packing
+
+| engine | occ (rect) | occ (tri) | pages | overlaps | time (s) |
+|---|--:|--:|--:|:--:|--:|
+| halfmesh | 82.0% | 38.3% | 1 | no | 0.036 |
+| xatlas | 84.5% | 51.7% | 1 | no | 0.688 |
+
+## Cost & validity
+
+| engine | total time (s) | peak RSS (MB) | valid | note |
+|---|--:|--:|:--:|---|
+| halfmesh | 34.819 | 140.1 | yes |  |
+| xatlas | 85.390 | 141.4 | yes | charting+param fused in ComputeCharts |
+
+Wrote report.{json,md,csv} to /tmp
+----- PARAM ISOLATION: halfmesh vs libigl vs pmp (same charts) -----
+## Parametrization
+
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+|---|--:|--:|--:|--:|--:|:--:|--:|
+| halfmesh | 0 | 4.007 | 1.000 | 1.031 | 1.094 | yes | 0.557 |
+| libigl-lscm | 0 | 5.622 | 0.980 | 1.007 | 3.494 | yes | 1.091 |
+| pmp-lscm | 0 | 4.120 | 0.992 | 1.008 | 1.919 | yes | 0.167 |
+| pmp-harmonic | 19309 | 394260106678767296.000 | 0.961 | 330890744265323.062 | 11131321602.956 | yes | 0.060 |
+
+## Packing
+
+##################### /tmp/ours100k.ply  (res 2048) #####################
+----- END-TO-END: halfmesh vs xatlas -----
+# atlasbench report
+
+- **mesh**: `/tmp/ours100k.ply`
+- **tier**: small | **resolution**: 2048 | **stage**: all
+- **engines**: halfmesh, xatlas
+
+## Segmentation
+
+| engine | charts | seam len | planarity (rad) | compactness | coverage | time (s) |
+|---|--:|--:|--:|--:|:--:|--:|
+| halfmesh | 39403 | 11000.754 | 0.0442 | 338087.971 | yes | 28.323 |
+| xatlas | 31366 | 10181.859 | 0.0640 | 12931.832 | yes | 76.479 |
+
+## Parametrization
+
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+|---|--:|--:|--:|--:|--:|:--:|--:|
+| halfmesh | 0 | 4.000 | 1.000 | 1.002 | 1.022 | yes | 0.630 |
+| xatlas | 50601 | 168119956726.712 | 1.008 | 1.145 | 1.246 | yes | — |
+
+## Packing
+
+| engine | occ (rect) | occ (tri) | pages | overlaps | time (s) |
+|---|--:|--:|--:|:--:|--:|
+| halfmesh | 82.0% | 6.0% | 1 | no | 0.088 |
+| xatlas | 75.6% | 18.9% | 1 | no | 1.502 |
+
+## Cost & validity
+
+| engine | total time (s) | peak RSS (MB) | valid | note |
+|---|--:|--:|:--:|---|
+| halfmesh | 29.040 | 91.0 | yes |  |
+| xatlas | 77.981 | 151.8 | yes | charting+param fused in ComputeCharts |
+
+Wrote report.{json,md,csv} to /tmp
+----- PARAM ISOLATION: halfmesh vs libigl vs pmp (same charts) -----
+## Parametrization
+
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+|---|--:|--:|--:|--:|--:|:--:|--:|
+| halfmesh | 0 | 4.000 | 1.000 | 1.002 | 1.022 | yes | 0.634 |
+| libigl-lscm | 0 | 4.001 | 1.000 | — | — | NO | 2.853 |
+| pmp-lscm | 22 | 10119437769.086 | 1.000 | 60736973.803 | 1.062 | yes | 0.135 |
+| pmp-harmonic | 1360 | 26166454758630196.000 | 24.296 | 35218953029934.266 | 156.604 | yes | 0.087 |
+
+## Packing
+
+FINAL COMPARE DONE

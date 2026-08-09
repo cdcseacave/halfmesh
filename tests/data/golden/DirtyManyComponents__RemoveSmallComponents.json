@@ -1,0 +1,12 @@
+{
+  "num_vertices": 8,
+  "num_faces": 12,
+  "op_count": 1,
+  "surface_area": 6,
+  "bbox_min": [0, 0, 0],
+  "bbox_max": [1, 1, 1],
+  "hausdorff_to_input": 100,
+  "edge_len_min": 1,
+  "edge_len_max": 1.4142135381698608,
+  "edge_len_mean": 1.1380711793899536
+}

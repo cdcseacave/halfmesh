@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Eigen3 CONFIG)
+find_dependency(OpenCV)
+find_dependency(tinyply CONFIG)
+# tinygltf is header-only; no CMake config to find_dependency for it.
+
+include("${CMAKE_CURRENT_LIST_DIR}/halfmeshTargets.cmake")
+
+check_required_components(halfmesh)

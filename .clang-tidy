@@ -1,0 +1,83 @@
+# halfmesh .clang-tidy
+# ---------------------------------------------------------------------------
+# Curated high-signal checks — enabled: bugprone-* and performance-* subsets.
+# Disabled: noisy/opinionated checks that fight the faithful-port idioms.
+#
+# Run: clang-tidy -p <build_dir> <file.cc>
+#      (requires compile_commands.json from cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
+#
+# Status: ADVISORY (continue-on-error: true in CI) — clang-tidy is not
+# installed on all local dev machines; make BLOCKING once a baseline is
+# established and finding count is low.
+# ---------------------------------------------------------------------------
+
+Checks: >
+  -*,
+  bugprone-assert-side-effect,
+  bugprone-bool-pointer-implicit-conversion,
+  bugprone-branch-clone,
+  bugprone-dangling-handle,
+  bugprone-fold-init-type,
+  bugprone-implicit-widening-of-multiplication-result,
+  bugprone-incorrect-roundings,
+  bugprone-integer-division,
+  bugprone-misplaced-operator-in-strlen-in-alloc,
+  bugprone-misplaced-widening-cast,
+  bugprone-move-forwarding-reference,
+  bugprone-multiple-statement-macro,
+  bugprone-narrowing-conversions,
+  bugprone-not-null-terminated-result,
+  bugprone-redundant-branch-condition,
+  bugprone-sizeof-container,
+  bugprone-sizeof-expression,
+  bugprone-string-constructor,
+  bugprone-string-integer-assignment,
+  bugprone-string-literal-with-embedded-nul,
+  bugprone-suspicious-enum-usage,
+  bugprone-suspicious-memset-usage,
+  bugprone-swapped-arguments,
+  bugprone-terminating-continue,
+  bugprone-undefined-memory-manipulation,
+  bugprone-unhandled-self-assignment,
+  bugprone-unused-return-value,
+  bugprone-use-after-move,
+  performance-avoid-endl,
+  performance-faster-string-find,
+  performance-for-range-copy,
+  performance-implicit-conversion-in-loop,
+  performance-inefficient-algorithm,
+  performance-inefficient-string-concatenation,
+  performance-inefficient-vector-operation,
+  performance-move-const-arg,
+  performance-move-constructor-init,
+  performance-no-automatic-move,
+  performance-noexcept-move-constructor,
+  performance-type-promotion-in-math-fn,
+  performance-unnecessary-copy-initialization,
+  performance-unnecessary-value-param,
+  misc-misplaced-const,
+  misc-redundant-expression
+
+# Disable checks that fight the faithful-port idioms:
+#   - bugprone-easily-swappable-parameters: too many false positives in mesh ops
+#   - bugprone-exception-escape: codebase uses noexcept selectively
+#   - readability-*: opinionated naming/style; do not force on a faithful port
+#   - modernize-*: would change idioms that are intentionally preserved
+#   - clang-analyzer-*: already covered by ASan/UBSan in the sanitizer job
+#   - cppcoreguidelines-*: too opinionated for a faithful port
+
+WarningsAsErrors: ""
+
+# Header filter: only check halfmesh project headers (not vcpkg/system headers).
+HeaderFilterRegex: ".*halfmesh/.*"
+
+# Format style for suggested fixes.
+FormatStyle: file
+
+CheckOptions:
+  - key:   bugprone-assert-side-effect.AssertMacros
+    value: "ASSERT,assert"
+  - key:   bugprone-unused-return-value.CheckedFunctions
+    value: "::std::async;::std::launder;::std::remove;::std::remove_if;::std::unique"
+  - key:   performance-unnecessary-value-param.AllowedTypes
+    value: ""

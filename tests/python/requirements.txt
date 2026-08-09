@@ -1,0 +1,11 @@
+# Python cross-check dependencies for halfmesh I/O validation
+# Install: pip install -r requirements.txt
+#
+# Required (should build on Python 3.14):
+trimesh>=4.0.0
+pygltflib>=1.16.0
+numpy>=1.26.0
+
+# Optional — skip gracefully if wheels are unavailable on Python 3.14:
+# pymeshlab       # uncomment if wheels available
+# open3d          # uncomment if wheels available

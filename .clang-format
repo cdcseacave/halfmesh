@@ -1,0 +1,76 @@
+# halfmesh formatting rules: tabs for indentation, no column limit, opening
+# brace on its own line for classes/structs/functions.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# Indentation
+UseTab: ForIndentation
+IndentWidth: 4
+TabWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: 0
+NamespaceIndentation: None
+IndentPPDirectives: BeforeHash
+
+# Line breaking
+ColumnLimit: 0
+ReflowComments: false
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# Braces
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: true
+  AfterStruct: true
+  AfterFunction: true
+  AfterEnum: false
+  AfterControlStatement: false
+  AfterNamespace: false
+  BeforeElse: false
+  BeforeCatch: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+
+# Pointers/references
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# Short constructs on one line
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortEnumsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+
+# Spacing
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpacesInAngles: false
+SpacesInCStyleCastParentheses: false
+SpacesInParentheses: false
+SpaceAfterCStyleCast: false
+SpaceInEmptyParentheses: false
+SpaceAfterTemplateKeyword: true
+Cpp11BracedListStyle: true
+
+# Wrapping/alignment
+BinPackParameters: true
+BinPackArguments: true
+BreakConstructorInitializers: AfterColon
+ConstructorInitializerAllOnOneLineOrOnePerLine: false
+BreakBeforeBinaryOperators: NonAssignment
+AlignConsecutiveMacros: false
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignTrailingComments: false
+
+# Includes & usings
+SortIncludes: false
+IncludeBlocks: Preserve
+SortUsingDeclarations: false
+
+# halfmesh index/pointer loop helper macros
+ForEachMacros: ['FOREACH', 'RFOREACH', 'FOREACHIDX', 'RFOREACHIDX', 'FOREACHPTR', 'RFOREACHPTR', 'FOREACHRAWIDX', 'RFOREACHRAWIDX']

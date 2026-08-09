@@ -1,0 +1,494 @@
+# halfmesh CI workflow
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  # Shared vcpkg commit pin — must match the "builtin-baseline" in vcpkg.json.
+  VCPKG_COMMIT: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+  # The 9 golden fixtures classified CompareMode::CANONICAL_EXACT in
+  # tests/golden/GoldenSpecs.h (exact canonical-mesh equality against a frozen
+  # fixture) — excluded on the -march legs of opt-in-build-flags, which are free
+  # to perturb float LSBs. The 5 TOLERANT fixtures stay included everywhere.
+  GOLDEN_EXACT_EXCLUDE: 'GoldenDiff\.MatchesFrozenGolden/(DirtyDuplicateFaces_RemoveDuplicateFaces|DirtyDegenerateFaces_RemoveDegenerateFaces|DirtyUnreferencedVertices_RemoveUnreferencedVertices|DirtyManyComponents_RemoveSmallComponents|DirtyBowTie_FixNonManifold|GridPlane_Simplify|UVSphere_SmoothTaubin|UVSphere_SmoothHCLaplacian|OpenCylinder_SmoothTaubin)'
+
+jobs:
+  # ===========================================================================
+  # Job 1: build-test  [BLOCKING — 3-OS matrix]
+  # Runs the default ctest suite: structural invariants, metamorphic/property
+  # tests, golden differential (frozen fixtures), robustness (determinism,
+  # fuzz).
+  # ===========================================================================
+  build-test:
+    name: Build + Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_TESTS=ON
+          -DHALFMESH_BUILD_TOOLS=ON
+          -DCMAKE_BUILD_TYPE=Release
+
+      # --config/-C keep the Windows leg correct: MSVC's multi-config generator
+      # ignores CMAKE_BUILD_TYPE (single-config generators ignore --config).
+      - name: Build
+        run: cmake --build build --config Release -j
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      # Upload build artifacts so the python-crosscheck job can use the CLIs.
+      - name: Upload build artifacts
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: halfmesh-build-${{ matrix.os }}
+          path: |
+            build/examples/
+            build/lib*/
+            build/libhalfmesh*
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # ===========================================================================
+  # Job 2: sanitizers  [BLOCKING — ubuntu only]
+  # ASan + UBSan instrumentation. macOS ASan is excluded: Apple clang's ASan
+  # runtime hangs in shadow placement when the OS is newer than the toolchain's
+  # compiler-rt; UBSan alone (no shadow memory) does work on macOS if a local
+  # gate is needed there.
+  # ===========================================================================
+  sanitizers:
+    name: Sanitizers (ubuntu ASan+UBSan)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure (ASan + UBSan Debug)
+        run: >
+          cmake -S . -B build-san
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_TESTS=ON
+          -DHALFMESH_SANITIZE=ON
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-san -j
+
+      - name: Test (under ASan/UBSan)
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-san --output-on-failure
+
+  # ===========================================================================
+  # Job 2b: tsan  [ADVISORY — promote to blocking after first clean runs]
+  # ThreadSanitizer over the full suite — the only tool that proves the
+  # disjoint-writes claims of the thread-pool parallelism in RemeshIsotropic
+  # and ParametrizeCharts. RelWithDebInfo because TSan wants -O1+. Advisory:
+  # uninstrumented third-party threading (e.g. OpenCV's parallel_for) can
+  # false-positive; if so, add a TSAN_OPTIONS suppressions file under
+  # tests/sanitize/ (third-party entries ONLY, same policy as suppressions.txt).
+  # ===========================================================================
+  tsan:
+    name: Sanitizers (ubuntu TSan, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure (TSan RelWithDebInfo)
+        run: >
+          cmake -S . -B build-tsan
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+
+      - name: Build
+        run: cmake --build build-tsan -j
+
+      - name: Test (under TSan)
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --test-dir build-tsan --output-on-failure
+
+  # ===========================================================================
+  # Job 2c: valgrind-memcheck  [ADVISORY — promote to blocking after triage]
+  # Valgrind memcheck is the practical stand-in for MSan (which would require
+  # rebuilding every vcpkg dependency instrumented): it detects uninitialized
+  # reads with no special build. Advisory until the first run is triaged —
+  # image codecs (libpng/libjpeg SIMD) are known to trip benign reports;
+  # curate a valgrind.supp under tests/sanitize/ (third-party noise ONLY),
+  # then promote.
+  # ===========================================================================
+  valgrind:
+    name: Memcheck / Valgrind (ubuntu, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y valgrind
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure (RelWithDebInfo)
+        run: >
+          cmake -S . -B build-vg
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build-vg -j
+
+      - name: Run test binaries under memcheck
+        run: |
+          FAIL=0
+          for t in build-vg/tests/*_test; do
+            [ -x "$t" ] || continue
+            echo "=== memcheck: $t ==="
+            if ! valgrind --error-exitcode=99 --exit-on-first-error=no \
+                 --track-origins=yes --errors-for-leak-kinds=definite \
+                 "$t" > /dev/null; then
+              echo "MEMCHECK FINDINGS in $t"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+  # ===========================================================================
+  # Job 3: crosschecks  [BLOCKING — ubuntu only]
+  # -DHALFMESH_BUILD_CROSSCHECKS=ON pulls libigl via vcpkg and runs the libigl
+  # cross-check tests (layer 3 of docs/TESTING.md).
+  # ===========================================================================
+  crosschecks:
+    name: Crosschecks / libigl (ubuntu)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure (with libigl crosschecks)
+        run: >
+          cmake -S . -B build-xc
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_TESTS=ON
+          -DHALFMESH_BUILD_CROSSCHECKS=ON
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-xc -j
+
+      - name: Run crosscheck tests
+        run: ctest --test-dir build-xc --output-on-failure -L crosscheck
+
+  # ===========================================================================
+  # Job 4: perf  [BLOCKING on scaling assertions — ubuntu Release]
+  # Machine-independent assertions: KD-tree speedup >=10x vs brute force,
+  # sub-quadratic decimation scaling. The timing regression alarm is WARN-ONLY
+  # (does not fail CI) — see docs/TESTING.md §7.
+  # ===========================================================================
+  perf:
+    name: Performance (ubuntu Release)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure (perf harness)
+        run: >
+          cmake -S . -B build-perf
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_TESTS=ON
+          -DHALFMESH_BUILD_PERF=ON
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-perf -j
+
+      - name: Run perf tests (scaling/speedup assertions block; regression alarms warn)
+        run: ctest --test-dir build-perf --output-on-failure -L perf
+
+  # ===========================================================================
+  # Job 5: bench  [BLOCKING — ubuntu only]
+  # Builds tests/bench (atlasbench + remeshbench) and runs their self-check
+  # suite (identity / determinism / metric-normalization, corpus smoke). Only
+  # the always-on vendored xatlas baseline is enabled — the heavier opt-in
+  # baselines (libigl/pmp/BFF/CGAL) are dev-only comparison tooling.
+  # ===========================================================================
+  bench:
+    name: Bench self-check (ubuntu)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure (bench harness)
+        run: >
+          cmake -S . -B build-bench
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_BENCH=ON
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-bench -j
+
+      - name: Run bench self-checks
+        run: ctest --test-dir build-bench --output-on-failure -L bench
+
+  # ===========================================================================
+  # Job 6: python-crosscheck  [NON-BLOCKING — continue-on-error: true]
+  # Runs tests/python/crosscheck.py: trimesh / pygltflib / npx gltf-validator
+  # over the output of the halfmesh CLIs (unwrap → GLB, decimate → PLY).
+  # Promote to blocking once SaveGLTF compliance is fully validated.
+  # ===========================================================================
+  python-crosscheck:
+    name: Python cross-check (non-blocking)
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true        # never block merges; informational only
+    needs: [build-test]            # wait for the C++ build to produce the CLIs
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js (for npx gltf-validator)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Download C++ build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: halfmesh-build-${{ matrix.os }}
+          path: build/
+
+      - name: Make CLIs executable
+        if: runner.os != 'Windows'
+        run: chmod +x build/examples/unwrap build/examples/decimate || true
+
+      - name: Install Python dependencies
+        run: pip install -r tests/python/requirements.txt
+
+      - name: Install glTF-Validator via npx cache
+        run: npx --yes gltf-validator --version || true
+
+      - name: Run Python cross-check
+        env:
+          HALFMESH_BUILD_DIR: ${{ github.workspace }}/build
+          HALFMESH_DATA_DIR:  ${{ github.workspace }}/tests/data
+          HALFMESH_TMP_DIR:   ${{ github.workspace }}/build/crosscheck-tmp
+        run: python tests/python/crosscheck.py
+
+      - name: Upload produced artifacts (GLB + PLY) for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crosscheck-artifacts-${{ matrix.os }}
+          path: build/crosscheck-tmp/
+          if-no-files-found: ignore
+
+  # ===========================================================================
+  # Job 6b: opt-in-build-flags  [ADVISORY — promote after triage; ubuntu only]
+  # Coverage for the three opt-in performance build options (all OFF by
+  # default, otherwise untested in this workflow):
+  #   • lto    -DHALFMESH_LTO=ON         interprocedural optimization / IPO
+  #   • native -DHALFMESH_NATIVE=ON      -march=native (runner CPU)
+  #   • arch   -DHALFMESH_ARCH=x86-64-v3 -march=x86-64-v3 (portable AVX2)
+  # Per the golden policy in CMakeLists.txt, -march changes floating-point
+  # results, so the native/arch legs exclude the CANONICAL_EXACT goldens
+  # (GOLDEN_EXACT_EXCLUDE above); the TOLERANT goldens and the determinism
+  # tests stay included. lto runs the full suite. Advisory because
+  # GitHub-hosted runners land on unknown/varying silicon.
+  # ===========================================================================
+  opt-in-build-flags:
+    name: Opt-in build flags (${{ matrix.name }}, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lto
+            cmake_flag: -DHALFMESH_LTO=ON
+            test_exclude: ""
+          - name: native
+            cmake_flag: -DHALFMESH_NATIVE=ON
+            test_exclude: "goldens"
+          - name: arch
+            cmake_flag: -DHALFMESH_ARCH=x86-64-v3
+            test_exclude: "goldens"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure (${{ matrix.name }})
+        run: >
+          cmake -S . -B build-${{ matrix.name }}
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_TESTS=ON
+          -DHALFMESH_BUILD_TOOLS=ON
+          -DCMAKE_BUILD_TYPE=Release
+          ${{ matrix.cmake_flag }}
+
+      - name: Build
+        run: cmake --build build-${{ matrix.name }} -j
+
+      - name: Test (full suite)
+        if: matrix.test_exclude == ''
+        run: ctest --test-dir build-${{ matrix.name }} --output-on-failure
+
+      - name: Test (excludes exact-equality goldens — see job header)
+        if: matrix.test_exclude != ''
+        run: ctest --test-dir build-${{ matrix.name }} --output-on-failure -E "${{ env.GOLDEN_EXACT_EXCLUDE }}"
+
+  # ===========================================================================
+  # Job 7: lint  [SPLIT — clang-format BLOCKING, clang-tidy ADVISORY]
+  # 7a. clang-format --dry-run: BLOCKING, pinned to clang-format-18 (ships in
+  #     ubuntu-latest's default archive). vendor/ is excluded — vendored
+  #     third-party code (tests/bench/vendor/xatlas/) is not ours to reformat.
+  # 7b. clang-tidy: high-signal bugprone-*/performance-* checks (.clang-tidy).
+  #     ADVISORY until a finding baseline is established; promote once
+  #     findings are verified low.
+  # ===========================================================================
+  lint:
+    name: Lint (clang-format BLOCKING + clang-tidy advisory)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y clang-format-18 clang-tidy-18
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
+          sudo update-alternatives --install /usr/bin/clang-tidy   clang-tidy   /usr/bin/clang-tidy-18   100
+
+      - name: clang-format dry-run (blocking — 0 violations expected)
+        run: |
+          echo "=== clang-format dry-run ==="
+          FILES=$(find src include tests examples \
+            \( -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
+            -not -path '*/make/*' -not -path '*/build/*' -not -path '*/vcpkg*' -not -path '*/vendor/*')
+          FAIL=0
+          for f in $FILES; do
+            if ! diff -q <(clang-format "$f") "$f" > /dev/null 2>&1; then
+              echo "FAIL: $f needs formatting"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -eq 0 ]; then
+            echo "All files conform to .clang-format"
+          else
+            echo "Run: find src include tests examples \\( -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \\) -not -path '*/vendor/*' | xargs clang-format -i"
+            exit 1
+          fi
+
+      # clang-tidy needs compile_commands.json, so configure first.
+      - name: Set up vcpkg (for clang-tidy build)
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - name: Configure (export compile commands)
+        run: >
+          cmake -S . -B build-tidy
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DHALFMESH_BUILD_TESTS=ON
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: clang-tidy static analysis (advisory — finding count informational)
+        run: |
+          echo "=== clang-tidy static analysis (advisory) ==="
+          FILES=$(find src \( -name '*.cc' -o -name '*.cpp' \) -not -path '*/make/*')
+          FINDINGS=0
+          for f in $FILES; do
+            count=$(clang-tidy -p build-tidy "$f" 2>&1 | grep -c 'warning:' || true)
+            FINDINGS=$((FINDINGS + count))
+            echo "  $f: $count findings"
+          done
+          echo "Total clang-tidy findings: $FINDINGS"
+          # Do not fail; findings are informational until a baseline is locked.
+          exit 0

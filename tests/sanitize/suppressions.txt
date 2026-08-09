@@ -1,0 +1,24 @@
+# ASan/UBSan suppression file for halfmesh sanitizer builds.
+#
+# POLICY: suppressions are ONLY added for documented third-party false-positives.
+# A finding in src/ or include/ of halfmesh is a REAL bug and must be fixed —
+# never suppressed here.
+#
+# How to use:
+#   ASAN_OPTIONS=suppressions=tests/sanitize/suppressions.txt   (ASan)
+#   UBSAN_OPTIONS=suppressions=tests/sanitize/suppressions.txt  (UBSan)
+#
+# Suppression format:
+#   <sanitizer-type>:<function-or-module-pattern>
+#
+# No suppressions are required at this time.  The file is committed so CI can
+# reference it without modification as the project grows.
+#
+# Known benign patterns that may appear in the future:
+#   - Eigen::internal alignment: Eigen uses aligned allocation via __aligned_alloc
+#     on older libc; if this fires as a false-positive under ASan (should not on
+#     modern macOS / Linux), add:
+#       heap-buffer-overflow:Eigen::internal::aligned_malloc
+#   - OpenCV SIMD: OpenCV may use SIMD loads that ASan flags on unpadded strides;
+#     if observed, add:
+#       heap-buffer-overflow:cv::hal::

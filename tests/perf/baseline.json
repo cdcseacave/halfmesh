@@ -1,0 +1,27 @@
+{
+  "machine": "unknown/macOS/clang-17/Release",
+  "note": "Absolute times are machine-dependent. Use only as regression alarm (3x).",
+  "timings": [
+    {"label": "Build_50k", "n_faces": 50244, "seconds": 0.00605638},
+    {"label": "Build_200k", "n_faces": 200344, "seconds": 0.027751},
+    {"label": "Build_800k", "n_faces": 800112, "seconds": 0.165103},
+    {"label": "Simplify_50k", "n_faces": 50244, "seconds": 0.0158514},
+    {"label": "Simplify_200k", "n_faces": 200344, "seconds": 0.0679656},
+    {"label": "Simplify_800k", "n_faces": 800112, "seconds": 0.383738},
+    {"label": "RemeshIsotropic_50k", "n_faces": 50244, "seconds": 0.220116},
+    {"label": "RemeshIsotropic_200k", "n_faces": 200344, "seconds": 2.14864},
+    {"label": "FixNonManifold_50k", "n_faces": 50244, "seconds": 0.00604508},
+    {"label": "FixNonManifold_800k", "n_faces": 800112, "seconds": 0.0887773},
+    {"label": "CloseHoles_50k", "n_faces": 50244, "seconds": 0.0115972},
+    {"label": "CloseHoles_200k", "n_faces": 200344, "seconds": 0.0495813},
+    {"label": "KdTree_Build_50k", "n_faces": 50244, "seconds": 0.0141487},
+    {"label": "KdTree_Query_50k_1000q", "n_faces": 50244, "seconds": 0.660404},
+    {"label": "KdTree_Query_speedup_kd", "n_faces": 50244, "seconds": 0.200123},
+    {"label": "KdTree_Query_speedup_bf", "n_faces": 50244, "seconds": 0.182067},
+    {"label": "KdTree_Build_800k", "n_faces": 800112, "seconds": 0.229487},
+    {"label": "Parametrize_50k", "n_faces": 50244, "seconds": 0.666379},
+    {"label": "Parametrize_200k", "n_faces": 200344, "seconds": 3.10144},
+    {"label": "GenerateAtlas_50k", "n_faces": 50244, "seconds": 0.672891},
+    {"label": "GenerateAtlas_200k", "n_faces": 200344, "seconds": 2.96885}
+  ]
+}

@@ -1,0 +1,162 @@
+FULL COMPARISON MATRIX — halfmesh vs xatlas/libigl/pmp/CGAL/BFF
+meshes: mesh.ply (3.8k F) | roi100k=mesh_roi_crop_1.ply 9.1M->100k (direct) | ours100k=mesh_ours_...999.ply 15.3M->128k (direct)
+prep: DIRECT decimate (QEM collapses thin faces; manifoldness auto-repaired during Simplify). NO pre-repair.
+
+############### mesh.ply (res 1024) ###############
+----- PARAM ISOLATION (halfmesh vs libigl/pmp/cgal/bff, same charts) -----
+Shared segmentation: 172 charts
+| engine | charts | seam len | planarity (rad) | compactness | coverage | time (s) |
+| halfmesh | 172 | 233.375 | 0.1698 | 2.326 | yes | — |
+| libigl-lscm | 172 | 233.375 | 0.1698 | 2.326 | yes | — |
+| pmp-lscm | 172 | 233.375 | 0.1698 | 2.326 | yes | — |
+| pmp-harmonic | 172 | 233.375 | 0.1698 | 2.326 | yes | — |
+| cgal-lscm | 172 | 233.375 | 0.1698 | 2.326 | yes | — |
+| cgal-arap | 172 | 233.375 | 0.1698 | 2.326 | yes | — |
+| bff | 172 | 233.375 | 0.1698 | 2.326 | yes | — |
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+| halfmesh | 0 | 4.006 | 1.000 | 1.027 | 1.079 | yes | 0.016 |
+| libigl-lscm | 0 | 4.045 | 0.998 | 1.020 | 1.647 | yes | 0.039 |
+| pmp-lscm | 0 | 4.112 | 0.994 | 1.024 | 1.865 | yes | 0.004 |
+| pmp-harmonic | 32 | 15714838551753562.000 | 1.391 | 40320588824717.023 | 27.397 | yes | 0.002 |
+| cgal-lscm | 0 | 4.043 | 0.998 | 1.018 | 1.472 | yes | 0.008 |
+| cgal-arap | 0 | 4.008 | 1.000 | 1.028 | 1.095 | yes | 0.182 |
+| bff | 1 | 10.546 | 1.001 | 1.085 | 1.292 | yes | 0.004 |
+| engine | occ (rect) | occ (tri) | pages | overlaps | time (s) |
+| halfmesh | — | — | — | no | — |
+| libigl-lscm | — | — | — | no | — |
+| pmp-lscm | — | — | — | no | — |
+| pmp-harmonic | — | — | — | no | — |
+| cgal-lscm | — | — | — | no | — |
+| cgal-arap | — | — | — | no | — |
+| bff | — | — | — | no | — |
+| engine | total time (s) | peak RSS (MB) | valid | note |
+| halfmesh | 0.016 | 16.3 | yes |  |
+| libigl-lscm | 0.039 | 17.3 | yes |  |
+| pmp-lscm | 0.004 | 17.6 | yes |  |
+| pmp-harmonic | 0.002 | 17.7 | yes |  |
+| cgal-lscm | 0.008 | 18.2 | yes |  |
+| cgal-arap | 0.182 | 18.8 | yes | 2/172 chart(s) fell back to PCA |
+| bff | 0.004 | 19.4 | yes | 3/172 chart(s) fell back to PCA |
+----- SEGMENTATION + PACKING (halfmesh vs xatlas vs cgal-sdf) -----
+| engine | charts | seam len | planarity (rad) | compactness | coverage | time (s) |
+| halfmesh | 172 | 233.375 | 0.1698 | 2.326 | yes | 0.131 |
+| xatlas | 95 | 171.717 | 0.2894 | 2.157 | yes | 0.175 |
+| cgal-sdf | 3 | 50.672 | 0.8275 | 1.477 | yes | 0.182 |
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+| halfmesh | 0 | 4.006 | 1.000 | 1.027 | 1.079 | yes | 0.015 |
+| xatlas | 1430 | 4.104 | 0.995 | 1.046 | 2.060 | yes | — |
+| cgal-sdf | — | — | — | — | — | yes | — |
+| engine | occ (rect) | occ (tri) | pages | overlaps | time (s) |
+| halfmesh | 82.0% | 42.5% | 1 | no | 0.001 |
+| xatlas | 72.0% | 64.1% | 1 | no | 0.048 |
+| cgal-sdf | — | — | — | no | — |
+| engine | total time (s) | peak RSS (MB) | valid | note |
+| halfmesh | 0.147 | 16.0 | yes |  |
+| xatlas | 0.223 | 18.1 | yes | charting+param fused in ComputeCharts |
+| cgal-sdf | 0.182 | 19.5 | yes |  |
+
+############### roi100k (res 2048) ###############
+----- PARAM ISOLATION (halfmesh vs libigl/pmp/cgal/bff, same charts) -----
+Shared segmentation: 11723 charts
+| engine | charts | seam len | planarity (rad) | compactness | coverage | time (s) |
+| halfmesh | 11723 | 1756.941 | 0.0667 | 3.640 | yes | — |
+| libigl-lscm | 11723 | 1756.941 | 0.0667 | 3.640 | yes | — |
+| pmp-lscm | 11723 | 1756.941 | 0.0667 | 3.640 | yes | — |
+| pmp-harmonic | 11723 | 1756.941 | 0.0667 | 3.640 | yes | — |
+| cgal-lscm | 11723 | 1756.941 | 0.0667 | 3.640 | yes | — |
+| cgal-arap | 11723 | 1756.941 | 0.0667 | 3.640 | yes | — |
+| bff | 11723 | 1756.941 | 0.0667 | 3.640 | yes | — |
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+| halfmesh | 0 | 4.007 | 1.000 | 1.031 | 1.094 | yes | 0.562 |
+| libigl-lscm | 0 | 5.622 | 0.980 | 1.007 | 3.494 | yes | 1.067 |
+| pmp-lscm | 0 | 4.120 | 0.992 | 1.008 | 1.919 | yes | 0.165 |
+| pmp-harmonic | 19309 | 394260106678767296.000 | 0.961 | 330890744265323.062 | 11131321602.956 | yes | 0.058 |
+| cgal-lscm | 1 | 4.139 | 0.991 | 1.006 | 2.288 | yes | 0.265 |
+| cgal-arap | 312 | 3161332264626.520 | 1.003 | 17162.235 | 1.195 | yes | 9.325 |
+| bff | 224 | 2052.544 | 1.001 | 1.320 | 1.155 | yes | 0.129 |
+| engine | occ (rect) | occ (tri) | pages | overlaps | time (s) |
+| halfmesh | — | — | — | no | — |
+| libigl-lscm | — | — | — | no | — |
+| pmp-lscm | — | — | — | no | — |
+| pmp-harmonic | — | — | — | no | — |
+| cgal-lscm | — | — | — | no | — |
+| cgal-arap | — | — | — | no | — |
+| bff | — | — | — | no | — |
+| engine | total time (s) | peak RSS (MB) | valid | note |
+| halfmesh | 0.562 | 145.6 | yes |  |
+| libigl-lscm | 1.067 | 155.3 | yes |  |
+| pmp-lscm | 0.165 | 169.0 | yes |  |
+| pmp-harmonic | 0.058 | 169.1 | yes |  |
+| cgal-lscm | 0.265 | 219.8 | yes |  |
+| cgal-arap | 9.325 | 242.8 | yes | 187/11723 chart(s) fell back to PCA |
+| bff | 0.129 | 248.3 | yes | 216/11723 chart(s) fell back to PCA |
+----- SEGMENTATION + PACKING (halfmesh vs xatlas vs cgal-sdf) -----
+| engine | charts | seam len | planarity (rad) | compactness | coverage | time (s) |
+| halfmesh | 11723 | 1756.941 | 0.0667 | 3.640 | yes | 35.617 |
+| xatlas | 10177 | 1927.570 | 0.1220 | 3.543 | yes | 90.753 |
+| cgal-sdf | 348 | 228.818 | 1.2382 | 1.328 | yes | 18.062 |
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+| halfmesh | 0 | 4.007 | 1.000 | 1.031 | 1.094 | yes | 0.575 |
+| xatlas | 40685 | 4.033 | 1.000 | 1.026 | 1.244 | yes | — |
+| cgal-sdf | — | — | — | — | — | yes | — |
+| engine | occ (rect) | occ (tri) | pages | overlaps | time (s) |
+| halfmesh | 82.0% | 38.3% | 1 | no | 0.036 |
+| xatlas | 84.5% | 51.7% | 1 | no | 0.724 |
+| cgal-sdf | — | — | — | no | — |
+| engine | total time (s) | peak RSS (MB) | valid | note |
+| halfmesh | 36.228 | 146.4 | yes |  |
+| xatlas | 91.477 | 174.9 | yes | charting+param fused in ComputeCharts |
+| cgal-sdf | 18.062 | 174.9 | yes |  |
+
+############### ours100k (res 2048) ###############
+----- PARAM ISOLATION (halfmesh vs libigl/pmp/cgal/bff, same charts) -----
+Shared segmentation: 84417 charts
+| engine | charts | seam len | planarity (rad) | compactness | coverage | time (s) |
+| halfmesh | 84417 | 84278.001 | 0.0390 | 15863.566 | yes | — |
+| libigl-lscm | 84417 | 84278.001 | 0.0390 | 15863.566 | yes | — |
+| pmp-lscm | 84417 | 84278.001 | 0.0390 | 15863.566 | yes | — |
+| pmp-harmonic | 84417 | 84278.001 | 0.0390 | 15863.566 | yes | — |
+| cgal-lscm | 84417 | 84278.001 | 0.0390 | 15863.566 | yes | — |
+| cgal-arap | 84417 | 84278.001 | 0.0390 | 15863.566 | yes | — |
+| bff | 84417 | 84278.001 | 0.0390 | 15863.566 | yes | — |
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+| halfmesh | 0 | 4.000 | 1.000 | 1.001 | 1.000 | yes | 1.032 |
+| libigl-lscm | 0 | 4.002 | 1.000 | — | — | NO | 5.073 |
+| pmp-lscm | 1 | 86983.837 | 1.000 | 2654.347 | 1.000 | yes | 0.218 |
+| pmp-harmonic | 363 | 50071593881431416.000 | 1.906 | 62099577141764.773 | 13.578 | yes | 0.161 |
+| cgal-lscm | 3 | 130331.137 | 1.000 | 2654.347 | 1.000 | yes | 0.345 |
+| cgal-arap | 88 | 48836341742512.953 | 1.001 | 73562.021 | 1.001 | yes | 8.351 |
+| bff | 9 | 4231.548 | 1.000 | — | — | NO | 0.721 |
+| engine | occ (rect) | occ (tri) | pages | overlaps | time (s) |
+| halfmesh | — | — | — | no | — |
+| libigl-lscm | — | — | — | no | — |
+| pmp-lscm | — | — | — | no | — |
+| pmp-harmonic | — | — | — | no | — |
+| cgal-lscm | — | — | — | no | — |
+| cgal-arap | — | — | — | no | — |
+| bff | — | — | — | no | — |
+| engine | total time (s) | peak RSS (MB) | valid | note |
+| halfmesh | 1.032 | 120.4 | yes |  |
+| libigl-lscm | 5.073 | 134.6 | NO |  |
+| pmp-lscm | 0.218 | 136.2 | yes | 25/84417 chart(s) fell back to PCA |
+| pmp-harmonic | 0.161 | 136.3 | yes |  |
+| cgal-lscm | 0.345 | 136.4 | yes | 7/84417 chart(s) fell back to PCA |
+| cgal-arap | 8.351 | 136.7 | yes | 259/84417 chart(s) fell back to PCA |
+| bff | 0.721 | 137.2 | NO | 490/84417 chart(s) fell back to PCA |
+----- SEGMENTATION + PACKING (halfmesh vs xatlas vs cgal-sdf) -----
+| engine | charts | seam len | planarity (rad) | compactness | coverage | time (s) |
+| halfmesh | 84417 | 84278.001 | 0.0390 | 15863.566 | yes | 4.810 |
+| xatlas | 69174 | 73603.181 | 0.0730 | 18.413 | yes | 489.977 |
+| cgal-sdf | 18394 | 32891.620 | 1.0875 | 72839.629 | yes | 29.682 |
+| engine | flips | sym-Dirichlet | L2 stretch | quasiconf | area dist | finite | time (s) |
+| halfmesh | 0 | 4.000 | 1.000 | 1.001 | 1.000 | yes | 1.026 |
+| xatlas | 63701 | 225856886.453 | 1.001 | 1.045 | 1.118 | yes | — |
+| cgal-sdf | — | — | — | — | — | yes | — |
+| engine | occ (rect) | occ (tri) | pages | overlaps | time (s) |
+| halfmesh | 82.0% | 9.6% | 1 | no | 0.250 |
+| xatlas | 79.3% | 26.9% | 1 | no | 2.681 |
+| cgal-sdf | — | — | — | no | — |
+| engine | total time (s) | peak RSS (MB) | valid | note |
+| halfmesh | 6.086 | 114.8 | yes |  |
+| xatlas | 492.658 | 215.9 | yes | charting+param fused in ComputeCharts |
+| cgal-sdf | 29.682 | 242.1 | yes |  |

@@ -1,0 +1,60 @@
+# Build directories
+/make/
+make*/
+/build/
+build*/
+cmake-build-*/
+out/
+
+# vcpkg installed dependencies
+/vcpkg_installed/
+vcpkg_installed/
+
+# Subagent-driven-development scratch (briefs, reports, review packages, ledger)
+/.superpowers/
+
+# Compiled objects / libraries / binaries
+*.o
+*.obj
+*.lo
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
+
+# Claude Code local worktrees/state
+.claude/
+# clangd index cache
+.cache/
+compile_commands.json
+
+# atlasbench report artifacts (generated)
+/report.json
+/report.csv
+/report.md
+
+# remeshbench generated baseline (machine-dependent timing)
+/tests/bench/results/remesh_baseline.json
+
+# Large benchmark meshes (kept out of git; regenerate/place locally under tests/data)
+tests/data/*.ply
+tests/data/*.glb
+!tests/data/mesh.ply
+
+# ad-hoc smoothing variant-comparison outputs (generated, machine-local)
+/tests/data/smooth_compare/

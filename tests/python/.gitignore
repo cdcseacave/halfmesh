@@ -1,0 +1,8 @@
+# Node package installation (gltf-validator dependency)
+node_modules/
+package-lock.json
+
+# Python virtual environments (use make/python-venv — already gitignored via make/)
+.venv/
+__pycache__/
+*.pyc

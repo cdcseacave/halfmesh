@@ -1,0 +1,12 @@
+{
+  "name": "halfmesh-gltf-validate",
+  "version": "1.0.0",
+  "description": "Khronos glTF-Validator wrapper for halfmesh cross-check CI",
+  "private": true,
+  "scripts": {
+    "validate": "node gltf_validate.js"
+  },
+  "dependencies": {
+    "gltf-validator": "^2.0.0-dev.3.10"
+  }
+}
