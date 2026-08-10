@@ -8,7 +8,11 @@
   "dependencies": [
     "bshoshany-thread-pool",
     "eigen3",
-    { "name": "opencv", "features": ["eigen", "jpeg", "png"] },
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": ["eigen", "fs", "intrinsics", "jpeg", "png", "thread"]
+    },
     "tinyply",
     "tinygltf"
   ],

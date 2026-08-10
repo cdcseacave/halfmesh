@@ -133,6 +133,14 @@ git add tests/data/golden
   fall back to relative ε ≈ 1e-5 (float positions) if the refactor reorders sums.
 - **Accumulated quantities** (areas, energies, Hausdorff): looser relative ε
   (≈1e-4) — document per assertion.
+- **TOLERANT goldens** (`Simplify`, `RemeshIsotropic` — see §4b `CompareMode`):
+  surface area and bbox get 10× the exact-mode ε (1e-3). These ops keep a
+  *different set of original vertices* per collapse cascade across build flags,
+  so both metrics drift by a fraction of an edge length rather than a float LSB
+  (measured: `UVSphere__SimplifyMinEdge` shifts its bbox by 2.1e-4 of the
+  diagonal under `-march=x86-64-v3` / `-march=native`). The Hausdorff nets —
+  gross divergence vs the fixture, and quality parity vs the input — remain the
+  primary regression check.
 - **Isotropic-remesh edge length** (the isotropy ratchet): `RemeshIsotropic`'s
   `edge_len_mean` within ±10% and `edge_len_min`/`edge_len_max` within ±25% of
   the frozen baseline — baseline-relative, named constants. Uniform edge length

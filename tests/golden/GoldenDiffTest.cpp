@@ -61,6 +61,7 @@ bool LoadGolden(const GoldenSpec& spec, halfmesh::Mesh& mesh, GoldenMetrics& m)
 
 constexpr float POS_TOL = 1e-5f; // canonical vertex position tolerance
 constexpr double AREA_REL = 1e-4; // accumulated-quantity relative tolerance (§5)
+constexpr double BBOX_REL = 1e-4; // bbox shift as a fraction of the golden diagonal
 
 void ExpectMetricsClose(const halfmesh::Mesh& result,
                         const halfmesh::Mesh& input,
@@ -84,14 +85,23 @@ void ExpectMetricsClose(const halfmesh::Mesh& result,
 	const double areaDen = std::max(1e-12, std::abs(golden.surfaceArea));
 	EXPECT_LT(std::abs(pm.surfaceArea - golden.surfaceArea) / areaDen, areaRel)
 	    << "surface area (" << pm.surfaceArea << " vs " << golden.surfaceArea << ")";
-	// Bounding box: absolute ε scaled to mesh size.
+	// Bounding box: absolute ε scaled to mesh size. Same widening as the area
+	// above, and for the same reason: a bbox corner is an EXTREMUM over the
+	// surviving vertices, so a config-drifted cascade that keeps a different
+	// vertex near the extreme moves the corner by a fraction of an edge length —
+	// not by a float LSB. Measured on the -march legs of opt-in-build-flags:
+	// UVSphere__SimplifyMinEdge drifts 2.1e-4 of the diagonal (x86-64-v3 and
+	// -march=native both), which the exact-mode 1e-4 bound cannot express.
+	// 1e-3 keeps ~5x headroom over that and stays 10x tighter than the
+	// gross-divergence Hausdorff net below, so real damage is still caught.
+	const double bboxRel = exactCounts ? BBOX_REL : 10.0 * BBOX_REL;
 	double diag = 0.0;
 	for (int k = 0; k < 3; ++k)
 		diag += (golden.bboxMax[k] - golden.bboxMin[k]) * (golden.bboxMax[k] - golden.bboxMin[k]);
 	diag = std::sqrt(std::max(1e-12, diag));
 	for (int k = 0; k < 3; ++k) {
-		EXPECT_LT(std::abs(pm.bboxMin[k] - golden.bboxMin[k]) / diag, 1e-4) << "bbox_min[" << k << "]";
-		EXPECT_LT(std::abs(pm.bboxMax[k] - golden.bboxMax[k]) / diag, 1e-4) << "bbox_max[" << k << "]";
+		EXPECT_LT(std::abs(pm.bboxMin[k] - golden.bboxMin[k]) / diag, bboxRel) << "bbox_min[" << k << "]";
+		EXPECT_LT(std::abs(pm.bboxMax[k] - golden.bboxMax[k]) / diag, bboxRel) << "bbox_max[" << k << "]";
 	}
 }
 

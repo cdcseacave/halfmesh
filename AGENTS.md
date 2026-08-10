@@ -42,7 +42,8 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 
 ## Build & test
 Set `$VCPKG_ROOT` (the toolchain auto-loads). Deps: eigen3, bshoshany-thread-pool,
-opencv, tinyply, tinygltf.
+opencv4 (no default features — only core/imgproc/imgcodecs are used), tinyply,
+tinygltf.
 ```sh
 cmake -S . -B make -DHALFMESH_BUILD_TESTS=ON -DHALFMESH_BUILD_TOOLS=ON
 cmake --build make -j

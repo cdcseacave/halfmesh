@@ -28,7 +28,7 @@ parametrization and texture atlas pipeline.
 |---------|------|
 | `eigen3` | Linear algebra (sparse solvers, geometry) |
 | `bshoshany-thread-pool` | Worker pool for the parallel phases (remeshing, simplification setup, smoothing, per-chart flattening) |
-| `opencv` (features: eigen, jpeg, png) | Image types used by the texture layer |
+| `opencv4` (no default features; eigen, fs, intrinsics, jpeg, png, thread) | Image types used by the texture layer |
 | `tinyply` | PLY I/O |
 | `tinygltf` | glTF/GLB I/O (header-only) |
 | `gtest` | Unit tests (test build only) |
@@ -38,6 +38,12 @@ parametrization and texture atlas pipeline.
 Set `$VCPKG_ROOT` to your vcpkg installation; the CMake toolchain is loaded
 automatically. Dependency versions are pinned by the `builtin-baseline` in
 `vcpkg.json`.
+
+halfmesh depends on `opencv4` directly rather than the `opencv` metaport, with
+default features off: only `core`, `imgproc` and `imgcodecs` are used, so the
+GUI/video/DNN modules that OpenCV enables by default (and the GTK stack they
+drag in on Linux) are not built. This cuts the dependency graph from 79 packages
+to 14.
 
 ```sh
 git clone https://github.com/cdcseacave/halfmesh && cd halfmesh
