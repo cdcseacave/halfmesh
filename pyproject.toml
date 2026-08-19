@@ -40,9 +40,24 @@ test-command = "pytest {project}/python/tests -q"
 [tool.cibuildwheel.linux]
 # vcpkg bootstraps inside the manylinux container; deps build static+PIC via
 # the x64-linux-pic overlay triplet (auto-selected by CMakeLists.txt).
+# The vcpkg tool itself is fetched by the exact pinned commit (not "--depth 1"
+# off the branch tip): vcpkg.json's "builtin-baseline" pins
+# 9e593bb18ea69cc5095e012465dcd675a822ed0d (same pin as CI's VCPKG_COMMIT),
+# and that commit is not reachable from a shallow clone of current master, so
+# vcpkg fails to `git show` versions/baseline.json at that SHA.
+#
+# pybind11's vcpkg port depends on vcpkg's own python3 port (a from-source,
+# statically-linked CPython, distinct from the manylinux image's /opt/python
+# interpreters) — which pulls in openssl. openssl's build needs the Perl
+# Time::Piece module (perl-Time-Piece), not installed by default in the
+# manylinux_2_28 image; without it, Configure dies with "Can't locate
+# Time/Piece.pm" and every python3-dependent port fails to build.
 before-all = """
-dnf install -y curl zip unzip tar git perl-IPC-Cmd nasm &&
-git clone --depth 1 https://github.com/microsoft/vcpkg /opt/vcpkg &&
+dnf install -y curl zip unzip tar git perl-IPC-Cmd perl-Time-Piece nasm &&
+mkdir -p /opt/vcpkg && cd /opt/vcpkg && git init -q &&
+git remote add origin https://github.com/microsoft/vcpkg &&
+git fetch --depth 1 origin 9e593bb18ea69cc5095e012465dcd675a822ed0d &&
+git checkout -q FETCH_HEAD &&
 /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 """
 environment = { VCPKG_ROOT = "/opt/vcpkg" }
