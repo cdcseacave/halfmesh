@@ -15,6 +15,9 @@
 
 #include <halfmesh/Mesh.h>
 #include <halfmesh/Version.h>
+#include <halfmesh/Parametrize.h>
+#include <halfmesh/AtlasCharting.h>
+#include <halfmesh/AtlasPacking.h>
 
 #include <cstring>
 #include <stdexcept>
@@ -148,4 +151,67 @@ PYBIND11_MODULE(_halfmesh, m)
 			mesh.RemeshIsotropic(params);
 		}
 		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("edge_length"), py::arg("iterations") = 3, "Isotropic remeshing toward a uniform target edge length (world units).");
+
+	py::class_<Mesh>(m, "Mesh",
+	                 "Triangle mesh facade over halfmesh::Mesh (PLY / glTF / GLB I/O).")
+	    .def(py::init<>())
+	    .def_static("from_arrays", [](const VertArray& v, const FaceArray& f) { return MeshFromArrays(v, f); }, py::arg("vertices"), py::arg("faces"))
+	    .def("to_arrays", [](const Mesh& self) { return ArraysFromMesh(self); }, "Return (vertices float32 [N,3], faces uint32 [M,3]) copies.")
+	    .def("load", [](Mesh& self, const std::string& path) {
+		    bool ok;
+		    {
+			    py::gil_scoped_release release;
+			    ok = self.Load(path);
+		    }
+		    if (!ok)
+			    throw std::runtime_error("Mesh.load: failed to load '" + path + "'"); }, py::arg("path"), "Load a .ply / .gltf / .glb mesh (format from extension).")
+	    .def("save", [](const Mesh& self, const std::string& path, bool binary) {
+		    bool ok;
+		    {
+			    py::gil_scoped_release release;
+			    ok = self.Save(path, binary);
+		    }
+		    if (!ok)
+			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb (format from extension).")
+	    .def_property_readonly("n_vertices", [](const Mesh& self) { return self.vertices.size(); })
+	    .def_property_readonly("n_faces", [](const Mesh& self) { return self.faces.size(); })
+	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)
+	    .def("__repr__", [](const Mesh& self) { return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
+
+	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation) {
+		Mesh mesh;
+		unsigned charts = 0;
+		halfmesh::AtlasResult result;
+		{
+			py::gil_scoped_release release;
+			if (!mesh.Load(input_path))
+				throw std::runtime_error("unwrap: failed to load '" + input_path + "'");
+			// Weld + clean first (examples/Unwrap.cpp preamble): unwelded input
+			// makes every edge a boundary and SegmentCharts fragments into one
+			// chart per face. Lossless: the atlas regenerates the UVs anyway.
+			mesh.RemoveDuplicateVertices(0);
+			mesh.RemoveDegenerateFaces(0.f);
+			mesh.RemoveUnreferencedVertices();
+
+			halfmesh::ParametrizeParams pparams; // defaults tuned for MVS-like meshes
+			halfmesh::AtlasParams aparams;
+			aparams.resolution = resolution;
+			aparams.padding = padding;
+			aparams.allowRotation = allow_rotation;
+			result = halfmesh::GenerateAtlas(mesh, pparams, aparams);
+			charts = static_cast<unsigned>(result.chartPage.size());
+
+			if (!mesh.Save(output_path))
+				throw std::runtime_error("unwrap: failed to save '" + output_path + "'");
+		}
+		py::dict meta;
+		meta["charts"] = charts;
+		meta["pages"] = result.numPages;
+		meta["width"] = result.width;
+		meta["height"] = result.height;
+		meta["occupancy"] = result.occupancy;
+		meta["vertices"] = mesh.vertices.size();
+		meta["faces"] = mesh.faces.size();
+		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 4u, py::arg("allow_rotation") = true, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. "
+	                                                                                                                                                                                                                                                                                            "Returns {charts, pages, width, height, occupancy, vertices, faces}.");
 }

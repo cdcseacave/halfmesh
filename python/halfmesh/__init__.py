@@ -7,23 +7,27 @@ vertex/face indices are never guaranteed stable across a call.
 """
 
 from ._halfmesh import (
+    Mesh,
     close_holes,
     remesh,
     remove_small_components,
     repair,
     simplify,
     smooth,
+    unwrap,
     version,
 )
 
 __version__ = version()
 __all__ = [
+    "Mesh",
     "close_holes",
     "remesh",
     "remove_small_components",
     "repair",
     "simplify",
     "smooth",
+    "unwrap",
     "version",
     "__version__",
 ]
