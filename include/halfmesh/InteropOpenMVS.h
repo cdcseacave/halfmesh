@@ -184,9 +184,13 @@ inline void ConvertMesh(const halfmesh::Mesh& src, MVS::Mesh& dst)
 	for (size_t i = 0; i < src.faceTexblobs.size(); ++i)
 		dst.faceTexindices[(MVS::Mesh::FIndex)i] = (MVS::Mesh::TexIndex)src.faceTexblobs[i];
 
+	// Image8U3 is a SEACAVE typedef (Common/Types.h), not a true member of
+	// namespace MVS -- it's only visible unqualified here because
+	// MVS/Common.h has a global `using namespace SEACAVE;`. Every openMVS
+	// source spells it unqualified; `MVS::Image8U3` does not compile.
 	dst.texturesDiffuse.resize((MVS::Mesh::TexIndex)src.texturesDiffuse.size());
 	for (size_t i = 0; i < src.texturesDiffuse.size(); ++i)
-		dst.texturesDiffuse[(MVS::Mesh::TexIndex)i] = MVS::Image8U3(src.texturesDiffuse[i]);
+		dst.texturesDiffuse[(MVS::Mesh::TexIndex)i] = Image8U3(src.texturesDiffuse[i]);
 }
 
 } // namespace halfmesh

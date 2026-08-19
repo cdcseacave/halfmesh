@@ -72,19 +72,21 @@ constexpr uint32_t NO_ID = std::numeric_limits<uint32_t>::max(); // 0xFFFFFFFF
 // -------------------------------------------------------------------------
 // Register halfmesh::Pixel as a valid cv::Mat_ element type.
 // Eigen::Matrix<uint8_t,3,1> is not a native OpenCV type; we provide the
-// specializations that cv::Mat_<Pixel> requires.
+// DataType specialization that cv::Mat_<Pixel> requires.
+//
+// No cv::DataDepth<uint8_t> specialization is needed here: OpenCV's generic
+// DataDepth<_Tp> already derives `value`/`fmt` from DataType<_Tp>::depth /
+// DataType<_Tp>::fmt (see opencv2/core/traits.hpp), and OpenCV explicitly
+// specializes DataType<uchar> itself -- so DataDepth<uint8_t> already
+// resolves to the right CV_8U/'u' values with no help from halfmesh. An
+// explicit DataDepth<uint8_t> specialization here used to duplicate that
+// (redundantly, since the values are identical) and would conflict --
+// "redefinition" / "specialization after instantiation" -- with any
+// translation unit where a header already instantiated the generic
+// DataDepth<uint8_t> before this one is reached (e.g. openMVS's
+// Common/Types.h, pulled in ahead of this header by InteropOpenMVS.h).
 // -------------------------------------------------------------------------
 namespace cv {
-
-template <>
-class DataDepth<halfmesh::Pixel::Scalar>
-{
-	public:
-	enum {
-		value = CV_8U,
-		fmt = static_cast<int>('u')
-	};
-};
 
 template <>
 class DataType<halfmesh::Pixel>
