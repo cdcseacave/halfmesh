@@ -31,9 +31,10 @@ VCPKG_ROOT=/path/to/vcpkg pip install .
 This drives the same root `CMakeLists.txt` via `scikit-build-core`, with
 `-DHALFMESH_BUILD_PYTHON=ON`. Notes:
 
-- **Cold build time**: vcpkg has to compile Eigen, OpenCV, tinyply, tinygltf
-  and pybind11 from source on the first invocation — expect on the order of
-  30–45 minutes uncached (the same cost the `wheels.yml` CI job pays). After
+- **Cold build time**: vcpkg has to compile Eigen, OpenCV, tinyply and
+  tinygltf from source on the first invocation — expect on the order of
+  15–30 minutes uncached (the same cost the `wheels.yml` CI job pays;
+  pybind11 itself comes from pip, not vcpkg). After
   that, vcpkg's binary cache makes dependency setup near-instant, and because
   `pyproject.toml` sets a persistent `build-dir` (`build/{wheel_tag}`),
   repeat `pip install .` runs are true incremental C++ rebuilds rather than

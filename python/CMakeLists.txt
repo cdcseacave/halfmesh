@@ -1,3 +1,20 @@
+# pybind11 comes from pip (a [build-system] requirement), not vcpkg.
+# Under scikit-build-core the pip package's CMake dir is already on
+# CMAKE_PREFIX_PATH (pybind11 registers a cmake.prefix entry point); for a
+# raw `cmake -DHALFMESH_BUILD_PYTHON=ON` dev build, ask the interpreter
+# (`pip install pybind11` first).
+find_package(pybind11 CONFIG QUIET)
+if(NOT pybind11_FOUND)
+	# Development.Module (not just Interpreter): with Python3 pre-found,
+	# pybind11's config skips its own find_package and needs
+	# python3_add_library, which only that component defines.
+	find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
+	execute_process(
+		COMMAND "${Python3_EXECUTABLE}" -m pybind11 --cmakedir
+		OUTPUT_VARIABLE pybind11_DIR
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+		ERROR_QUIET)
+endif()
 find_package(pybind11 CONFIG REQUIRED)
 
 # Target name == module name: pybind11_add_module derives the PyInit__halfmesh

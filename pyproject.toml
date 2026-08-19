@@ -61,30 +61,22 @@ repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 --only-pl
 # and that commit is not reachable from a shallow clone of current master, so
 # vcpkg fails to `git show` versions/baseline.json at that SHA.
 #
-# pybind11's vcpkg port depends on vcpkg's own python3 port (a from-source,
-# statically-linked CPython, distinct from the manylinux image's /opt/python
-# interpreters) — which pulls in openssl, sqlite3, bzip2, expat,
-# gettext-libintl, libb2, libffi, libiconv, liblzma, libuuid (host+pic each).
-# openssl's build needs the Perl Time::Piece module (perl-Time-Piece), absent
-# from the manylinux_2_28 image ("Can't locate Time/Piece.pm"). Several of
-# the autotools-based ports in that list (confirmed: libb2) need libtool
-# (libtoolize) and autoconf-archive; autoconf/automake themselves are already
-# present. But the manylinux image's own /usr/local/bin/aclocal (a newer
-# automake built into the image, shadowing the dnf-installed one on PATH)
-# only searches /usr/local/share/aclocal, while dnf's autoconf-archive
-# package installs its macros under /usr/share/aclocal — so ACLOCAL_PATH
-# must point there or aclocal reports autoconf-archive "missing" regardless.
+# pybind11 is NOT built by vcpkg — it comes from pip via [build-system]
+# requires (its vcpkg port would drag in vcpkg's own from-source CPython:
+# openssl, libffi, an autotools chain, ~20 extra ports). The vcpkg manifest
+# builds only the C++ deps: eigen3, opencv4 (reduced), tinyply, tinygltf,
+# bshoshany-thread-pool — all CMake-based; nasm is for libjpeg-turbo.
 #
-# Once the deps build, halfmesh itself needs g++ >= 13 for <format> (see the
-# same note in ci.yml's python-bindings job) — the manylinux_2_28 image's
-# default compiler on PATH is gcc-toolset-12 (g++ 12, no <format>), so
+# halfmesh itself needs g++ >= 13 for <format> (see the same note in
+# ci.yml's python-bindings job) — the manylinux_2_28 image's default
+# compiler on PATH is gcc-toolset-12 (g++ 12, no <format>), so
 # gcc-toolset-13 is installed and selected explicitly via CC/CXX below.
 before-all = """
-dnf install -y curl zip unzip tar git perl-IPC-Cmd perl-Time-Piece nasm libtool autoconf-archive gcc-toolset-13 &&
+dnf install -y curl zip unzip tar git nasm gcc-toolset-13 &&
 mkdir -p /opt/vcpkg && cd /opt/vcpkg && git init -q &&
 git remote add origin https://github.com/microsoft/vcpkg &&
 git fetch --depth 1 origin 9e593bb18ea69cc5095e012465dcd675a822ed0d &&
 git checkout -q FETCH_HEAD &&
 /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 """
-environment = { VCPKG_ROOT = "/opt/vcpkg", ACLOCAL_PATH = "/usr/share/aclocal", CC = "/opt/rh/gcc-toolset-13/root/usr/bin/gcc", CXX = "/opt/rh/gcc-toolset-13/root/usr/bin/g++" }
+environment = { VCPKG_ROOT = "/opt/vcpkg", CC = "/opt/rh/gcc-toolset-13/root/usr/bin/gcc", CXX = "/opt/rh/gcc-toolset-13/root/usr/bin/g++" }

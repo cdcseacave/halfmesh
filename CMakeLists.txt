@@ -47,7 +47,10 @@ if(HALFMESH_BUILD_TOOLS)
 	list(APPEND VCPKG_MANIFEST_FEATURES "tools")
 endif()
 if(HALFMESH_BUILD_PYTHON)
-	list(APPEND VCPKG_MANIFEST_FEATURES "python")
+	# No vcpkg feature: pybind11 comes from pip, not vcpkg — the vcpkg port
+	# depends on vcpkg's own from-source CPython (openssl, libffi, an autotools
+	# chain, ~20 extra ports) just to provide a header-only library the Python
+	# build environment already has. See python/CMakeLists.txt for resolution.
 	# The extension is a shared module, so every static archive linked into it
 	# (halfmesh itself and the vcpkg deps: opencv, tinyply, libjpeg, libpng, zlib)
 	# must be PIC. The overlay triplet builds the vcpkg side with
