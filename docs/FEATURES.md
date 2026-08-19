@@ -7,6 +7,10 @@ functions live in `namespace halfmesh`; headers are under
 [`examples/`](../examples) demonstrate the canonical call sequence for each
 major feature.
 
+The full pipeline below — repair, smooth, simplify, close holes, remesh, and
+UV-atlas generation — is also available from Python via the pip-installable
+`halfmesh` package; see [`docs/PYTHON.md`](PYTHON.md).
+
 Quick index:
 
 | Feature | Entry point | Header | Example |

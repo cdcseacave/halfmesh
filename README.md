@@ -167,8 +167,33 @@ target_link_libraries(myapp PRIVATE halfmesh::halfmesh)
 The package exports version compatibility files (`halfmeshConfigVersion.cmake`)
 so `find_package(halfmesh 0.1.0 CONFIG REQUIRED)` works as expected.
 
+## Python bindings
+
+A pip-installable `halfmesh` package wraps the core mesh ops (repair, smooth,
+simplify, close holes, remove small components, remesh) plus a `Mesh` facade
+and UV-atlas `unwrap`, all numpy in/out:
+
+```sh
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.2.0/halfmesh-0.2.0-cp312-cp312-manylinux_2_28_x86_64.whl
+```
+
+```python
+import halfmesh as hm
+
+mesh = hm.Mesh()
+mesh.load("input.ply")
+v, f = mesh.to_arrays()
+v, f = hm.repair(v, f)
+v, f = hm.simplify(v, f, target=0.5)      # keep 50% of faces
+hm.Mesh.from_arrays(v, f).save("output.ply")
+```
+
+See [docs/PYTHON.md](docs/PYTHON.md) for the full install matrix, API
+reference, and a worked cleanup-pipeline example.
+
 ## Documentation
 
+- [docs/PYTHON.md](docs/PYTHON.md) — the Python bindings: install, full API reference, worked example
 - [docs/TESTING.md](docs/TESTING.md) — the layered testing strategy (invariants, frozen goldens, third-party cross-checks, perf guards)
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — the `atlasbench` harness and results vs xatlas / libigl / pmp / CGAL / BFF
 - [docs/ATLAS_SEGMENTATION_DESIGN.md](docs/ATLAS_SEGMENTATION_DESIGN.md) — design of the developable D-Charts chart segmenter

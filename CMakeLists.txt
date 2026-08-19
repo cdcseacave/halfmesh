@@ -78,7 +78,7 @@ endif()
 # so an absolute path works on all CMake versions >= 3.21.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
-project(halfmesh VERSION 0.1.0 LANGUAGES CXX)
+project(halfmesh VERSION 0.2.0 LANGUAGES CXX)
 
 # AddressSanitizer + UndefinedBehaviorSanitizer build (docs/TESTING.md §7).
 # Declared after project() because it controls compiler flags (not vcpkg manifest
