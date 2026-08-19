@@ -36,12 +36,17 @@ This drives the same root `CMakeLists.txt` via `scikit-build-core`, with
   30–45 minutes uncached (the same cost the `wheels.yml` CI job pays). Once
   vcpkg's binary cache is warm, a rebuild is a normal incremental C++ build.
 - **Triplet auto-selection**: on Linux, when you have not already set
-  `VCPKG_TARGET_TRIPLET` (env or CMake cache), the build automatically
-  overlays and selects `x64-linux-pic` (`cmake/triplets/x64-linux-pic.cmake`)
-  — a static+`-fPIC` triplet, required because every static archive linked
-  into the shared extension module must be position-independent. You do not
-  need to pass this yourself; it only matters if you're mixing this build
-  with another vcpkg triplet in the same install tree.
+  `VCPKG_TARGET_TRIPLET` (env or CMake cache) — and have not set
+  `VCPKG_DEFAULT_TRIPLET` either, which also suppresses the auto-selection —
+  the build automatically overlays and selects `x64-linux-pic`
+  (`cmake/triplets/x64-linux-pic.cmake`) — a static+`-fPIC` triplet, required
+  because every static archive linked into the shared extension module must
+  be position-independent. You do not need to pass this yourself; it only
+  matters if you're mixing this build with another vcpkg triplet in the same
+  install tree, or if a tool in your setup (e.g. `lukka/run-vcpkg` in CI)
+  sets `VCPKG_DEFAULT_TRIPLET` for you — in that case, set it to
+  `x64-linux-pic` yourself and also set `VCPKG_OVERLAY_TRIPLETS` to
+  `cmake/triplets`.
 - Add the `test` extra (`pip install '.[test]'`) to also pull in `pytest` for
   running `python/tests`.
 

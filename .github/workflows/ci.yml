@@ -375,6 +375,15 @@ jobs:
   python-bindings:
     name: Python bindings (pip install + pytest)
     runs-on: ubuntu-24.04
+    env:
+      # lukka/run-vcpkg@v11 sets VCPKG_DEFAULT_TRIPLET workflow-wide, which
+      # makes CMakeLists.txt's auto-selection guard for the PIC triplet
+      # (`NOT DEFINED VCPKG_TARGET_TRIPLET AND NOT DEFINED ENV{VCPKG_DEFAULT_TRIPLET}`)
+      # evaluate false — the job would build plain x64-linux while the release
+      # wheels build x64-linux-pic. Pin the same triplet + overlay here so this
+      # gate exercises the configuration it's meant to gate.
+      VCPKG_DEFAULT_TRIPLET: x64-linux-pic
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/cmake/triplets
 
     steps:
       - name: Checkout
