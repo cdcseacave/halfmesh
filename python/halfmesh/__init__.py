@@ -6,7 +6,24 @@ arrays: halfmesh's half-edge construction auto-repairs non-manifold input, so
 vertex/face indices are never guaranteed stable across a call.
 """
 
-from ._halfmesh import version
+from ._halfmesh import (
+    close_holes,
+    remesh,
+    remove_small_components,
+    repair,
+    simplify,
+    smooth,
+    version,
+)
 
 __version__ = version()
-__all__ = ["version", "__version__"]
+__all__ = [
+    "close_holes",
+    "remesh",
+    "remove_small_components",
+    "repair",
+    "simplify",
+    "smooth",
+    "version",
+    "__version__",
+]
