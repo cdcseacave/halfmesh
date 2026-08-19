@@ -369,8 +369,10 @@ example: `examples/TextureBakeTool.cpp` (rebake / defrag / fidelity modes).
 [`InteropOpenMVS.h`](../include/halfmesh/InteropOpenMVS.h) — header-only,
 compiled only when `<MVS/Mesh.h>` is on the include path (a no-op otherwise):
 `ConvertMesh(const MVS::Mesh&, halfmesh::Mesh&)` and the reverse transfer
-geometry, per-corner UVs, per-face texture indices and diffuse textures
-between the two libraries with zero build-time coupling.
+geometry, per-vertex colors, per-face normals, per-corner UVs, per-face
+texture indices and diffuse textures between the two libraries with zero
+build-time coupling. openMVS's per-vertex normals have no halfmesh
+counterpart and are not transferred.
 
 ## Utilities
 

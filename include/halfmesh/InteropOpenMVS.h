@@ -42,10 +42,12 @@
 
 namespace halfmesh {
 
-// Convert an openMVS mesh into a halfmesh mesh (geometry, per-corner UVs, and
-// diffuse textures).  Only the fields halfmesh understands are transferred; openMVS
-// extras (vertex/face adjacency caches, octree, etc.) are not copied — call the
-// relevant halfmesh List*() builders afterwards if you need them.
+// Convert an openMVS mesh into a halfmesh mesh (geometry, per-vertex colors,
+// per-face normals, per-corner UVs, and diffuse textures).  Only the fields
+// halfmesh understands are transferred; openMVS extras (per-vertex normals,
+// vertex/face adjacency caches, octree, etc.) are not copied — halfmesh::Mesh has
+// no per-vertex-normal storage, and the adjacency caches are derived data: call
+// the relevant halfmesh List*() builders afterwards if you need them.
 inline void ConvertMesh(const MVS::Mesh& src, halfmesh::Mesh& dst)
 {
 	dst = halfmesh::Mesh{};
@@ -60,6 +62,21 @@ inline void ConvertMesh(const MVS::Mesh& src, halfmesh::Mesh& dst)
 	for (size_t i = 0; i < src.faces.size(); ++i) {
 		const MVS::Mesh::Face& f = src.faces[(MVS::Mesh::FIndex)i];
 		dst.faces[i] = halfmesh::Mesh::Face(f.x, f.y, f.z);
+	}
+
+	// Per-vertex colors: both sides are 3x uint8 with blue in the first byte under
+	// the default openMVS build; copy by channel name so a _COLORMODE_RGB build of
+	// openMVS still maps each channel to halfmesh's fixed BGR element order.
+	dst.vertexColors.resize(src.vertexColors.size());
+	for (size_t i = 0; i < src.vertexColors.size(); ++i) {
+		const MVS::Mesh::Color& c = src.vertexColors[(MVS::Mesh::VIndex)i];
+		dst.vertexColors[i] = halfmesh::Mesh::Pixel(c.b, c.g, c.r);
+	}
+
+	dst.faceNormals.resize(src.faceNormals.size());
+	for (size_t i = 0; i < src.faceNormals.size(); ++i) {
+		const MVS::Mesh::Normal& n = src.faceNormals[(MVS::Mesh::FIndex)i];
+		dst.faceNormals[i] = halfmesh::Mesh::Normal(n.x, n.y, n.z);
 	}
 
 	// Texture coordinates: openMVS stores them per face-corner (3*faces) or per
@@ -82,8 +99,8 @@ inline void ConvertMesh(const MVS::Mesh& src, halfmesh::Mesh& dst)
 		dst.texturesDiffuse[i] = halfmesh::Mesh::Image3u(src.texturesDiffuse[(MVS::Mesh::TexIndex)i]);
 }
 
-// Convert a halfmesh mesh into an openMVS mesh (geometry, per-corner UVs, and
-// diffuse textures).
+// Convert a halfmesh mesh into an openMVS mesh (geometry, per-vertex colors,
+// per-face normals, per-corner UVs, and diffuse textures).
 inline void ConvertMesh(const halfmesh::Mesh& src, MVS::Mesh& dst)
 {
 	dst.Release();
@@ -98,6 +115,22 @@ inline void ConvertMesh(const halfmesh::Mesh& src, MVS::Mesh& dst)
 	for (size_t i = 0; i < src.faces.size(); ++i) {
 		const halfmesh::Mesh::Face& f = src.faces[i];
 		dst.faces[(MVS::Mesh::FIndex)i] = MVS::Mesh::Face(f[0], f[1], f[2]);
+	}
+
+	// Per-vertex colors: assign by channel name (see the MVS -> halfmesh note).
+	dst.vertexColors.resize((MVS::Mesh::VIndex)src.vertexColors.size());
+	for (size_t i = 0; i < src.vertexColors.size(); ++i) {
+		const halfmesh::Mesh::Pixel& p = src.vertexColors[i];
+		MVS::Mesh::Color& c = dst.vertexColors[(MVS::Mesh::VIndex)i];
+		c.b = p[0];
+		c.g = p[1];
+		c.r = p[2];
+	}
+
+	dst.faceNormals.resize((MVS::Mesh::FIndex)src.faceNormals.size());
+	for (size_t i = 0; i < src.faceNormals.size(); ++i) {
+		const halfmesh::Mesh::Normal& n = src.faceNormals[i];
+		dst.faceNormals[(MVS::Mesh::FIndex)i] = MVS::Mesh::Normal(n[0], n[1], n[2]);
 	}
 
 	dst.faceTexcoords.resize((MVS::Mesh::FIndex)src.faceTexcoords.size());
