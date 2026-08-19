@@ -38,6 +38,15 @@ test-requires = ["pytest"]
 test-command = "pytest {project}/python/tests -q"
 
 [tool.cibuildwheel.linux]
+# cibuildwheel's default repair command (`auditwheel repair -w {dest_dir}
+# {wheel}`) auto-upgrades the tag to whatever *more* compatible (lower
+# glibc floor) manylinux policy the wheel happens to also satisfy, e.g.
+# producing "...manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" instead of
+# the single "...manylinux_2_28_x86_64.whl" this project's release process
+# (see wheels.yml + the radiance-integration plan, which pins the exact
+# filename) expects. --only-plat pins the tag to exactly the requested
+# --plat, matching the fixed manylinux-x86_64-image below.
+repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 --only-plat -w {dest_dir} {wheel}"
 # vcpkg bootstraps inside the manylinux container; deps build static+PIC via
 # the x64-linux-pic overlay triplet (auto-selected by CMakeLists.txt).
 # The vcpkg tool itself is fetched by the exact pinned commit (not "--depth 1"
