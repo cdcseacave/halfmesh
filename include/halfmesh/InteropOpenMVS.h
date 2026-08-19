@@ -22,7 +22,8 @@
 // exercised by halfmesh's own test suite — it is validated by the consuming project.
 //
 // Usage:
-//     #include <MVS/Mesh.h>                 // openMVS first (defines MVS::Mesh)
+//     #include <MVS/Common.h>               // openMVS first: Common.h defines the
+//     #include <MVS/Mesh.h>                 // types Mesh.h assumes are in scope
 //     #include <halfmesh/InteropOpenMVS.h>
 //     ...
 //     MVS::Mesh mvsMesh = ...;
