@@ -61,6 +61,20 @@ def test_ops_accept_castable_dtypes():
     assert rv.dtype == np.float32 and rf.dtype == np.uint32
 
 
+def test_repair_rejects_out_of_range_face_index():
+    v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+    f = np.array([[0, 1, 100]], dtype=np.uint32)
+    with pytest.raises(ValueError):
+        hm.repair(v, f)
+
+
+def test_smooth_rejects_out_of_range_face_index():
+    v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+    f = np.array([[0, 1, 100]], dtype=np.uint32)
+    with pytest.raises(ValueError):
+        hm.smooth(v, f, 1, "taubin")
+
+
 def test_smooth_taubin_reduces_noise_without_shrinking():
     v, f = _grid_mesh()
     sv, sf = hm.smooth(v, f, 20, "taubin")

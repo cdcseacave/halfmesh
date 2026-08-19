@@ -35,6 +35,15 @@ Mesh MeshFromArrays(const VertArray& v, const FaceArray& f)
 		throw py::value_error("vertices must have shape [N,3] (float32)");
 	if (f.ndim() != 2 || f.shape(1) != 3)
 		throw py::value_error("faces must have shape [M,3] (uint32)");
+	const auto numVertices = static_cast<uint64_t>(v.shape(0));
+	if (numVertices == 0 && f.shape(0) != 0)
+		throw py::value_error("faces reference vertices, but vertices array is empty");
+	const uint32_t* faceData = f.data();
+	const size_t numFaceIndices = static_cast<size_t>(f.shape(0)) * 3;
+	for (size_t i = 0; i < numFaceIndices; ++i) {
+		if (faceData[i] >= numVertices)
+			throw py::value_error("face index " + std::to_string(faceData[i]) + " is out of range for " + std::to_string(numVertices) + " vertices");
+	}
 	Mesh m;
 	// Mesh::Vertex / Mesh::Face are static_asserted memcpy-compatible
 	// (src/MeshIO.cpp), so bulk-copy the buffers.
