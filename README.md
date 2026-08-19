@@ -22,6 +22,9 @@ parametrization and texture atlas pipeline.
 - **UV parametrization** — developable (D-Charts) chart segmentation + per-chart SLIM/ARAP flattening
 - **Texture atlas** — uniform-density normalisation + skyline (min-waste) packing into one or more atlas pages
 
+Each feature is described in depth — entry points, key parameters, gotchas,
+and pointers to the examples — in [`docs/FEATURES.md`](docs/FEATURES.md).
+
 ## Dependencies (all via vcpkg)
 
 | Package | Role |
