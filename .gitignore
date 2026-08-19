@@ -58,3 +58,11 @@ tests/data/*.glb
 
 # ad-hoc smoothing variant-comparison outputs (generated, machine-local)
 /tests/data/smooth_compare/
+
+# Python
+__pycache__/
+*.egg-info/
+_skbuild/
+.pytest_cache/
+dist/
+*.whl
