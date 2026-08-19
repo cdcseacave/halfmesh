@@ -369,6 +369,33 @@ jobs:
           if-no-files-found: ignore
 
   # ===========================================================================
+  # Job: python-bindings — build the pip package against vcpkg deps and run
+  # its pytest suite. Ubuntu 24.04: g++ >= 13 has <format>, no fmt needed.
+  # ===========================================================================
+  python-bindings:
+    name: Python bindings (pip install + pytest)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build and install the package
+        run: python -m pip install -v '.[test]'
+
+      - name: Run the binding tests
+        run: python -m pytest python/tests -q
+
+  # ===========================================================================
   # Job 6b: opt-in-build-flags  [ADVISORY — promote after triage; ubuntu only]
   # Coverage for the three opt-in performance build options (all OFF by
   # default, otherwise untested in this workflow):
@@ -455,7 +482,7 @@ jobs:
       - name: clang-format dry-run (blocking — 0 violations expected)
         run: |
           echo "=== clang-format dry-run ==="
-          FILES=$(find src include tests examples \
+          FILES=$(find src include tests examples python \
             \( -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
             -not -path '*/make/*' -not -path '*/build/*' -not -path '*/vcpkg*' -not -path '*/vendor/*')
           FAIL=0
@@ -468,7 +495,7 @@ jobs:
           if [ "$FAIL" -eq 0 ]; then
             echo "All files conform to .clang-format"
           else
-            echo "Run: find src include tests examples \\( -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \\) -not -path '*/vendor/*' | xargs clang-format -i"
+            echo "Run: find src include tests examples python \\( -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \\) -not -path '*/vendor/*' | xargs clang-format -i"
             exit 1
           fi
 
