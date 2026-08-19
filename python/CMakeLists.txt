@@ -12,7 +12,12 @@ halfmesh_set_warnings(_halfmesh)
 # other extension modules in the same process that bundle the same libraries.
 # --exclude-libs,ALL keeps those symbols hidden while leaving halfmesh's own
 # PyInit__halfmesh entry point (and pybind11's required exports) visible.
-target_link_options(_halfmesh PRIVATE "LINKER:--exclude-libs,ALL")
+# GNU/ELF-linker specific (ld64 and MSVC link don't know the flag), so guard
+# it: on macOS/Windows pybind11_add_module's default-hidden visibility is the
+# (weaker) fallback — those platforms have no wheel/CI coverage today anyway.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+	target_link_options(_halfmesh PRIVATE "LINKER:--exclude-libs,ALL")
+endif()
 
 # COMPONENT python: pyproject.toml installs only this component into the wheel,
 # so the static lib / headers / CMake config never leak into site-packages.
