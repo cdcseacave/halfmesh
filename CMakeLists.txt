@@ -13,6 +13,7 @@ endif()
 # set before the toolchain consumes them during the project() call).
 option(HALFMESH_BUILD_TESTS "Build unit tests" OFF)
 option(HALFMESH_BUILD_TOOLS "Build example CLIs" OFF)
+option(HALFMESH_BUILD_PYTHON "Build the Python bindings module (pybind11)" OFF)
 
 # Performance regression harness (docs/TESTING.md §7 perf).
 # OFF by default — excluded from the fast ctest run.
@@ -44,6 +45,18 @@ if(HALFMESH_BUILD_TESTS OR HALFMESH_BUILD_PERF)
 endif()
 if(HALFMESH_BUILD_TOOLS)
 	list(APPEND VCPKG_MANIFEST_FEATURES "tools")
+endif()
+if(HALFMESH_BUILD_PYTHON)
+	list(APPEND VCPKG_MANIFEST_FEATURES "python")
+	# The extension is a shared module, so every static archive linked into it
+	# (halfmesh itself and the vcpkg deps: opencv, tinyply, libjpeg, libpng, zlib)
+	# must be PIC. The overlay triplet builds the vcpkg side with
+	# -DCMAKE_POSITION_INDEPENDENT_CODE=ON; the halfmesh target is handled below.
+	if(NOT DEFINED VCPKG_TARGET_TRIPLET AND NOT DEFINED ENV{VCPKG_DEFAULT_TRIPLET}
+	   AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+		set(VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/triplets" CACHE STRING "")
+		set(VCPKG_TARGET_TRIPLET "x64-linux-pic" CACHE STRING "")
+	endif()
 endif()
 if(HALFMESH_BUILD_CROSSCHECKS)
 	list(APPEND VCPKG_MANIFEST_FEATURES "crosschecks")
@@ -252,6 +265,14 @@ if(HALFMESH_NATIVE OR HALFMESH_ARCH)
         target_compile_options(halfmesh PUBLIC ${_hm_arch_flag})
         message(STATUS "halfmesh: SIMD arch enabled (${_hm_arch_flag})")
     endif()
+endif()
+
+# -----------------------------------------------------------------------
+# Python bindings (pybind11 module halfmesh._halfmesh)
+# -----------------------------------------------------------------------
+if(HALFMESH_BUILD_PYTHON)
+	set_property(TARGET halfmesh PROPERTY POSITION_INDEPENDENT_CODE ON)
+	add_subdirectory(python)
 endif()
 
 # -----------------------------------------------------------------------

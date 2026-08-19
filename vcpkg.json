@@ -26,6 +26,10 @@
     "bench": {
       "description": "Heavier benchmark baselines (CGAL segmentation/param; SuiteSparse for the geometry-central/BFF solver)",
       "dependencies": ["cgal", "suitesparse"]
+    },
+    "python": {
+      "description": "Build the Python bindings module",
+      "dependencies": ["pybind11"]
     }
   }
 }
