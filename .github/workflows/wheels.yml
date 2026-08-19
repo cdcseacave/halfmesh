@@ -9,6 +9,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-wheels:
     name: manylinux_2_28 x86_64 wheels
