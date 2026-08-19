@@ -67,16 +67,29 @@ inline void ConvertMesh(const MVS::Mesh& src, halfmesh::Mesh& dst)
 	// Per-vertex colors: both sides are 3x uint8 with blue in the first byte under
 	// the default openMVS build; copy by channel name so a _COLORMODE_RGB build of
 	// openMVS still maps each channel to halfmesh's fixed BGR element order.
-	dst.vertexColors.resize(src.vertexColors.size());
-	for (size_t i = 0; i < src.vertexColors.size(); ++i) {
-		const MVS::Mesh::Color& c = src.vertexColors[(MVS::Mesh::VIndex)i];
-		dst.vertexColors[i] = halfmesh::Mesh::Pixel(c.b, c.g, c.r);
+	// halfmesh's contract for optional per-element arrays is "empty or exactly
+	// sized" (its swap-pop removal paths index them whenever non-empty, and
+	// Mesh::Load clears mismatched arrays -- see src/MeshIO.cpp); only transfer a
+	// partially-populated source array when it is full-length, otherwise leave
+	// the destination empty (it already is, from the reset above).
+	if (src.vertexColors.size() == src.vertices.size()) {
+		dst.vertexColors.resize(src.vertexColors.size());
+		for (size_t i = 0; i < src.vertexColors.size(); ++i) {
+			const MVS::Mesh::Color& c = src.vertexColors[(MVS::Mesh::VIndex)i];
+			dst.vertexColors[i] = halfmesh::Mesh::Pixel(c.b, c.g, c.r);
+		}
 	}
 
-	dst.faceNormals.resize(src.faceNormals.size());
-	for (size_t i = 0; i < src.faceNormals.size(); ++i) {
-		const MVS::Mesh::Normal& n = src.faceNormals[(MVS::Mesh::FIndex)i];
-		dst.faceNormals[i] = halfmesh::Mesh::Normal(n.x, n.y, n.z);
+	// Face normals are transferred as-is (see the size guard above) and trusted
+	// as fresh by halfmesh, whose own freshness checks are size-only; if the
+	// source normals may be stale relative to its geometry, call
+	// ComputeFaceNormals() on the destination after conversion.
+	if (src.faceNormals.size() == src.faces.size()) {
+		dst.faceNormals.resize(src.faceNormals.size());
+		for (size_t i = 0; i < src.faceNormals.size(); ++i) {
+			const MVS::Mesh::Normal& n = src.faceNormals[(MVS::Mesh::FIndex)i];
+			dst.faceNormals[i] = halfmesh::Mesh::Normal(n.x, n.y, n.z);
+		}
 	}
 
 	// Texture coordinates: openMVS stores them per face-corner (3*faces) or per
@@ -118,19 +131,30 @@ inline void ConvertMesh(const halfmesh::Mesh& src, MVS::Mesh& dst)
 	}
 
 	// Per-vertex colors: assign by channel name (see the MVS -> halfmesh note).
-	dst.vertexColors.resize((MVS::Mesh::VIndex)src.vertexColors.size());
-	for (size_t i = 0; i < src.vertexColors.size(); ++i) {
-		const halfmesh::Mesh::Pixel& p = src.vertexColors[i];
-		MVS::Mesh::Color& c = dst.vertexColors[(MVS::Mesh::VIndex)i];
-		c.b = p[0];
-		c.g = p[1];
-		c.r = p[2];
+	// Only transfer when full-length -- see the size-invariant note above; a
+	// partially-populated source array leaves the destination empty (it already
+	// is, from the Release() above).
+	if (src.vertexColors.size() == src.vertices.size()) {
+		dst.vertexColors.resize((MVS::Mesh::VIndex)src.vertexColors.size());
+		for (size_t i = 0; i < src.vertexColors.size(); ++i) {
+			const halfmesh::Mesh::Pixel& p = src.vertexColors[i];
+			MVS::Mesh::Color& c = dst.vertexColors[(MVS::Mesh::VIndex)i];
+			c.b = p[0];
+			c.g = p[1];
+			c.r = p[2];
+		}
 	}
 
-	dst.faceNormals.resize((MVS::Mesh::FIndex)src.faceNormals.size());
-	for (size_t i = 0; i < src.faceNormals.size(); ++i) {
-		const halfmesh::Mesh::Normal& n = src.faceNormals[i];
-		dst.faceNormals[(MVS::Mesh::FIndex)i] = MVS::Mesh::Normal(n[0], n[1], n[2]);
+	// Face normals are transferred as-is (see the size guard above) and trusted
+	// as fresh by halfmesh, whose own freshness checks are size-only; if the
+	// source normals may be stale relative to its geometry, call
+	// ComputeFaceNormals() on the destination after conversion.
+	if (src.faceNormals.size() == src.faces.size()) {
+		dst.faceNormals.resize((MVS::Mesh::FIndex)src.faceNormals.size());
+		for (size_t i = 0; i < src.faceNormals.size(); ++i) {
+			const halfmesh::Mesh::Normal& n = src.faceNormals[i];
+			dst.faceNormals[(MVS::Mesh::FIndex)i] = MVS::Mesh::Normal(n[0], n[1], n[2]);
+		}
 	}
 
 	dst.faceTexcoords.resize((MVS::Mesh::FIndex)src.faceTexcoords.size());
