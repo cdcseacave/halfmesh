@@ -52,6 +52,9 @@ if(HALFMESH_BUILD_PYTHON)
 	# (halfmesh itself and the vcpkg deps: opencv, tinyply, libjpeg, libpng, zlib)
 	# must be PIC. The overlay triplet builds the vcpkg side with
 	# -DCMAKE_POSITION_INDEPENDENT_CODE=ON; the halfmesh target is handled below.
+	# Note: the triplet is CACHEd, so toggling HALFMESH_BUILD_PYTHON back OFF in
+	# a reused build directory keeps building deps as x64-linux-pic (harmless —
+	# only adds -fPIC — but use a fresh build dir to return to plain x64-linux).
 	if(NOT DEFINED VCPKG_TARGET_TRIPLET AND NOT DEFINED ENV{VCPKG_DEFAULT_TRIPLET}
 	   AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
 		set(VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/triplets" CACHE STRING "")
@@ -79,6 +82,17 @@ endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
 project(halfmesh VERSION 0.2.0 LANGUAGES CXX)
+
+# vcpkg.json cannot read the version above, so it carries a manual copy —
+# fail the configure the moment the two drift apart (a version bump must
+# touch both files; the Python package version is regex-extracted from the
+# project() line by scikit-build-core, so it needs no check).
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json" _halfmesh_vcpkg_json)
+string(REGEX MATCH "\"version\"[ \t]*:[ \t]*\"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _ "${_halfmesh_vcpkg_json}")
+if(NOT CMAKE_MATCH_1 STREQUAL PROJECT_VERSION)
+	message(FATAL_ERROR "vcpkg.json version (${CMAKE_MATCH_1}) does not match project() version (${PROJECT_VERSION}) — update vcpkg.json")
+endif()
+unset(_halfmesh_vcpkg_json)
 
 # AddressSanitizer + UndefinedBehaviorSanitizer build (docs/TESTING.md §7).
 # Declared after project() because it controls compiler flags (not vcpkg manifest

@@ -65,4 +65,5 @@ __pycache__/
 _skbuild/
 .pytest_cache/
 dist/
+wheelhouse/
 *.whl

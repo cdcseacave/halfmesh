@@ -61,6 +61,21 @@ def test_ops_accept_castable_dtypes():
     assert rv.dtype == np.float32 and rf.dtype == np.uint32
 
 
+def test_repair_drops_duplicate_faces():
+    v, f = _cube_mesh()
+    f2 = np.concatenate([f, f[:1]])  # one exact duplicate face
+    rv, rf = hm.repair(v, f2)
+    assert rf.shape == (12, 3)  # one copy survives (geometry-preserving)
+
+
+def test_ops_accept_empty_mesh():
+    v = np.empty((0, 3), dtype=np.float32)
+    f = np.empty((0, 3), dtype=np.uint32)
+    rv, rf = hm.repair(v, f)
+    assert rv.shape == (0, 3) and rf.shape == (0, 3)
+    assert rv.dtype == np.float32 and rf.dtype == np.uint32
+
+
 def test_repair_rejects_out_of_range_face_index():
     v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
     f = np.array([[0, 1, 100]], dtype=np.uint32)
@@ -87,6 +102,12 @@ def test_smooth_rejects_unknown_method():
     v, f = _grid_mesh(n=8)
     with pytest.raises(ValueError):
         hm.smooth(v, f, 5, "banana")
+
+
+def test_smooth_rejects_nonpositive_iterations():
+    v, f = _grid_mesh(n=8)
+    with pytest.raises(ValueError):
+        hm.smooth(v, f, 0, "taubin")
 
 
 def test_simplify_hits_a_ratio_target():

@@ -10,18 +10,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-wheels:
     name: manylinux_2_28 x86_64 wheels
     runs-on: ubuntu-24.04
     timeout-minutes: 180   # cold vcpkg build of opencv dominates
+    permissions:
+      contents: write   # gh release create/upload below
     steps:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.21.3
+        uses: pypa/cibuildwheel@7940a4c0e76eb2030e473a5f864f291f63ee879b   # v2.21.3
 
       - uses: actions/upload-artifact@v4
         with:

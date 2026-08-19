@@ -32,6 +32,15 @@ namespace {
 using VertArray = py::array_t<float, py::array::c_style | py::array::forcecast>;
 using FaceArray = py::array_t<uint32_t, py::array::c_style | py::array::forcecast>;
 
+// The memcpy bulk copies below require the element types to be padding-free
+// scalar triples. Size-only, like the asserts guarding the same copies in
+// src/MeshIO.cpp: Eigen's fixed-size matrices fail is_trivially_copyable
+// (user-provided copy-assignment) even though their storage is a plain array.
+static_assert(sizeof(Mesh::Vertex) == 3 * sizeof(float),
+              "Mesh::Vertex must be memcpy-compatible with float[3]");
+static_assert(sizeof(Mesh::Face) == 3 * sizeof(uint32_t),
+              "Mesh::Face must be memcpy-compatible with uint32_t[3]");
+
 Mesh MeshFromArrays(const VertArray& v, const FaceArray& f)
 {
 	if (v.ndim() != 2 || v.shape(1) != 3)
@@ -48,21 +57,26 @@ Mesh MeshFromArrays(const VertArray& v, const FaceArray& f)
 			throw py::value_error("face index " + std::to_string(faceData[i]) + " is out of range for " + std::to_string(numVertices) + " vertices");
 	}
 	Mesh m;
-	// Mesh::Vertex / Mesh::Face are static_asserted memcpy-compatible
-	// (src/MeshIO.cpp), so bulk-copy the buffers.
+	// Bulk-copy the buffers (memcpy compatibility static_asserted above). The
+	// empty guards matter: a zero-size numpy array may hand out a null data
+	// pointer, and memcpy(dst, nullptr, 0) is undefined behavior.
 	m.vertices.resize(static_cast<size_t>(v.shape(0)));
-	std::memcpy(m.vertices.data(), v.data(), sizeof(float) * 3 * m.vertices.size());
+	if (!m.vertices.empty())
+		std::memcpy(m.vertices.data(), v.data(), sizeof(float) * 3 * m.vertices.size());
 	m.faces.resize(static_cast<size_t>(f.shape(0)));
-	std::memcpy(m.faces.data(), f.data(), sizeof(uint32_t) * 3 * m.faces.size());
+	if (!m.faces.empty())
+		std::memcpy(m.faces.data(), f.data(), sizeof(uint32_t) * 3 * m.faces.size());
 	return m;
 }
 
 py::tuple ArraysFromMesh(const Mesh& m)
 {
 	py::array_t<float> v({static_cast<py::ssize_t>(m.vertices.size()), py::ssize_t(3)});
-	std::memcpy(v.mutable_data(), m.vertices.data(), sizeof(float) * 3 * m.vertices.size());
+	if (!m.vertices.empty())
+		std::memcpy(v.mutable_data(), m.vertices.data(), sizeof(float) * 3 * m.vertices.size());
 	py::array_t<uint32_t> f({static_cast<py::ssize_t>(m.faces.size()), py::ssize_t(3)});
-	std::memcpy(f.mutable_data(), m.faces.data(), sizeof(uint32_t) * 3 * m.faces.size());
+	if (!m.faces.empty())
+		std::memcpy(f.mutable_data(), m.faces.data(), sizeof(uint32_t) * 3 * m.faces.size());
 	return py::make_tuple(std::move(v), std::move(f));
 }
 
@@ -71,7 +85,12 @@ py::tuple ArraysFromMesh(const Mesh& m)
 // non-mutating.
 void RepairInPlace(Mesh& m)
 {
+	// Same sequence and rationale as Mesh::ListHalfEdgesSafe (src/MeshRepair.cpp):
+	// removeBothFaces=false keeps one copy of each duplicated face (the default
+	// deletes both, removing valid surface), and thArea=0 drops only faces with a
+	// repeated vertex index — auto-repair must be geometry-preserving.
 	m.RemoveDuplicateVertices(0);
+	m.RemoveDuplicateFaces(false);
 	m.RemoveDegenerateFaces(0.f);
 	m.RemoveUnreferencedVertices();
 	m.FixNonManifold();
@@ -91,11 +110,13 @@ PYBIND11_MODULE(_halfmesh, m)
 			py::gil_scoped_release release;
 			RepairInPlace(mesh);
 		}
-		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), "Weld duplicates, drop degenerate faces and unreferenced vertices, fix non-manifold topology.");
+		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), "Weld duplicate vertices, drop duplicate/degenerate faces and unreferenced vertices, fix non-manifold topology.");
 
 	m.def("smooth", [](const VertArray& v, const FaceArray& f, int iterations, const std::string& method) {
 		if (method != "taubin" && method != "hc")
 			throw py::value_error("smooth method must be 'taubin' or 'hc', got '" + method + "'");
+		if (iterations <= 0)
+			throw py::value_error("smooth iterations must be > 0");
 		Mesh mesh = MeshFromArrays(v, f);
 		{
 			py::gil_scoped_release release;

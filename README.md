@@ -177,6 +177,9 @@ and UV-atlas `unwrap`, all numpy in/out:
 pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.2.0/halfmesh-0.2.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
+(replace `cp312-cp312` with your interpreter's tag — wheels are published for
+`cp310` through `cp313`)
+
 ```python
 import halfmesh as hm
 

@@ -33,8 +33,11 @@ This drives the same root `CMakeLists.txt` via `scikit-build-core`, with
 
 - **Cold build time**: vcpkg has to compile Eigen, OpenCV, tinyply, tinygltf
   and pybind11 from source on the first invocation — expect on the order of
-  30–45 minutes uncached (the same cost the `wheels.yml` CI job pays). Once
-  vcpkg's binary cache is warm, a rebuild is a normal incremental C++ build.
+  30–45 minutes uncached (the same cost the `wheels.yml` CI job pays). After
+  that, vcpkg's binary cache makes dependency setup near-instant, and because
+  `pyproject.toml` sets a persistent `build-dir` (`build/{wheel_tag}`),
+  repeat `pip install .` runs are true incremental C++ rebuilds rather than
+  full recompiles.
 - **Triplet auto-selection**: on Linux, when you have not already set
   `VCPKG_TARGET_TRIPLET` (env or CMake cache) — and have not set
   `VCPKG_DEFAULT_TRIPLET` either, which also suppresses the auto-selection —
@@ -71,12 +74,12 @@ The halfmesh library version string (`"0.2.0"`), single-sourced from
 
 ### `repair(vertices, faces) -> (v, f)`
 
-Weld exact-duplicate vertices, drop degenerate faces, drop vertices left
-unreferenced by that, then fix non-manifold topology. This is the
-recommended pre-pass before any other operation — the same sequence
-`examples/*.cpp` runs before `Simplify`/`RemeshIsotropic`/etc., since it
-dissolves the phantom topology that blocks edge collapses and makes later
-half-edge builds non-mutating.
+Weld exact-duplicate vertices, drop duplicate faces (keeping one copy) and
+degenerate faces, drop vertices left unreferenced by that, then fix
+non-manifold topology. This is the recommended pre-pass before any other
+operation — the same sequence the library's own auto-repair
+(`ListHalfEdgesSafe`) runs, since it dissolves the phantom topology that
+blocks edge collapses and makes later half-edge builds non-mutating.
 
 ### `smooth(vertices, faces, iterations, method) -> (v, f)`
 
@@ -96,6 +99,7 @@ other value raises `ValueError`.
 
 `iterations` is an integer pass count; more iterations means more
 smoothing/less noise at the cost of more (recoverable) surface flattening.
+`iterations <= 0` raises `ValueError`.
 
 ### `simplify(vertices, faces, target, aggressiveness=0.0) -> (v, f)`
 

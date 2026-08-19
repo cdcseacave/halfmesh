@@ -1,5 +1,6 @@
 [build-system]
-requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+# >=0.11 for PEP 639 license metadata (SPDX string + license-files below)
+requires = ["scikit-build-core>=0.11", "pybind11>=2.12"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -7,7 +8,8 @@ name = "halfmesh"
 dynamic = ["version"]
 description = "Fast, compact half-edge triangle mesh processing library"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "cDc", email = "cdc.seacave@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24"]
@@ -19,11 +21,15 @@ Homepage = "https://github.com/cdcseacave/halfmesh"
 test = ["pytest"]
 
 [tool.scikit-build]
-minimum-version = "0.10"
+minimum-version = "0.11"
 cmake.version = ">=3.21"
 cmake.args = ["-DHALFMESH_BUILD_PYTHON=ON"]
 wheel.packages = ["python/halfmesh"]
 install.components = ["python"]
+# Persistent build tree (default is a throwaway temp dir): repeat
+# `pip install .` runs become true incremental C++ rebuilds instead of a full
+# reconfigure + recompile. Lives under build/ (git-ignored).
+build-dir = "build/{wheel_tag}"
 
 # Version is single-sourced from project(halfmesh VERSION x.y.z) in CMakeLists.
 [tool.scikit-build.metadata.version]

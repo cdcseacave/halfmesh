@@ -12,9 +12,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   pybind11, `-DHALFMESH_BUILD_PYTHON=ON`): `repair`, `smooth`, `simplify`,
   `close_holes`, `remove_small_components`, `remesh` array ops (numpy
   float32/uint32 in, new arrays out; face indices validated before mesh
-  construction; GIL released around native work), a `Mesh` facade class for
-  file-based I/O, and file-based `unwrap` (UV-atlas generation). See
-  [docs/PYTHON.md](docs/PYTHON.md).
+  construction; GIL released around native work; `repair` runs the library's
+  full auto-repair sequence including duplicate-face removal), a `Mesh`
+  facade class for file-based I/O, and file-based `unwrap` (UV-atlas
+  generation). See [docs/PYTHON.md](docs/PYTHON.md).
 - Self-contained manylinux_2_28 wheels (CPython 3.10–3.13, x86_64) built by
   `cibuildwheel` and attached to GitHub Releases on `v*` tags.
 
