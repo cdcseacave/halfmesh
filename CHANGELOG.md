@@ -23,8 +23,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Atlas packing: two-tier pack pass (skyline head + shelf-row tail) removes the
   quadratic regime at 100k+ charts; fit-to-resolution shrink is now
   overflow-proportional (was a blind ×0.95 ladder) and `AtlasResult` reports
-  `fitAttempts`. Measured on a 1M-face MVS mesh (161k charts, padding 4,
-  4096²): 13,473 s → 172 s.
+  `fitAttempts`. Measured on a 1M-face MVS mesh (padding 4, 4096²):
+  13,473 s → 172 s, 161,627 → 133,665 charts.
 - Atlas segmentation: post-repair merge rounds
   (`ParametrizeParams::postRepairMergeRounds`, default 2) recombine
   flip-repair fragments — fewer charts, fewer seams, less padding waste.
