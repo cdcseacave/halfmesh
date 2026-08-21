@@ -231,8 +231,9 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["width"] = result.width;
 		meta["height"] = result.height;
 		meta["occupancy"] = result.occupancy;
+		meta["fit_attempts"] = result.fitAttempts;
 		meta["vertices"] = mesh.vertices.size();
 		meta["faces"] = mesh.faces.size();
 		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 4u, py::arg("allow_rotation") = true, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. "
-	                                                                                                                                                                                                                                                                                            "Returns {charts, pages, width, height, occupancy, vertices, faces}.");
+	                                                                                                                                                                                                                                                                                            "Returns {charts, pages, width, height, occupancy, fit_attempts, vertices, faces}.");
 }

@@ -83,10 +83,11 @@ def test_unwrap_generates_a_packed_atlas(tmp_path):
 
     out = str(tmp_path / "cube_uv.ply")
     meta = hm.unwrap(src, out, resolution=1024, padding=2)
-    assert set(meta) == {"charts", "pages", "width", "height", "occupancy", "vertices", "faces"}
+    assert set(meta) == {"charts", "pages", "width", "height", "occupancy", "fit_attempts", "vertices", "faces"}
     assert meta["charts"] >= 1
     assert meta["pages"] >= 1
     assert 0.0 < meta["occupancy"] <= 1.0
+    assert meta["fit_attempts"] >= 1
     assert meta["faces"] == 12
 
     unwrapped = hm.Mesh()
