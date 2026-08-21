@@ -1308,7 +1308,7 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 #ifdef HM_ATLAS_DEBUG
 			std::cerr << "[re-merge] round " << round << ": " << before << " -> " << numCharts << " charts\n";
 #endif
-			if (before - numCharts < before / 100)
+			if (static_cast<long>(before) - static_cast<long>(numCharts) < static_cast<long>(before / 100))
 				break; // <1% net change — not worth another round
 		}
 	}

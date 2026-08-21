@@ -476,7 +476,8 @@ TEST(PackAtlas, TwoTierManyTinyChartsDisjointAndDense)
 	Mesh mesh;
 	std::vector<unsigned> faceChart;
 	unsigned numCharts = 0;
-	BuildMixedCharts(mesh, faceChart, numCharts, 2000u, 4u, 1.f);
+	const unsigned nTiny = 2000u, nBig = 4u;
+	BuildMixedCharts(mesh, faceChart, numCharts, nTiny, nBig, 1.f);
 
 	AtlasParams params;
 	params.resolution = 1024;
@@ -500,6 +501,27 @@ TEST(PackAtlas, TwoTierManyTinyChartsDisjointAndDense)
 	const auto rects = ChartBBoxes(mesh, faceChart, numCharts, res.chartPage, res.width, res.height);
 	EXPECT_TRUE(BoundingRectsDisjoint(rects, numCharts)) << "two charts overlap in the atlas";
 	EXPECT_GT(res.occupancy, 0.4f) << "shelf tier wastes too much: " << res.occupancy;
+
+	// Fixture-validity tripwire: BRect's size survives packing unchanged (PackRects
+	// places each chart at its own unpadded {cr.w, cr.h} — see AtlasPacking.cpp step 5 —
+	// rotation only swaps which axis holds w vs h), so max(rect width, rect height) + 2*pad
+	// reproduces exactly the padded long side AtlasPacking.cpp's `tierThreshold` tests.
+	// Nothing else here proves the 2000 tiny charts actually took the shelf path instead of
+	// the skyline (head) tier; density-normalization drift could silently push them all
+	// above threshold and this test would keep passing without ever exercising the shelf
+	// tier it exists to cover.
+	const auto paddedLongSide = [&](const BRect& r) {
+		return std::max(r.x1 - r.x0, r.y1 - r.y0) + 2.f * static_cast<float>(params.padding);
+	};
+	const float tierThreshold = static_cast<float>(res.width) / 32.f;
+	unsigned belowThreshold = 0;
+	for (unsigned c = nBig; c < numCharts; ++c)
+		if (paddedLongSide(rects[c]) < tierThreshold)
+			++belowThreshold;
+	EXPECT_GT(belowThreshold, static_cast<unsigned>(0.9f * static_cast<float>(nTiny)))
+	    << "fixture did not exercise the shelf tier: only " << belowThreshold << "/" << nTiny
+	    << " tiny charts fell below the pageW/32 tier threshold (" << tierThreshold
+	    << " texels, pageW=" << res.width << ")";
 
 	std::printf("[PackAtlas] TwoTier: pages=%u occupancy=%.3f dims=%ux%u\n",
 	            res.numPages, res.occupancy, res.width, res.height);
