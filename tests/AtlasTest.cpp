@@ -418,6 +418,136 @@ static void BuildSyntheticCharts(Mesh& mesh,
 	}
 }
 
+// Build `n` UNIFORM tiny square charts (side `side` world units) plus `nBig`
+// large ones (side 40·side). Mimics the production regime: a huge tail of
+// near-identical tiny charts and a small head of large ones.
+static void BuildMixedCharts(Mesh& mesh,
+                             std::vector<unsigned>& faceChart,
+                             unsigned& numCharts,
+                             unsigned n, unsigned nBig, float side)
+{
+	numCharts = n + nBig;
+	faceChart.clear();
+	mesh.vertices.clear();
+	mesh.faces.clear();
+	mesh.faceTexcoords.clear();
+	float offset = 0.f;
+	for (unsigned c = 0; c < numCharts; ++c) {
+		const float s = (c < nBig) ? 40.f * side : side;
+		const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+		mesh.vertices.push_back({offset, 0.f, 0.f});
+		mesh.vertices.push_back({offset + s, 0.f, 0.f});
+		mesh.vertices.push_back({offset + s, s, 0.f});
+		mesh.vertices.push_back({offset, s, 0.f});
+		mesh.faces.push_back({base + 0, base + 1, base + 2});
+		mesh.faces.push_back({base + 0, base + 2, base + 3});
+		faceChart.push_back(c);
+		faceChart.push_back(c);
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({1.f, 0.f});
+		mesh.faceTexcoords.push_back({1.f, 1.f});
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({1.f, 1.f});
+		mesh.faceTexcoords.push_back({0.f, 1.f});
+		offset += s + 2.f;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Two-tier packing: a production-shaped input (2000 tiny + 4 large charts)
+// must place every chart overlap-free at sane occupancy — and fast (the old
+// full-scan skyline is quadratic in chart count; the shelf tier is what makes
+// this test complete in milliseconds instead of seconds).
+// ---------------------------------------------------------------------------
+TEST(PackAtlas, TwoTierManyTinyChartsDisjointAndDense)
+{
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	unsigned numCharts = 0;
+	BuildMixedCharts(mesh, faceChart, numCharts, 2000u, 4u, 1.f);
+
+	AtlasParams params;
+	params.resolution = 1024;
+	params.padding = 2;
+	params.allowRotation = true;
+
+	NormalizeChartDensity(mesh, faceChart, numCharts, params);
+	const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
+
+	ASSERT_EQ(res.chartPage.size(), numCharts);
+	for (unsigned c = 0; c < numCharts; ++c)
+		EXPECT_LT(res.chartPage[c], res.numPages);
+	for (const Mesh::TexCoord& uv : mesh.faceTexcoords) {
+		ASSERT_TRUE(std::isfinite(uv.x()));
+		ASSERT_TRUE(std::isfinite(uv.y()));
+		EXPECT_GE(uv.x(), 0.f - 1e-4f);
+		EXPECT_LE(uv.x(), 1.f + 1e-4f);
+		EXPECT_GE(uv.y(), 0.f - 1e-4f);
+		EXPECT_LE(uv.y(), 1.f + 1e-4f);
+	}
+	const auto rects = ChartBBoxes(mesh, faceChart, numCharts, res.chartPage, res.width, res.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, numCharts)) << "two charts overlap in the atlas";
+	EXPECT_GT(res.occupancy, 0.4f) << "shelf tier wastes too much: " << res.occupancy;
+
+	std::printf("[PackAtlas] TwoTier: pages=%u occupancy=%.3f dims=%ux%u\n",
+	            res.numPages, res.occupancy, res.width, res.height);
+}
+
+// ---------------------------------------------------------------------------
+// Shelf-tier rotation: tall skinny tiny charts must be laid down (rotated) in
+// shelves without breaking the winding-preserving 90° UV-rewrite convention —
+// disjointness + in-bounds UVs + positive UV area per face prove it.
+// ---------------------------------------------------------------------------
+TEST(PackAtlas, TwoTierShelfRotationKeepsWindingAndBounds)
+{
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	mesh.vertices.clear();
+	// 4 big charts absorb the auto density so the 500 skinny ones land UNDER
+	// the pageW/32 tier threshold (in the shelf tier) — without them the
+	// skinny charts normalize to ~60 texels tall and take the skyline path.
+	const unsigned nBig = 4u, n = nBig + 500u;
+	float off = 0.f;
+	for (unsigned c = 0; c < n; ++c) {
+		const float w = (c < nBig) ? 200.f : 1.f;
+		const float h = (c < nBig) ? 200.f : 6.f; // tall & skinny → shelf tier wants them rotated
+		const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+		mesh.vertices.push_back({off, 0.f, 0.f});
+		mesh.vertices.push_back({off + w, 0.f, 0.f});
+		mesh.vertices.push_back({off + w, h, 0.f});
+		mesh.vertices.push_back({off, h, 0.f});
+		mesh.faces.push_back({base + 0, base + 1, base + 2});
+		mesh.faces.push_back({base + 0, base + 2, base + 3});
+		faceChart.push_back(c);
+		faceChart.push_back(c);
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({w, 0.f});
+		mesh.faceTexcoords.push_back({w, h});
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({w, h});
+		mesh.faceTexcoords.push_back({0.f, h});
+		off += 210.f;
+	}
+	AtlasParams params;
+	params.resolution = 512;
+	params.padding = 2;
+	params.allowRotation = true;
+
+	NormalizeChartDensity(mesh, faceChart, n, params);
+	const AtlasResult res = PackAtlas(mesh, faceChart, n, params);
+
+	const auto rects = ChartBBoxes(mesh, faceChart, n, res.chartPage, res.width, res.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, n));
+	// Winding preserved: every face keeps POSITIVE signed UV area (a mirrored
+	// placement would flip the sign).
+	for (std::size_t f = 0; f < mesh.faces.size(); ++f) {
+		const float a2 = SignedDoubleArea2D(mesh.faceTexcoords[f * 3 + 0],
+		                                    mesh.faceTexcoords[f * 3 + 1],
+		                                    mesh.faceTexcoords[f * 3 + 2]);
+		EXPECT_GT(a2, 0.f) << "face " << f << " mirrored by shelf rotation";
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test 5 — BoundingRectsDisjoint + AllPlaced: basic packing of synthetic charts.
 // ---------------------------------------------------------------------------
