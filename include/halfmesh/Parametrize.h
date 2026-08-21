@@ -110,6 +110,16 @@ struct ParametrizeParams
 	// (annulus/handle charts, accumulated sub-threshold curvature). Default 16.
 	unsigned developableFlipRepairRounds = 16;
 
+	// Post-repair merge↔repair rounds. Flip repair bisects folding charts but
+	// nothing recombined the fragments afterward — on noisy MVS meshes that
+	// leaves ~6-face charts (seam + padding blowup, quadratic packing input).
+	// Each round re-runs DevelopableMerge over the post-repair partition (same
+	// cone-error + vertex-defect gates) and then one flip-repair wave over the
+	// merged charts only, so a merge that re-folds is split right back (never
+	// a regression). Stops early when a round changes <1% of charts.
+	// 0 restores the pre-2026-08 behavior.
+	unsigned postRepairMergeRounds = 2;
+
 	// Distortion-bounded split (0 disables — the default; flip-only repair, the
 	// current SOTA behavior). When > 0 it is a symmetric-Dirichlet cap τ that
 	// EXTENDS the flip-repair: a chart that is flip-FREE but whose SHIPPED map

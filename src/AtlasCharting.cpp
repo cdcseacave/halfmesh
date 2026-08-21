@@ -1113,7 +1113,8 @@ void BisectFaces(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
 
 unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params,
                                 std::vector<unsigned>& chart, unsigned numCharts,
-                                detail::ChartFlattenCache* cache)
+                                detail::ChartFlattenCache* cache,
+                                const std::vector<unsigned>* frontierIn = nullptr)
 {
 	const Mesh& mesh = s.mesh;
 
@@ -1129,7 +1130,14 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 	// the predicate's guard) without re-flattening the unchanged charts, so cost is
 	// ~O(F·log) rather than rounds×all-charts. Components are kept sorted by global id
 	// so the verdict matches what ParametrizeCharts (ExtractCharts, global order) ships.
-	numCharts = EnforceConnectivity(s, chart);
+	//
+	// frontierIn restricts repair to the listed chart ids (precondition: the
+	// caller guarantees `chart` is compact and per-chart connected — true after
+	// DevelopableMerge, which only unions TopoNeighbor-adjacent charts and ends
+	// with Compact). Skipping EnforceConnectivity keeps those ids stable so the
+	// restriction is meaningful.
+	if (frontierIn == nullptr)
+		numCharts = EnforceConnectivity(s, chart);
 	std::vector<std::vector<Mesh::FIndex>> fl(numCharts);
 	for (Mesh::FIndex f = 0; f < s.numFaces; ++f)
 		fl[chart[f]].push_back(f);
@@ -1147,8 +1155,13 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 	std::vector<char> mark(s.numFaces, 0);
 	const unsigned cap = 4u * static_cast<unsigned>(s.numFaces); // runaway backstop
 	std::size_t splits = 0;
-	std::vector<unsigned> frontier(numCharts);
-	std::iota(frontier.begin(), frontier.end(), 0u);
+	std::vector<unsigned> frontier;
+	if (frontierIn != nullptr)
+		frontier = *frontierIn;
+	else {
+		frontier.resize(numCharts);
+		std::iota(frontier.begin(), frontier.end(), 0u);
+	}
 	BS::light_thread_pool pool;
 	bool capped = false;
 	while (!frontier.empty() && !capped) {
@@ -1263,8 +1276,42 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 	numCharts = DevelopableMerge(s, params, chart, numCharts,
 	                             static_cast<double>(params.developableMaxConeError));
 	numCharts = EnforceConnectivity(s, chart);
-	if (params.developableFlipRepairRounds > 0)
+	if (params.developableFlipRepairRounds > 0) {
 		numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache);
+		// Post-repair re-merge: recombine the bisection fragments the repair
+		// left behind (nothing else ever merges again), then repair ONLY the
+		// merged charts — a merge that re-folds is split right back, so the
+		// fold-free guarantee is preserved and a round can never regress.
+		for (unsigned round = 0; round < params.postRepairMergeRounds; ++round) {
+			const unsigned before = numCharts;
+			std::vector<unsigned> pre(chart);
+			numCharts = DevelopableMerge(s, params, chart, numCharts,
+			                             static_cast<double>(params.developableMaxConeError));
+			// Charts containing faces from ≥2 pre-merge charts are the merged
+			// ("dirty") ones — the only ones whose fold verdict changed.
+			std::vector<unsigned> firstPre(numCharts, NONE);
+			std::vector<char> dirtyFlag(numCharts, 0);
+			for (FIndex f = 0; f < s.numFaces; ++f) {
+				const unsigned c = chart[f];
+				if (firstPre[c] == NONE)
+					firstPre[c] = pre[f];
+				else if (firstPre[c] != pre[f])
+					dirtyFlag[c] = 1;
+			}
+			std::vector<unsigned> dirty;
+			for (unsigned c = 0; c < numCharts; ++c)
+				if (dirtyFlag[c])
+					dirty.push_back(c);
+			if (dirty.empty())
+				break; // nothing merged — converged
+			numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, &dirty);
+#ifdef HM_ATLAS_DEBUG
+			std::cerr << "[re-merge] round " << round << ": " << before << " -> " << numCharts << " charts\n";
+#endif
+			if (before - numCharts < before / 100)
+				break; // <1% net change — not worth another round
+		}
+	}
 
 	faceChart.assign(chart.begin(), chart.end());
 	return numCharts;

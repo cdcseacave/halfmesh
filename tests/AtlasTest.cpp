@@ -28,8 +28,17 @@
 #include <cmath>
 #include <filesystem>
 #include <numeric>
+#include <random>
 #include <string>
 #include <vector>
+
+namespace halfmesh {
+namespace detail {
+// Test seam: 3-arg fold verdict (defined in src/Parametrize.cpp).
+bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
+                    const ParametrizeParams& params);
+} // namespace detail
+} // namespace halfmesh
 
 namespace halfmesh {
 namespace {
@@ -1296,6 +1305,71 @@ TEST(PackAtlas, FitToResolutionHonorsPageDimensions)
 	EXPECT_EQ(res.numPages, 1u);
 	EXPECT_LE(res.width, params.resolution);
 	EXPECT_LE(res.height, params.resolution);
+}
+
+// Deterministic "staircase terrain": an n×n grid whose vertex heights are
+// quantized random levels — many high-angle-defect vertices, like a
+// tetra-extracted MVS surface. Cone-Lloyd fragments it, flip repair splits
+// further; the post-repair merge must claw a meaningful share back.
+static void BuildStaircaseTerrain(Mesh& mesh, unsigned n, float step)
+{
+	std::mt19937 rng(42u);
+	std::uniform_int_distribution<int> lvl(0, 4);
+	std::vector<float> h((n + 1) * (n + 1));
+	for (float& z : h)
+		z = step * static_cast<float>(lvl(rng));
+	for (unsigned y = 0; y <= n; ++y)
+		for (unsigned x = 0; x <= n; ++x)
+			mesh.vertices.push_back({static_cast<float>(x), static_cast<float>(y), h[y * (n + 1) + x]});
+	for (unsigned y = 0; y < n; ++y)
+		for (unsigned x = 0; x < n; ++x) {
+			const unsigned a = y * (n + 1) + x, b = a + 1, c = a + (n + 1), d = c + 1;
+			mesh.faces.push_back({a, b, d});
+			mesh.faces.push_back({a, d, c});
+		}
+}
+
+TEST(SegmentCharts, PostRepairMergeReducesChartsFoldFree)
+{
+	Mesh base;
+	BuildStaircaseTerrain(base, 48u, 0.75f);
+
+	ParametrizeParams p0;
+	p0.postRepairMergeRounds = 0;
+	Mesh m0 = base;
+	std::vector<unsigned> chart0;
+	const unsigned n0 = SegmentCharts(m0, p0, chart0);
+
+	ParametrizeParams p2;
+	p2.postRepairMergeRounds = 2;
+	Mesh m2 = base;
+	std::vector<unsigned> chart2;
+	const unsigned n2 = SegmentCharts(m2, p2, chart2);
+
+	std::printf("[SegmentCharts] PostRepairMerge: %u -> %u charts\n", n0, n2);
+	// Precondition: the fixture actually fragments (otherwise the test is vacuous).
+	ASSERT_GT(n0, 50u) << "fixture did not fragment — increase `step` or grid size";
+	EXPECT_LT(n2, n0) << "re-merge recombined nothing";
+
+	// Every face charted, ids compact.
+	ASSERT_EQ(chart2.size(), m2.faces.size());
+	std::vector<char> seen(n2, 0);
+	for (unsigned c : chart2) {
+		ASSERT_LT(c, n2);
+		seen[c] = 1;
+	}
+	for (unsigned c = 0; c < n2; ++c)
+		EXPECT_TRUE(seen[c]) << "chart id " << c << " is empty";
+
+	// Fold-free guarantee survives the merge: no >2-face chart folds.
+	std::vector<std::vector<Mesh::FIndex>> fl(n2);
+	for (Mesh::FIndex f = 0; f < static_cast<Mesh::FIndex>(m2.faces.size()); ++f)
+		fl[chart2[f]].push_back(f);
+	for (unsigned c = 0; c < n2; ++c) {
+		if (fl[c].size() <= 2)
+			continue;
+		EXPECT_FALSE(detail::ChartFacesFold(m2, fl[c], p2)) << "chart " << c << " folds after re-merge";
+	}
 }
 
 } // namespace
