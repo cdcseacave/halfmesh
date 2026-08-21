@@ -28,8 +28,17 @@
 #include <cmath>
 #include <filesystem>
 #include <numeric>
+#include <random>
 #include <string>
 #include <vector>
+
+namespace halfmesh {
+namespace detail {
+// Test seam: 3-arg fold verdict (defined in src/Parametrize.cpp).
+bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
+                    const ParametrizeParams& params);
+} // namespace detail
+} // namespace halfmesh
 
 namespace halfmesh {
 namespace {
@@ -415,6 +424,161 @@ static void BuildSyntheticCharts(Mesh& mesh,
 		mesh.faceTexcoords.push_back({0.f, 1.f});
 
 		offset += side + 2.f; // avoid overlapping world positions
+	}
+}
+
+// Build `n` UNIFORM tiny square charts (side `side` world units) plus `nBig`
+// large ones (side 40·side). Mimics the production regime: a huge tail of
+// near-identical tiny charts and a small head of large ones.
+static void BuildMixedCharts(Mesh& mesh,
+                             std::vector<unsigned>& faceChart,
+                             unsigned& numCharts,
+                             unsigned n, unsigned nBig, float side)
+{
+	numCharts = n + nBig;
+	faceChart.clear();
+	mesh.vertices.clear();
+	mesh.faces.clear();
+	mesh.faceTexcoords.clear();
+	float offset = 0.f;
+	for (unsigned c = 0; c < numCharts; ++c) {
+		const float s = (c < nBig) ? 40.f * side : side;
+		const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+		mesh.vertices.push_back({offset, 0.f, 0.f});
+		mesh.vertices.push_back({offset + s, 0.f, 0.f});
+		mesh.vertices.push_back({offset + s, s, 0.f});
+		mesh.vertices.push_back({offset, s, 0.f});
+		mesh.faces.push_back({base + 0, base + 1, base + 2});
+		mesh.faces.push_back({base + 0, base + 2, base + 3});
+		faceChart.push_back(c);
+		faceChart.push_back(c);
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({1.f, 0.f});
+		mesh.faceTexcoords.push_back({1.f, 1.f});
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({1.f, 1.f});
+		mesh.faceTexcoords.push_back({0.f, 1.f});
+		offset += s + 2.f;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Two-tier packing: a production-shaped input (2000 tiny + 4 large charts)
+// must place every chart overlap-free at sane occupancy through the shelf
+// tier. This is correctness/regression coverage of the two-tier path
+// (disjointness, in-bounds UVs, occupancy floor) — the quadratic blowup the
+// two-tier split targets only manifests at production scale (100k+ charts,
+// measured: 78% of a 3h45m unwrap) and is checked by the release perf runs,
+// not by this unit-scale fixture.
+// ---------------------------------------------------------------------------
+TEST(PackAtlas, TwoTierManyTinyChartsDisjointAndDense)
+{
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	unsigned numCharts = 0;
+	const unsigned nTiny = 2000u, nBig = 4u;
+	BuildMixedCharts(mesh, faceChart, numCharts, nTiny, nBig, 1.f);
+
+	AtlasParams params;
+	params.resolution = 1024;
+	params.padding = 2;
+	params.allowRotation = true;
+
+	NormalizeChartDensity(mesh, faceChart, numCharts, params);
+	const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
+
+	ASSERT_EQ(res.chartPage.size(), numCharts);
+	for (unsigned c = 0; c < numCharts; ++c)
+		EXPECT_LT(res.chartPage[c], res.numPages);
+	for (const Mesh::TexCoord& uv : mesh.faceTexcoords) {
+		ASSERT_TRUE(std::isfinite(uv.x()));
+		ASSERT_TRUE(std::isfinite(uv.y()));
+		EXPECT_GE(uv.x(), 0.f - 1e-4f);
+		EXPECT_LE(uv.x(), 1.f + 1e-4f);
+		EXPECT_GE(uv.y(), 0.f - 1e-4f);
+		EXPECT_LE(uv.y(), 1.f + 1e-4f);
+	}
+	const auto rects = ChartBBoxes(mesh, faceChart, numCharts, res.chartPage, res.width, res.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, numCharts)) << "two charts overlap in the atlas";
+	EXPECT_GT(res.occupancy, 0.4f) << "shelf tier wastes too much: " << res.occupancy;
+
+	// Fixture-validity tripwire: BRect's size survives packing unchanged (PackRects
+	// places each chart at its own unpadded {cr.w, cr.h} — see AtlasPacking.cpp step 5 —
+	// rotation only swaps which axis holds w vs h), so max(rect width, rect height) + 2*pad
+	// reproduces exactly the padded long side AtlasPacking.cpp's `tierThreshold` tests.
+	// Nothing else here proves the 2000 tiny charts actually took the shelf path instead of
+	// the skyline (head) tier; density-normalization drift could silently push them all
+	// above threshold and this test would keep passing without ever exercising the shelf
+	// tier it exists to cover.
+	const auto paddedLongSide = [&](const BRect& r) {
+		return std::max(r.x1 - r.x0, r.y1 - r.y0) + 2.f * static_cast<float>(params.padding);
+	};
+	const float tierThreshold = static_cast<float>(res.width) / 32.f;
+	unsigned belowThreshold = 0;
+	for (unsigned c = nBig; c < numCharts; ++c)
+		if (paddedLongSide(rects[c]) < tierThreshold)
+			++belowThreshold;
+	EXPECT_GT(belowThreshold, static_cast<unsigned>(0.9f * static_cast<float>(nTiny)))
+	    << "fixture did not exercise the shelf tier: only " << belowThreshold << "/" << nTiny
+	    << " tiny charts fell below the pageW/32 tier threshold (" << tierThreshold
+	    << " texels, pageW=" << res.width << ")";
+
+	std::printf("[PackAtlas] TwoTier: pages=%u occupancy=%.3f dims=%ux%u\n",
+	            res.numPages, res.occupancy, res.width, res.height);
+}
+
+// ---------------------------------------------------------------------------
+// Shelf-tier rotation: tall skinny tiny charts must be laid down (rotated) in
+// shelves without breaking the winding-preserving 90° UV-rewrite convention —
+// disjointness + in-bounds UVs + positive UV area per face prove it.
+// ---------------------------------------------------------------------------
+TEST(PackAtlas, TwoTierShelfRotationKeepsWindingAndBounds)
+{
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	mesh.vertices.clear();
+	// 4 big charts absorb the auto density so the 500 skinny ones land UNDER
+	// the pageW/32 tier threshold (in the shelf tier) — without them the
+	// skinny charts normalize to ~60 texels tall and take the skyline path.
+	const unsigned nBig = 4u, n = nBig + 500u;
+	float off = 0.f;
+	for (unsigned c = 0; c < n; ++c) {
+		const float w = (c < nBig) ? 200.f : 1.f;
+		const float h = (c < nBig) ? 200.f : 6.f; // tall & skinny → shelf tier wants them rotated
+		const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+		mesh.vertices.push_back({off, 0.f, 0.f});
+		mesh.vertices.push_back({off + w, 0.f, 0.f});
+		mesh.vertices.push_back({off + w, h, 0.f});
+		mesh.vertices.push_back({off, h, 0.f});
+		mesh.faces.push_back({base + 0, base + 1, base + 2});
+		mesh.faces.push_back({base + 0, base + 2, base + 3});
+		faceChart.push_back(c);
+		faceChart.push_back(c);
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({w, 0.f});
+		mesh.faceTexcoords.push_back({w, h});
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({w, h});
+		mesh.faceTexcoords.push_back({0.f, h});
+		off += 210.f;
+	}
+	AtlasParams params;
+	params.resolution = 512;
+	params.padding = 2;
+	params.allowRotation = true;
+
+	NormalizeChartDensity(mesh, faceChart, n, params);
+	const AtlasResult res = PackAtlas(mesh, faceChart, n, params);
+
+	const auto rects = ChartBBoxes(mesh, faceChart, n, res.chartPage, res.width, res.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, n));
+	// Winding preserved: every face keeps POSITIVE signed UV area (a mirrored
+	// placement would flip the sign).
+	for (std::size_t f = 0; f < mesh.faces.size(); ++f) {
+		const float a2 = SignedDoubleArea2D(mesh.faceTexcoords[f * 3 + 0],
+		                                    mesh.faceTexcoords[f * 3 + 1],
+		                                    mesh.faceTexcoords[f * 3 + 2]);
+		EXPECT_GT(a2, 0.f) << "face " << f << " mirrored by shelf rotation";
 	}
 }
 
@@ -843,6 +1007,77 @@ TEST(PackAtlas, FitToResolutionIteratesToOnePage)
 }
 
 // ---------------------------------------------------------------------------
+// Analytic fit shrink: the fit loop must converge in [2,3] probe packs on an
+// input that GENUINELY overflows the one-page area budget (not merely a
+// waste-driven page-count overflow).
+//
+// Why "genuinely": fitToResolution's quadratic pre-solves k so that, AT ITS
+// UNCLAMPED ROOT, the padded rect-area sum is EXACTLY targetFill*resolution^2
+// (see PackAtlas §1.5) -- so on ordinary (non-degenerate) charts, probeArea
+// can never exceed that budget. The analytic shrink's raw factor
+// sqrt(budget/probeArea) is then always >= 1 and clamps to the SAME 0.95
+// ceiling the old blind ladder used, so a purely waste-driven overflow (e.g.
+// FitToResolutionIteratesToOnePage's extreme-aspect rects) cannot
+// discriminate the two algorithms -- both take an identical attempt count.
+// Real area overflow needs area the quadratic solve cannot see: DEGENERATE
+// (zero-UV-area) charts are excluded from its a/b/c terms entirely
+// (NormalizeChartDensity / PackAtlas skip them) yet still occupy a real
+// (1+2*padding)^2 padded slot in the actual probe pack. 50 such charts on top
+// of 50 ordinary tiny squares (resolution=128, padding=4) inject ~30% real
+// overflow (measured: probeArea=17485 against a 13435 budget on the first
+// probe) -- confirmed by temporarily reverting to the old `kf *= 0.95` ladder,
+// which needs 5 probes to claw back under budget; the analytic
+// sqrt(budget/probeArea) shrink (clamped [0.80,0.95]) gets there in 3.
+// ---------------------------------------------------------------------------
+TEST(PackAtlas, FitToResolutionConvergesInFewAttempts)
+{
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	unsigned numCharts = 0;
+	BuildMixedCharts(mesh, faceChart, numCharts, 50u, 0u, 1.f);
+
+	// Append 50 degenerate (collinear-UV) charts: excluded from the
+	// fitToResolution quadratic's a/b/c terms, but each still occupies a real
+	// padded texel slot in the probe pack -- see the comment above for why
+	// this (not a bigger tiny-chart count or a smaller resolution alone) is
+	// the mechanism that forces genuine, not just waste-driven, overflow.
+	const unsigned numDegenerate = 50u;
+	for (unsigned i = 0; i < numDegenerate; ++i) {
+		const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+		mesh.vertices.push_back({1000.f + static_cast<float>(i), 0.f, 0.f});
+		mesh.vertices.push_back({1001.f + static_cast<float>(i), 0.f, 0.f});
+		mesh.vertices.push_back({1002.f + static_cast<float>(i), 1.f, 0.f});
+		mesh.faces.push_back({base, base + 1, base + 2});
+		faceChart.push_back(numCharts);
+		// Collinear (zero-area) UVs confined to a small [0,1] extent, so the
+		// degenerate chart's own footprint stays bounded to ~1 texel (unlike
+		// the wide 0..6000-texel span DegenerateChartStaysInBounds uses to
+		// exercise the "raw extent bleeds outside [0,1]" regression).
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({0.5f, 0.f});
+		mesh.faceTexcoords.push_back({1.f, 0.f});
+		++numCharts;
+	}
+
+	AtlasParams params;
+	params.resolution = 128; // small: 50 fixed padded slots are a meaningful fraction of the budget
+	params.padding = 4; // padding-dominated: the production pathology
+	params.allowRotation = true;
+	params.fitToResolution = true;
+
+	NormalizeChartDensity(mesh, faceChart, numCharts, params);
+	const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
+
+	std::printf("[PackAtlas] FitConverges: attempts=%u pages=%u occupancy=%.3f\n",
+	            res.fitAttempts, res.numPages, res.occupancy);
+	EXPECT_EQ(res.numPages, 1u);
+	EXPECT_GE(res.fitAttempts, 2u) << "converged trivially -- the analytic shrink math never ran";
+	EXPECT_LE(res.fitAttempts, 3u) << "fit loop is still ladder-stepping";
+	const auto rects = ChartBBoxes(mesh, faceChart, numCharts, res.chartPage, res.width, res.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, numCharts));
+}
+
+// ---------------------------------------------------------------------------
 // Test 10 — GenerateAtlas end-to-end on mesh.ply.
 // ---------------------------------------------------------------------------
 TEST(GenerateAtlas, MeshPlyEndToEnd)
@@ -1092,6 +1327,71 @@ TEST(PackAtlas, FitToResolutionHonorsPageDimensions)
 	EXPECT_EQ(res.numPages, 1u);
 	EXPECT_LE(res.width, params.resolution);
 	EXPECT_LE(res.height, params.resolution);
+}
+
+// Deterministic "staircase terrain": an n×n grid whose vertex heights are
+// quantized random levels — many high-angle-defect vertices, like a
+// tetra-extracted MVS surface. Cone-Lloyd fragments it, flip repair splits
+// further; the post-repair merge must claw a meaningful share back.
+static void BuildStaircaseTerrain(Mesh& mesh, unsigned n, float step)
+{
+	std::mt19937 rng(42u);
+	std::uniform_int_distribution<int> lvl(0, 4);
+	std::vector<float> h((n + 1) * (n + 1));
+	for (float& z : h)
+		z = step * static_cast<float>(lvl(rng));
+	for (unsigned y = 0; y <= n; ++y)
+		for (unsigned x = 0; x <= n; ++x)
+			mesh.vertices.push_back({static_cast<float>(x), static_cast<float>(y), h[y * (n + 1) + x]});
+	for (unsigned y = 0; y < n; ++y)
+		for (unsigned x = 0; x < n; ++x) {
+			const unsigned a = y * (n + 1) + x, b = a + 1, c = a + (n + 1), d = c + 1;
+			mesh.faces.push_back({a, b, d});
+			mesh.faces.push_back({a, d, c});
+		}
+}
+
+TEST(SegmentCharts, PostRepairMergeReducesChartsFoldFree)
+{
+	Mesh base;
+	BuildStaircaseTerrain(base, 48u, 0.75f);
+
+	ParametrizeParams p0;
+	p0.postRepairMergeRounds = 0;
+	Mesh m0 = base;
+	std::vector<unsigned> chart0;
+	const unsigned n0 = SegmentCharts(m0, p0, chart0);
+
+	ParametrizeParams p2;
+	p2.postRepairMergeRounds = 2;
+	Mesh m2 = base;
+	std::vector<unsigned> chart2;
+	const unsigned n2 = SegmentCharts(m2, p2, chart2);
+
+	std::printf("[SegmentCharts] PostRepairMerge: %u -> %u charts\n", n0, n2);
+	// Precondition: the fixture actually fragments (otherwise the test is vacuous).
+	ASSERT_GT(n0, 50u) << "fixture did not fragment — increase `step` or grid size";
+	EXPECT_LT(n2, n0) << "re-merge recombined nothing";
+
+	// Every face charted, ids compact.
+	ASSERT_EQ(chart2.size(), m2.faces.size());
+	std::vector<char> seen(n2, 0);
+	for (unsigned c : chart2) {
+		ASSERT_LT(c, n2);
+		seen[c] = 1;
+	}
+	for (unsigned c = 0; c < n2; ++c)
+		EXPECT_TRUE(seen[c]) << "chart id " << c << " is empty";
+
+	// Fold-free guarantee survives the merge: no >2-face chart folds.
+	std::vector<std::vector<Mesh::FIndex>> fl(n2);
+	for (Mesh::FIndex f = 0; f < static_cast<Mesh::FIndex>(m2.faces.size()); ++f)
+		fl[chart2[f]].push_back(f);
+	for (unsigned c = 0; c < n2; ++c) {
+		if (fl[c].size() <= 2)
+			continue;
+		EXPECT_FALSE(detail::ChartFacesFold(m2, fl[c], p2)) << "chart " << c << " folds after re-merge";
+	}
 }
 
 } // namespace

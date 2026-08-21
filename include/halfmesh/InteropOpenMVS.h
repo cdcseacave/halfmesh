@@ -22,7 +22,8 @@
 // exercised by halfmesh's own test suite — it is validated by the consuming project.
 //
 // Usage:
-//     #include <MVS/Mesh.h>                 // openMVS first (defines MVS::Mesh)
+//     #include <MVS/Common.h>               // openMVS first: Common.h defines the
+//     #include <MVS/Mesh.h>                 // types Mesh.h assumes are in scope
 //     #include <halfmesh/InteropOpenMVS.h>
 //     ...
 //     MVS::Mesh mvsMesh = ...;
@@ -42,10 +43,12 @@
 
 namespace halfmesh {
 
-// Convert an openMVS mesh into a halfmesh mesh (geometry, per-corner UVs, and
-// diffuse textures).  Only the fields halfmesh understands are transferred; openMVS
-// extras (vertex/face adjacency caches, octree, etc.) are not copied — call the
-// relevant halfmesh List*() builders afterwards if you need them.
+// Convert an openMVS mesh into a halfmesh mesh (geometry, per-vertex colors,
+// per-face normals, per-corner UVs, and diffuse textures).  Only the fields
+// halfmesh understands are transferred; openMVS extras (per-vertex normals,
+// vertex/face adjacency caches, octree, etc.) are not copied — halfmesh::Mesh has
+// no per-vertex-normal storage, and the adjacency caches are derived data: call
+// the relevant halfmesh List*() builders afterwards if you need them.
 inline void ConvertMesh(const MVS::Mesh& src, halfmesh::Mesh& dst)
 {
 	dst = halfmesh::Mesh{};
@@ -60,6 +63,34 @@ inline void ConvertMesh(const MVS::Mesh& src, halfmesh::Mesh& dst)
 	for (size_t i = 0; i < src.faces.size(); ++i) {
 		const MVS::Mesh::Face& f = src.faces[(MVS::Mesh::FIndex)i];
 		dst.faces[i] = halfmesh::Mesh::Face(f.x, f.y, f.z);
+	}
+
+	// Per-vertex colors: both sides are 3x uint8 with blue in the first byte under
+	// the default openMVS build; copy by channel name so a _COLORMODE_RGB build of
+	// openMVS still maps each channel to halfmesh's fixed BGR element order.
+	// halfmesh's contract for optional per-element arrays is "empty or exactly
+	// sized" (its swap-pop removal paths index them whenever non-empty, and
+	// Mesh::Load clears mismatched arrays -- see src/MeshIO.cpp); only transfer a
+	// partially-populated source array when it is full-length, otherwise leave
+	// the destination empty (it already is, from the reset above).
+	if (src.vertexColors.size() == src.vertices.size()) {
+		dst.vertexColors.resize(src.vertexColors.size());
+		for (size_t i = 0; i < src.vertexColors.size(); ++i) {
+			const MVS::Mesh::Color& c = src.vertexColors[(MVS::Mesh::VIndex)i];
+			dst.vertexColors[i] = halfmesh::Mesh::Pixel(c.b, c.g, c.r);
+		}
+	}
+
+	// Face normals are transferred as-is (see the size guard above) and trusted
+	// as fresh by halfmesh, whose own freshness checks are size-only; if the
+	// source normals may be stale relative to its geometry, call
+	// ComputeFaceNormals() on the destination after conversion.
+	if (src.faceNormals.size() == src.faces.size()) {
+		dst.faceNormals.resize(src.faceNormals.size());
+		for (size_t i = 0; i < src.faceNormals.size(); ++i) {
+			const MVS::Mesh::Normal& n = src.faceNormals[(MVS::Mesh::FIndex)i];
+			dst.faceNormals[i] = halfmesh::Mesh::Normal(n.x, n.y, n.z);
+		}
 	}
 
 	// Texture coordinates: openMVS stores them per face-corner (3*faces) or per
@@ -82,8 +113,8 @@ inline void ConvertMesh(const MVS::Mesh& src, halfmesh::Mesh& dst)
 		dst.texturesDiffuse[i] = halfmesh::Mesh::Image3u(src.texturesDiffuse[(MVS::Mesh::TexIndex)i]);
 }
 
-// Convert a halfmesh mesh into an openMVS mesh (geometry, per-corner UVs, and
-// diffuse textures).
+// Convert a halfmesh mesh into an openMVS mesh (geometry, per-vertex colors,
+// per-face normals, per-corner UVs, and diffuse textures).
 inline void ConvertMesh(const halfmesh::Mesh& src, MVS::Mesh& dst)
 {
 	dst.Release();
@@ -98,6 +129,33 @@ inline void ConvertMesh(const halfmesh::Mesh& src, MVS::Mesh& dst)
 	for (size_t i = 0; i < src.faces.size(); ++i) {
 		const halfmesh::Mesh::Face& f = src.faces[i];
 		dst.faces[(MVS::Mesh::FIndex)i] = MVS::Mesh::Face(f[0], f[1], f[2]);
+	}
+
+	// Per-vertex colors: assign by channel name (see the MVS -> halfmesh note).
+	// Only transfer when full-length -- see the size-invariant note above; a
+	// partially-populated source array leaves the destination empty (it already
+	// is, from the Release() above).
+	if (src.vertexColors.size() == src.vertices.size()) {
+		dst.vertexColors.resize((MVS::Mesh::VIndex)src.vertexColors.size());
+		for (size_t i = 0; i < src.vertexColors.size(); ++i) {
+			const halfmesh::Mesh::Pixel& p = src.vertexColors[i];
+			MVS::Mesh::Color& c = dst.vertexColors[(MVS::Mesh::VIndex)i];
+			c.b = p[0];
+			c.g = p[1];
+			c.r = p[2];
+		}
+	}
+
+	// Face normals are transferred as-is (see the size guard above) and trusted
+	// as fresh by halfmesh, whose own freshness checks are size-only; if the
+	// source normals may be stale relative to its geometry, call
+	// ComputeFaceNormals() on the destination after conversion.
+	if (src.faceNormals.size() == src.faces.size()) {
+		dst.faceNormals.resize((MVS::Mesh::FIndex)src.faceNormals.size());
+		for (size_t i = 0; i < src.faceNormals.size(); ++i) {
+			const halfmesh::Mesh::Normal& n = src.faceNormals[i];
+			dst.faceNormals[(MVS::Mesh::FIndex)i] = MVS::Mesh::Normal(n[0], n[1], n[2]);
+		}
 	}
 
 	dst.faceTexcoords.resize((MVS::Mesh::FIndex)src.faceTexcoords.size());
@@ -127,9 +185,13 @@ inline void ConvertMesh(const halfmesh::Mesh& src, MVS::Mesh& dst)
 	for (size_t i = 0; i < src.faceTexblobs.size(); ++i)
 		dst.faceTexindices[(MVS::Mesh::FIndex)i] = (MVS::Mesh::TexIndex)src.faceTexblobs[i];
 
+	// Image8U3 is a SEACAVE typedef (Common/Types.h), not a true member of
+	// namespace MVS -- it's only visible unqualified here because
+	// MVS/Common.h has a global `using namespace SEACAVE;`. Every openMVS
+	// source spells it unqualified; `MVS::Image8U3` does not compile.
 	dst.texturesDiffuse.resize((MVS::Mesh::TexIndex)src.texturesDiffuse.size());
 	for (size_t i = 0; i < src.texturesDiffuse.size(); ++i)
-		dst.texturesDiffuse[(MVS::Mesh::TexIndex)i] = MVS::Image8U3(src.texturesDiffuse[i]);
+		dst.texturesDiffuse[(MVS::Mesh::TexIndex)i] = Image8U3(src.texturesDiffuse[i]);
 }
 
 } // namespace halfmesh

@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0]
+
+### Python bindings
+- Pip-installable `halfmesh` package (`pip install .` via scikit-build-core +
+  pybind11, `-DHALFMESH_BUILD_PYTHON=ON`): `repair`, `smooth`, `simplify`,
+  `close_holes`, `remove_small_components`, `remesh` array ops (numpy
+  float32/uint32 in, new arrays out; face indices validated before mesh
+  construction; GIL released around native work; `repair` runs the library's
+  full auto-repair sequence including duplicate-face removal), a `Mesh`
+  facade class for file-based I/O, and file-based `unwrap` (UV-atlas
+  generation). See [docs/PYTHON.md](docs/PYTHON.md).
+- Self-contained manylinux_2_28 wheels (CPython 3.10–3.13, x86_64) built by
+  `cibuildwheel` and attached to GitHub Releases on `v*` tags.
+
+### UV pipeline
+- Atlas packing: two-tier pack pass (skyline head + shelf-row tail) removes the
+  quadratic regime at 100k+ charts; fit-to-resolution shrink is now
+  overflow-proportional (was a blind ×0.95 ladder) and `AtlasResult` reports
+  `fitAttempts`. Measured on a 1M-face MVS mesh (padding 4, 4096²):
+  13,473 s → 172 s, 161,627 → 133,665 charts.
+- Atlas segmentation: post-repair merge rounds
+  (`ParametrizeParams::postRepairMergeRounds`, default 2) recombine
+  flip-repair fragments — fewer charts, fewer seams, less padding waste.
+
+### Changed
+- **Default atlas output changes for every caller.** The two-tier pack pass
+  changes atlas layout for all `PackAtlas` users (the shelf-tier threshold
+  is a fixed `pageW/32`; there is no opt-out flag), and the new post-repair
+  merge rounds change the default chart partition and therefore the shipped
+  UVs. Frozen UV/layout goldens will move. Set
+  `ParametrizeParams::postRepairMergeRounds = 0` to restore the pre-0.2.0
+  segmentation behavior; the packing change has no revert switch.
+- **Not ABI-compatible with 0.1.0**: `AtlasResult::fitAttempts` and
+  `ParametrizeParams::postRepairMergeRounds` are mid-struct field
+  insertions — recompile against the new headers.
+
+### Interoperability
+- openMVS interop: `ConvertMesh` now transfers per-vertex colors and
+  per-face normals in both directions.
+- `include/halfmesh/Types.h` no longer specializes
+  `cv::DataDepth<halfmesh::Pixel::Scalar>` (behaviorally identical via
+  OpenCV's generic trait; unbreaks `InteropOpenMVS.h` against openMVS's
+  `Common/Types.h`).
+
 ## [0.1.0]
 
 Initial release.
@@ -114,4 +158,5 @@ Initial release.
   UV-atlas and remeshing benchmarks (`HALFMESH_BUILD_BENCH`), ASan+UBSan
   (`HALFMESH_SANITIZE`), and verbose atlas diagnostics (`HALFMESH_ATLAS_DEBUG`).
 
+[0.2.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.1.0

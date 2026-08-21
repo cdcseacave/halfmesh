@@ -13,6 +13,7 @@ endif()
 # set before the toolchain consumes them during the project() call).
 option(HALFMESH_BUILD_TESTS "Build unit tests" OFF)
 option(HALFMESH_BUILD_TOOLS "Build example CLIs" OFF)
+option(HALFMESH_BUILD_PYTHON "Build the Python bindings module (pybind11)" OFF)
 
 # Performance regression harness (docs/TESTING.md §7 perf).
 # OFF by default — excluded from the fast ctest run.
@@ -45,6 +46,24 @@ endif()
 if(HALFMESH_BUILD_TOOLS)
 	list(APPEND VCPKG_MANIFEST_FEATURES "tools")
 endif()
+if(HALFMESH_BUILD_PYTHON)
+	# No vcpkg feature: pybind11 comes from pip, not vcpkg — the vcpkg port
+	# depends on vcpkg's own from-source CPython (openssl, libffi, an autotools
+	# chain, ~20 extra ports) just to provide a header-only library the Python
+	# build environment already has. See python/CMakeLists.txt for resolution.
+	# The extension is a shared module, so every static archive linked into it
+	# (halfmesh itself and the vcpkg deps: opencv, tinyply, libjpeg, libpng, zlib)
+	# must be PIC. The overlay triplet builds the vcpkg side with
+	# -DCMAKE_POSITION_INDEPENDENT_CODE=ON; the halfmesh target is handled below.
+	# Note: the triplet is CACHEd, so toggling HALFMESH_BUILD_PYTHON back OFF in
+	# a reused build directory keeps building deps as x64-linux-pic (harmless —
+	# only adds -fPIC — but use a fresh build dir to return to plain x64-linux).
+	if(NOT DEFINED VCPKG_TARGET_TRIPLET AND NOT DEFINED ENV{VCPKG_DEFAULT_TRIPLET}
+	   AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+		set(VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/triplets" CACHE STRING "")
+		set(VCPKG_TARGET_TRIPLET "x64-linux-pic" CACHE STRING "")
+	endif()
+endif()
 if(HALFMESH_BUILD_CROSSCHECKS)
 	list(APPEND VCPKG_MANIFEST_FEATURES "crosschecks")
 endif()
@@ -65,7 +84,18 @@ endif()
 # so an absolute path works on all CMake versions >= 3.21.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
-project(halfmesh VERSION 0.1.0 LANGUAGES CXX)
+project(halfmesh VERSION 0.2.0 LANGUAGES CXX)
+
+# vcpkg.json cannot read the version above, so it carries a manual copy —
+# fail the configure the moment the two drift apart (a version bump must
+# touch both files; the Python package version is regex-extracted from the
+# project() line by scikit-build-core, so it needs no check).
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json" _halfmesh_vcpkg_json)
+string(REGEX MATCH "\"version\"[ \t]*:[ \t]*\"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _ "${_halfmesh_vcpkg_json}")
+if(NOT CMAKE_MATCH_1 STREQUAL PROJECT_VERSION)
+	message(FATAL_ERROR "vcpkg.json version (${CMAKE_MATCH_1}) does not match project() version (${PROJECT_VERSION}) — update vcpkg.json")
+endif()
+unset(_halfmesh_vcpkg_json)
 
 # AddressSanitizer + UndefinedBehaviorSanitizer build (docs/TESTING.md §7).
 # Declared after project() because it controls compiler flags (not vcpkg manifest
@@ -252,6 +282,14 @@ if(HALFMESH_NATIVE OR HALFMESH_ARCH)
         target_compile_options(halfmesh PUBLIC ${_hm_arch_flag})
         message(STATUS "halfmesh: SIMD arch enabled (${_hm_arch_flag})")
     endif()
+endif()
+
+# -----------------------------------------------------------------------
+# Python bindings (pybind11 module halfmesh._halfmesh)
+# -----------------------------------------------------------------------
+if(HALFMESH_BUILD_PYTHON)
+	set_property(TARGET halfmesh PROPERTY POSITION_INDEPENDENT_CODE ON)
+	add_subdirectory(python)
 endif()
 
 # -----------------------------------------------------------------------

@@ -1,0 +1,40 @@
+# Build self-contained manylinux wheels on version tags and attach them to the
+# GitHub Release. Consumers (e.g. radiance) install these by URL — see README
+# "Python bindings". Linux x86_64 only for now (the one deployment target);
+# macOS/Windows wheels are a recorded follow-up.
+name: Wheels
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-wheels:
+    name: manylinux_2_28 x86_64 wheels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300   # cold vcpkg build of opencv dominates; 4 wheels share one container's vcpkg cache
+    permissions:
+      contents: write   # gh release create/upload below
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@7940a4c0e76eb2030e473a5f864f291f63ee879b   # v2.21.3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+          path: wheelhouse/*.whl
+
+      - name: Attach wheels to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" wheelhouse/*.whl --clobber --repo "$GITHUB_REPOSITORY"

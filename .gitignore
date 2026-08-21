@@ -12,6 +12,7 @@ vcpkg_installed/
 
 # Subagent-driven-development scratch (briefs, reports, review packages, ledger)
 /.superpowers/
+docs/superpowers/
 
 # Compiled objects / libraries / binaries
 *.o
@@ -58,3 +59,12 @@ tests/data/*.glb
 
 # ad-hoc smoothing variant-comparison outputs (generated, machine-local)
 /tests/data/smooth_compare/
+
+# Python
+__pycache__/
+*.egg-info/
+_skbuild/
+.pytest_cache/
+dist/
+wheelhouse/
+*.whl

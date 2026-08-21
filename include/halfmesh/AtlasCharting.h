@@ -201,6 +201,10 @@ struct AtlasResult
 	unsigned height = 0; // page height in texels
 	unsigned numPages = 1; // number of atlas pages (>1 on multi-atlas overflow)
 	float occupancy = 0.f; // packed chart area (with padding) / total atlas area [0,1]
+	// fit-to-resolution probe packs performed (0 = fitToResolution off). A
+	// converging fit takes 1-2; values near the internal cap (8) mean the
+	// shrink loop struggled — a diagnosability hook for huge chart counts.
+	unsigned fitAttempts = 0;
 	// page index per chart (size == numCharts)
 	std::vector<unsigned> chartPage;
 	// per-face chart id (size == mesh.faces.size()); populated by PackAtlas /
