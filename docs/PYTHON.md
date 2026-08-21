@@ -189,7 +189,8 @@ Returns a `dict`:
 | `charts` | number of UV charts produced by segmentation |
 | `pages` | number of atlas pages the charts were packed into |
 | `width`, `height` | final atlas page dimensions in texels |
-| `occupancy` | fraction of atlas area covered by charts, `(0, 1]` |
+| `occupancy` | fraction of atlas area covered by charts, `[0, 1]` (0 only for a degenerate empty atlas) |
+| `fit_attempts` | number of fit-to-resolution packing probes it took to fit the target page size |
 | `vertices`, `faces` | vertex/face counts of the (welded) output mesh |
 
 Raises `RuntimeError` if `input_path` fails to load or `output_path` fails
@@ -239,6 +240,11 @@ deterministic (order-independent) results. Do not additionally wrap calls to
 a single mesh — you'll mostly just add scheduling overhead and, across
 processes, pay full mesh-copy cost. Running independent *meshes* through a
 process pool is fine and does help if you have many small meshes to process.
+
+A `Mesh` instance is not safe to share across threads: `Mesh.load` and
+`Mesh.save` release the GIL while mutating/reading the instance, so two
+Python threads touching the same `Mesh` concurrently can race into a crash.
+Give each thread its own instance.
 
 ## Deliberately absent
 

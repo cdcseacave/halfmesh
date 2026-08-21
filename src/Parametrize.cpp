@@ -2081,9 +2081,11 @@ void ChartFlattenCache::Store(ChartFlattenSlot&& slot)
 	ASSERT(std::is_sorted(slot.entry->cm.globalFid.begin(),
 	                      slot.entry->cm.globalFid.end()));
 	// Chart identity = smallest global face id (face lists are sorted ascending).
-	// Accepted charts have disjoint face sets that never change afterwards, so the
-	// key is unique and invariant under chart-id relabelling (Compact); folding
-	// charts never deposit artifacts, so no stale entry can exist to overwrite.
+	// The key is unique across live charts and invariant under chart-id
+	// relabelling (Compact). Post-repair merge rounds mutate accepted charts'
+	// face sets, so stale entries may exist; Find's full-face-list verification
+	// makes them unreachable, at the cost of retaining dead entries until
+	// segmentation returns.
 	entries[slot.entry->cm.globalFid.front()] = std::move(slot);
 }
 

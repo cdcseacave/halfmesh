@@ -16,7 +16,7 @@ jobs:
   build-wheels:
     name: manylinux_2_28 x86_64 wheels
     runs-on: ubuntu-24.04
-    timeout-minutes: 180   # cold vcpkg build of opencv dominates
+    timeout-minutes: 300   # cold vcpkg build of opencv dominates; 4 wheels share one container's vcpkg cache
     permissions:
       contents: write   # gh release create/upload below
     steps:

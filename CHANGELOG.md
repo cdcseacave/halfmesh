@@ -29,9 +29,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (`ParametrizeParams::postRepairMergeRounds`, default 2) recombine
   flip-repair fragments — fewer charts, fewer seams, less padding waste.
 
+### Changed
+- **Default atlas output changes for every caller.** The two-tier pack pass
+  changes atlas layout for all `PackAtlas` users (the shelf-tier threshold
+  is a fixed `pageW/32`; there is no opt-out flag), and the new post-repair
+  merge rounds change the default chart partition and therefore the shipped
+  UVs. Frozen UV/layout goldens will move. Set
+  `ParametrizeParams::postRepairMergeRounds = 0` to restore the pre-0.2.0
+  segmentation behavior; the packing change has no revert switch.
+- **Not ABI-compatible with 0.1.0**: `AtlasResult::fitAttempts` and
+  `ParametrizeParams::postRepairMergeRounds` are mid-struct field
+  insertions — recompile against the new headers.
+
 ### Interoperability
 - openMVS interop: `ConvertMesh` now transfers per-vertex colors and
   per-face normals in both directions.
+- `include/halfmesh/Types.h` no longer specializes
+  `cv::DataDepth<halfmesh::Pixel::Scalar>` (behaviorally identical via
+  OpenCV's generic trait; unbreaks `InteropOpenMVS.h` against openMVS's
+  `Common/Types.h`).
 
 ## [0.1.0]
 
