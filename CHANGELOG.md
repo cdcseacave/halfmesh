@@ -19,6 +19,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Self-contained manylinux_2_28 wheels (CPython 3.10–3.13, x86_64) built by
   `cibuildwheel` and attached to GitHub Releases on `v*` tags.
 
+### UV pipeline
+- Atlas packing: two-tier pack pass (skyline head + shelf-row tail) removes the
+  quadratic regime at 100k+ charts; fit-to-resolution shrink is now
+  overflow-proportional (was a blind ×0.95 ladder) and `AtlasResult` reports
+  `fitAttempts`. Measured on a 1M-face MVS mesh (161k charts, padding 4,
+  4096²): 13,473 s → 172 s.
+- Atlas segmentation: post-repair merge rounds
+  (`ParametrizeParams::postRepairMergeRounds`, default 2) recombine
+  flip-repair fragments — fewer charts, fewer seams, less padding waste.
+
 ### Interoperability
 - openMVS interop: `ConvertMesh` now transfers per-vertex colors and
   per-face normals in both directions.

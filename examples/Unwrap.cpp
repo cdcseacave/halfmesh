@@ -9,7 +9,7 @@
 
 // examples/Unwrap.cpp — UV atlas generation CLI example.
 //
-// Usage: unwrap <in.ply> <out.ply> [resolution=1024]
+// Usage: unwrap <in.ply> <out.ply> [resolution=1024] [padding=2]
 //
 // Loads a triangle mesh, generates a UV texture atlas (chart segmentation →
 // per-chart SLIM flattening → density normalisation → rectangle packing),
@@ -27,17 +27,19 @@
 
 int main(int argc, char* argv[])
 {
-	if (argc < 3 || argc > 4) {
-		std::cerr << "Usage: unwrap <in.ply> <out.ply> [resolution=1024]\n"
-		          << "  resolution  target atlas side length in texels\n";
+	if (argc < 3 || argc > 5) {
+		std::cerr << "Usage: unwrap <in.ply> <out.ply> [resolution=1024] [padding=2]\n"
+		          << "  resolution  target atlas side length in texels\n"
+		          << "  padding     texel gap between packed charts\n";
 		return EXIT_FAILURE;
 	}
 
 	const std::string inPath = argv[1];
 	const std::string outPath = argv[2];
-	const unsigned resolution = (argc == 4)
+	const unsigned resolution = (argc >= 4)
 	                                ? static_cast<unsigned>(std::stoul(argv[3]))
 	                                : 1024u;
+	const unsigned padding = (argc == 5) ? static_cast<unsigned>(std::stoul(argv[4])) : 2u;
 
 	halfmesh::Mesh mesh;
 	if (!mesh.Load(inPath)) {
@@ -64,7 +66,7 @@ int main(int argc, char* argv[])
 
 	halfmesh::AtlasParams aparams;
 	aparams.resolution = resolution;
-	aparams.padding = 2;
+	aparams.padding = padding;
 	aparams.allowRotation = true;
 
 	const halfmesh::AtlasResult result =
