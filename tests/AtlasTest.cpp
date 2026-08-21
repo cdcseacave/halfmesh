@@ -976,6 +976,36 @@ TEST(PackAtlas, FitToResolutionIteratesToOnePage)
 }
 
 // ---------------------------------------------------------------------------
+// Analytic fit shrink: on a padding-dominated tiny-chart input the fit loop
+// must converge in ≤3 probe packs (the old blind ×0.95 ladder burned up to 8 —
+// the measured 8× wall-time multiplier at production padding=4).
+// ---------------------------------------------------------------------------
+TEST(PackAtlas, FitToResolutionConvergesInFewAttempts)
+{
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	unsigned numCharts = 0;
+	BuildMixedCharts(mesh, faceChart, numCharts, 2000u, 4u, 1.f);
+
+	AtlasParams params;
+	params.resolution = 512;
+	params.padding = 4; // padding-dominated: the production pathology
+	params.allowRotation = true;
+	params.fitToResolution = true;
+
+	NormalizeChartDensity(mesh, faceChart, numCharts, params);
+	const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
+
+	std::printf("[PackAtlas] FitConverges: attempts=%u pages=%u occupancy=%.3f\n",
+	            res.fitAttempts, res.numPages, res.occupancy);
+	EXPECT_EQ(res.numPages, 1u);
+	EXPECT_GE(res.fitAttempts, 1u);
+	EXPECT_LE(res.fitAttempts, 3u) << "fit loop is still ladder-stepping";
+	const auto rects = ChartBBoxes(mesh, faceChart, numCharts, res.chartPage, res.width, res.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, numCharts));
+}
+
+// ---------------------------------------------------------------------------
 // Test 10 — GenerateAtlas end-to-end on mesh.ply.
 // ---------------------------------------------------------------------------
 TEST(GenerateAtlas, MeshPlyEndToEnd)

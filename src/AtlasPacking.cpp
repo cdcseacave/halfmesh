@@ -641,7 +641,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 			// SECOND page at the same density, doubling texture memory instead of fitting
 			// the requested resolution. Iterate — probe a rect-only pack (no UV writes),
 			// and while it needs >1 page OR overflows the page dimensions shrink k
-			// (~5%/try, bounded) and repack — then
+			// analytically (proportional to overflow, bounded) and repack — then
 			// apply the final k to the UVs and rects once. Repacks touch only numCharts
 			// rects, so cost is negligible.
 			double kf = k;
@@ -649,7 +649,9 @@ AtlasResult PackAtlas(Mesh& mesh,
 			std::vector<Placement> probe;
 			unsigned probePages = 0, probePw = 0, probePh = 0;
 			float probeArea = 0.f;
+			unsigned attempts = 0;
 			for (int attempt = 0; attempt < 8; ++attempt) {
+				++attempts;
 				const float kk = static_cast<float>(kf);
 				for (unsigned c = 0; c < numCharts; ++c) {
 					if (crects[c].degenerate)
@@ -660,8 +662,19 @@ AtlasResult PackAtlas(Mesh& mesh,
 				PackRects(trial, numCharts, params, pad, probe, probePages, probePw, probePh, probeArea);
 				if (probePages <= 1 && probePw <= params.resolution && probePh <= params.resolution)
 					break;
-				kf *= 0.95;
+				// Analytic shrink: the probe placed `probeArea` padded texels
+				// against a one-page budget of targetFill·R². Step k by the
+				// square root of the area ratio — proportional to the actual
+				// overflow — instead of a blind ×0.95. Upper clamp 0.95 keeps
+				// waste-driven overflows (area under budget, layout still >1
+				// page) converging at least as fast as the old ladder; lower
+				// clamp 0.80 stops one noisy probe from collapsing the scale.
+				const double budgetArea = targetFill * R * R;
+				double shrink = std::sqrt(budgetArea / std::max(static_cast<double>(probeArea), 1.0));
+				shrink = std::clamp(shrink, 0.80, 0.95);
+				kf *= shrink;
 			}
+			result.fitAttempts = attempts;
 			const float kfinal = static_cast<float>(kf);
 			for (size_t fi = 0; fi < nf; ++fi) {
 				const unsigned cid = faceChart[fi];
