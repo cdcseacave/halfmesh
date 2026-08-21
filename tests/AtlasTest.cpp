@@ -976,19 +976,60 @@ TEST(PackAtlas, FitToResolutionIteratesToOnePage)
 }
 
 // ---------------------------------------------------------------------------
-// Analytic fit shrink: on a padding-dominated tiny-chart input the fit loop
-// must converge in ≤3 probe packs (the old blind ×0.95 ladder burned up to 8 —
-// the measured 8× wall-time multiplier at production padding=4).
+// Analytic fit shrink: the fit loop must converge in [2,3] probe packs on an
+// input that GENUINELY overflows the one-page area budget (not merely a
+// waste-driven page-count overflow).
+//
+// Why "genuinely": fitToResolution's quadratic pre-solves k so that, AT ITS
+// UNCLAMPED ROOT, the padded rect-area sum is EXACTLY targetFill*resolution^2
+// (see PackAtlas §1.5) -- so on ordinary (non-degenerate) charts, probeArea
+// can never exceed that budget. The analytic shrink's raw factor
+// sqrt(budget/probeArea) is then always >= 1 and clamps to the SAME 0.95
+// ceiling the old blind ladder used, so a purely waste-driven overflow (e.g.
+// FitToResolutionIteratesToOnePage's extreme-aspect rects) cannot
+// discriminate the two algorithms -- both take an identical attempt count.
+// Real area overflow needs area the quadratic solve cannot see: DEGENERATE
+// (zero-UV-area) charts are excluded from its a/b/c terms entirely
+// (NormalizeChartDensity / PackAtlas skip them) yet still occupy a real
+// (1+2*padding)^2 padded slot in the actual probe pack. 50 such charts on top
+// of 50 ordinary tiny squares (resolution=128, padding=4) inject ~30% real
+// overflow (measured: probeArea=17485 against a 13435 budget on the first
+// probe) -- confirmed by temporarily reverting to the old `kf *= 0.95` ladder,
+// which needs 5 probes to claw back under budget; the analytic
+// sqrt(budget/probeArea) shrink (clamped [0.80,0.95]) gets there in 3.
 // ---------------------------------------------------------------------------
 TEST(PackAtlas, FitToResolutionConvergesInFewAttempts)
 {
 	Mesh mesh;
 	std::vector<unsigned> faceChart;
 	unsigned numCharts = 0;
-	BuildMixedCharts(mesh, faceChart, numCharts, 2000u, 4u, 1.f);
+	BuildMixedCharts(mesh, faceChart, numCharts, 50u, 0u, 1.f);
+
+	// Append 50 degenerate (collinear-UV) charts: excluded from the
+	// fitToResolution quadratic's a/b/c terms, but each still occupies a real
+	// padded texel slot in the probe pack -- see the comment above for why
+	// this (not a bigger tiny-chart count or a smaller resolution alone) is
+	// the mechanism that forces genuine, not just waste-driven, overflow.
+	const unsigned numDegenerate = 50u;
+	for (unsigned i = 0; i < numDegenerate; ++i) {
+		const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+		mesh.vertices.push_back({1000.f + static_cast<float>(i), 0.f, 0.f});
+		mesh.vertices.push_back({1001.f + static_cast<float>(i), 0.f, 0.f});
+		mesh.vertices.push_back({1002.f + static_cast<float>(i), 1.f, 0.f});
+		mesh.faces.push_back({base, base + 1, base + 2});
+		faceChart.push_back(numCharts);
+		// Collinear (zero-area) UVs confined to a small [0,1] extent, so the
+		// degenerate chart's own footprint stays bounded to ~1 texel (unlike
+		// the wide 0..6000-texel span DegenerateChartStaysInBounds uses to
+		// exercise the "raw extent bleeds outside [0,1]" regression).
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({0.5f, 0.f});
+		mesh.faceTexcoords.push_back({1.f, 0.f});
+		++numCharts;
+	}
 
 	AtlasParams params;
-	params.resolution = 512;
+	params.resolution = 128; // small: 50 fixed padded slots are a meaningful fraction of the budget
 	params.padding = 4; // padding-dominated: the production pathology
 	params.allowRotation = true;
 	params.fitToResolution = true;
@@ -999,7 +1040,7 @@ TEST(PackAtlas, FitToResolutionConvergesInFewAttempts)
 	std::printf("[PackAtlas] FitConverges: attempts=%u pages=%u occupancy=%.3f\n",
 	            res.fitAttempts, res.numPages, res.occupancy);
 	EXPECT_EQ(res.numPages, 1u);
-	EXPECT_GE(res.fitAttempts, 1u);
+	EXPECT_GE(res.fitAttempts, 2u) << "converged trivially -- the analytic shrink math never ran";
 	EXPECT_LE(res.fitAttempts, 3u) << "fit loop is still ladder-stepping";
 	const auto rects = ChartBBoxes(mesh, faceChart, numCharts, res.chartPage, res.width, res.height);
 	EXPECT_TRUE(BoundingRectsDisjoint(rects, numCharts));
