@@ -375,6 +375,8 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 		Rect placed;
 		unsigned page = 0;
 		bool ok = false;
+		// First-fit across every open page (Insert is O(#segments), so a few probes per
+		// chart are cheap); single-page results are unchanged.
 		for (unsigned p = 0; p < static_cast<unsigned>(bins.size()); ++p) {
 			if (bins[p].Insert(rw, rh, params.allowRotation, placed)) {
 				page = p;
@@ -395,6 +397,7 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 		placements[ci] = {placed.x + static_cast<float>(pad),
 		                  placed.y + static_cast<float>(pad),
 		                  placed.rotated, page};
+		// Accumulate placed area INCLUDING padding (same basis as pageW*pageH*pages).
 		packedArea += placed.w * placed.h;
 	}
 

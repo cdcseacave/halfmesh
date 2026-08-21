@@ -455,9 +455,12 @@ static void BuildMixedCharts(Mesh& mesh,
 
 // ---------------------------------------------------------------------------
 // Two-tier packing: a production-shaped input (2000 tiny + 4 large charts)
-// must place every chart overlap-free at sane occupancy — and fast (the old
-// full-scan skyline is quadratic in chart count; the shelf tier is what makes
-// this test complete in milliseconds instead of seconds).
+// must place every chart overlap-free at sane occupancy through the shelf
+// tier. This is correctness/regression coverage of the two-tier path
+// (disjointness, in-bounds UVs, occupancy floor) — the quadratic blowup the
+// two-tier split targets only manifests at production scale (100k+ charts,
+// measured: 78% of a 3h45m unwrap) and is checked by the release perf runs,
+// not by this unit-scale fixture.
 // ---------------------------------------------------------------------------
 TEST(PackAtlas, TwoTierManyTinyChartsDisjointAndDense)
 {
