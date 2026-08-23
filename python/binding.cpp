@@ -137,15 +137,15 @@ PYBIND11_MODULE(_halfmesh, m)
 		}
 		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("target"), py::arg("aggressiveness") = 0.f, "QEM edge-collapse decimation. target in (0,1) = keep-fraction, > 1 = absolute face count.");
 
-	m.def("close_holes", [](const VertArray& v, const FaceArray& f, unsigned max_holes) {
+	m.def("close_holes", [](const VertArray& v, const FaceArray& f, unsigned max_hole_edges) {
 		Mesh mesh = MeshFromArrays(v, f);
 		unsigned closed = 0;
 		{
 			py::gil_scoped_release release;
-			closed = mesh.CloseHoles(max_holes);
+			closed = mesh.CloseHoles(max_hole_edges);
 		}
 		py::tuple vf = ArraysFromMesh(mesh);
-		return py::make_tuple(vf[0], vf[1], closed); }, py::arg("vertices"), py::arg("faces"), py::arg("max_holes") = 200u, "Liepa hole filling (fill + refine + fair), smallest holes first; max_holes is a count.");
+		return py::make_tuple(vf[0], vf[1], closed); }, py::arg("vertices"), py::arg("faces"), py::arg("max_hole_edges") = 30u, "Liepa hole filling (fill + refine + fair) of every hole spanned by at most max_hole_edges boundary edges.");
 
 	m.def("remove_small_components", [](const VertArray& v, const FaceArray& f, unsigned min_faces) {
 		Mesh mesh = MeshFromArrays(v, f);

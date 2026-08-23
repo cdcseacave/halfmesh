@@ -20,7 +20,7 @@
 //      a valid manifold (ListHalfEdges rebuilds, no degenerate faces, returned
 //      count matches), face count increases.
 //   3. Watertight mesh has no holes: CloseHoles returns 0, mesh unchanged.
-//   4. nCloseHoles cap: with several holes only the requested number are closed.
+//   4. maxHoleEdges cap: only holes at or below the requested size are closed.
 
 #include <halfmesh/Mesh.h>
 #include <halfmesh/HalfMesh.h>
@@ -64,6 +64,21 @@ static unsigned CountBoundaryLoops(Mesh& m)
 	std::vector<std::vector<Mesh::VIndex>> holes;
 	m.halfMesh.EnumerateHoles(holes);
 	return static_cast<unsigned>(holes.size());
+}
+
+// Size (in edges) of the smallest boundary loop: the CloseHoles cap that fills
+// exactly that hole and leaves every larger one open.
+static unsigned SmallestHoleEdges(Mesh& m)
+{
+	m.halfMesh.Clear();
+	m.ListHalfEdges();
+	std::vector<std::vector<Mesh::VIndex>> holes;
+	m.halfMesh.EnumerateHoles(holes);
+	unsigned smallest = 0;
+	for (const auto& hole : holes)
+		if (smallest == 0 || hole.size() < smallest)
+			smallest = static_cast<unsigned>(hole.size());
+	return smallest;
 }
 
 // Number of duplicate faces (winding-agnostic: sorted vertex triple).
@@ -152,7 +167,7 @@ TEST(MeshHolesTest, FillsSyntheticPolygonHole)
 	const size_t facesBefore = m.faces.size();
 
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	const unsigned closed = m.CloseHoles(1, &holesFaces);
+	const unsigned closed = m.CloseHoles(SmallestHoleEdges(m), &holesFaces);
 
 	EXPECT_EQ(closed, 1u);
 	ASSERT_EQ(holesFaces.size(), 1u);
@@ -270,7 +285,7 @@ TEST(MeshHolesTest, WavyHolePatchKeepsOrientation)
 	ASSERT_EQ(CountBoundaryLoops(m), 2u);
 
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	ASSERT_EQ(m.CloseHoles(1, &holesFaces), 1u);
+	ASSERT_EQ(m.CloseHoles(SmallestHoleEdges(m), &holesFaces), 1u);
 	ASSERT_EQ(CountBoundaryLoops(m), 1u);
 	EXPECT_EQ(CountDegenerateFaces(m), 0u);
 
@@ -343,7 +358,7 @@ TEST(MeshHolesTest, DenseWavyHolePatchCollapsesStayValid)
 	ASSERT_EQ(CountBoundaryLoops(m), 2u);
 
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	ASSERT_EQ(m.CloseHoles(1, &holesFaces), 1u);
+	ASSERT_EQ(m.CloseHoles(SmallestHoleEdges(m), &holesFaces), 1u);
 	ASSERT_EQ(CountBoundaryLoops(m), 1u);
 	EXPECT_EQ(CountDegenerateFaces(m), 0u);
 	// Link condition: a collapse must never emit a face duplicating another.
@@ -417,7 +432,7 @@ TEST(MeshHolesTest, DomeHolePatchFollowsSphereCurvature)
 
 	const size_t vBefore = m.vertices.size();
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	ASSERT_EQ(m.CloseHoles(1, &holesFaces), 1u);
+	ASSERT_EQ(m.CloseHoles(SmallestHoleEdges(m), &holesFaces), 1u);
 	EXPECT_EQ(CountDegenerateFaces(m), 0u);
 
 	std::set<Mesh::VIndex> patchVerts;
@@ -477,7 +492,7 @@ TEST(MeshHolesTest, HolePatchFlipsUseFullMeshValence)
 
 	const size_t vBefore = m.vertices.size();
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	ASSERT_EQ(m.CloseHoles(1, &holesFaces), 1u);
+	ASSERT_EQ(m.CloseHoles(SmallestHoleEdges(m), &holesFaces), 1u);
 
 	// original vertices that end up in the patch = the hole boundary loop; each
 	// becomes fully interior, so ideal valence is 6.
@@ -548,7 +563,7 @@ TEST(MeshHolesTest, HolePatchCollapsesReachEdgeLengthFloor)
 	m.RemoveUnreferencedVertices();
 
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	ASSERT_EQ(m.CloseHoles(1, &holesFaces), 1u);
+	ASSERT_EQ(m.CloseHoles(SmallestHoleEdges(m), &holesFaces), 1u);
 
 	// collect the patch's undirected edges and their lengths
 	std::set<std::pair<Mesh::VIndex, Mesh::VIndex>> pedges;
@@ -640,21 +655,20 @@ TEST(MeshHolesTest, FillsHoleInRealMesh)
 	const Mesh holedSnapshot = m;
 	const float bboxDiag = holedSnapshot.ComputeAABBox().diagonal().norm();
 
-	// Fill only the smallest hole (= the triangular hole we just carved, which is
-	// far smaller than the mesh's pre-existing boundary loops). This isolates the
-	// assertion to the patch we created.
+	// Fill every hole no larger than the triangular one we just carved. This real
+	// mesh has a handful of equally small pre-existing loops, so the assertion is
+	// on the bookkeeping (loops closed == loops that disappeared), not on a
+	// hard-coded count.
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	const unsigned closed = m.CloseHoles(1, &holesFaces);
+	const unsigned closed = m.CloseHoles(SmallestHoleEdges(m), &holesFaces);
 
-	EXPECT_EQ(closed, 1u);
+	EXPECT_GE(closed, 1u);
 	EXPECT_EQ(closed, holesFaces.size());
 	EXPECT_GT(m.faces.size(), facesAfterRemove);
 
-	// Exactly one boundary loop closed -> loop count drops by exactly one, back
-	// to the original count.
+	EXPECT_EQ(loopsHoled, loopsBefore + 1u);
 	const unsigned loopsClosed = CountBoundaryLoops(m);
-	EXPECT_EQ(loopsClosed, loopsBefore);
-	EXPECT_EQ(loopsClosed, loopsHoled - 1);
+	EXPECT_EQ(loopsClosed, loopsHoled - closed);
 
 	// Result is a valid manifold: half-edge rebuild succeeds, no degenerates.
 	m.ListHalfEdges();
@@ -715,9 +729,9 @@ TEST(MeshHolesTest, NoHolesReturnsZero)
 }
 
 // ---------------------------------------------------------------------------
-// 4. nCloseHoles cap respected
+// 4. maxHoleEdges cap respected
 // ---------------------------------------------------------------------------
-TEST(MeshHolesTest, RespectsCloseLimit)
+TEST(MeshHolesTest, RespectsHoleSizeLimit)
 {
 	// Two independent holed grids, each with its own interior hole + outer rim.
 	Mesh a = MakeGridWithInteriorHole(4, 4);
@@ -732,13 +746,18 @@ TEST(MeshHolesTest, RespectsCloseLimit)
 	// 2 interior holes + 2 outer rims = 4 boundary loops.
 	ASSERT_EQ(CountBoundaryLoops(m), 4u);
 
+	// A cap below the interior holes fills nothing.
+	const unsigned holeEdges = SmallestHoleEdges(m);
+	ASSERT_GT(holeEdges, 1u);
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	const unsigned closed = m.CloseHoles(1, &holesFaces); // cap at 1
-	EXPECT_EQ(closed, 1u);
-	EXPECT_EQ(holesFaces.size(), 1u);
+	EXPECT_EQ(m.CloseHoles(holeEdges - 1, &holesFaces), 0u);
+	EXPECT_TRUE(holesFaces.empty());
+	EXPECT_EQ(CountBoundaryLoops(m), 4u);
 
-	// Three boundary loops remain (one inner hole still open + two rims).
-	EXPECT_EQ(CountBoundaryLoops(m), 3u);
+	// At the interior-hole size both are filled and only the two rims remain.
+	EXPECT_EQ(m.CloseHoles(holeEdges, &holesFaces), 2u);
+	EXPECT_EQ(holesFaces.size(), 2u);
+	EXPECT_EQ(CountBoundaryLoops(m), 2u);
 }
 
 // ---------------------------------------------------------------------------
@@ -762,8 +781,9 @@ TEST(MeshHolesTest, ParallelCloseHolesDeterministic)
 		}
 
 	Mesh a = m, b = m;
-	const unsigned ca = a.CloseHoles(9);
-	const unsigned cb = b.CloseHoles(9);
+	const unsigned maxHoleEdges = SmallestHoleEdges(a);
+	const unsigned ca = a.CloseHoles(maxHoleEdges);
+	const unsigned cb = b.CloseHoles(maxHoleEdges);
 	ASSERT_EQ(ca, cb);
 	ASSERT_GE(ca, 2u) << "expected several holes filled";
 	ASSERT_EQ(a.vertices.size(), b.vertices.size());
@@ -1104,7 +1124,7 @@ TEST(MeshHolesTest, LargeHoleRefinementIsBudgeted)
 		}
 
 	std::vector<std::vector<Mesh::FIndex>> holesFaces;
-	const unsigned closed = m.CloseHoles(1, &holesFaces);
+	const unsigned closed = m.CloseHoles(SmallestHoleEdges(m), &holesFaces);
 	ASSERT_EQ(closed, 1u);
 	ASSERT_EQ(holesFaces.size(), 1u);
 	EXPECT_LE(holesFaces[0].size(), 24000u)

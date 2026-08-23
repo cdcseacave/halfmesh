@@ -136,6 +136,10 @@ class Mesh
 	real ComputeArea() const;
 	// compute area for the given face indices
 	real ComputeArea(const std::vector<FIndex>&) const;
+	// mean length over the mesh's undirected edges, each counted once (0 if the
+	// mesh has no edge); builds the half-edge structure if it is not current,
+	// which repairs non-manifold input (see ListHalfEdges)
+	Type ComputeMeanEdgeLength();
 	// compute the axis-aligned bounding box of the mesh vertices
 	Eigen::AlignedBox<Type, 3> ComputeAABBox() const;
 
@@ -235,8 +239,10 @@ class Mesh
 	void RemoveVertices(std::vector<VIndex>&, bool updateLists = true);
 	// remove the selected vertices and their incident faces, then fill only the
 	// closed boundary loops created by that removal using Liepa triangulation.
-	// Pre-existing holes are never filled; a removed region touching an existing
-	// boundary remains open. Returns the number of newly created holes filled.
+	// The patch is not refined, so no vertex is added: this path decimates, and
+	// the vertex count is guaranteed to shrink. Pre-existing holes are never
+	// filled; a removed region touching an existing boundary remains open.
+	// Returns the number of newly created holes filled.
 	unsigned RemoveVerticesAndFill(std::vector<VIndex>);
 	// remove duplicate faces (referencing the same vertices)
 	//  - removeBothFaces: it is recommended that the input mesh to be manifold
@@ -323,7 +329,16 @@ class Mesh
 	// collapses (measured: target reached at +3% area vs +50% at the raw floor).
 	void Simplify(float decimateRatio, float minEdgeLength = 0.f, float aggressiveness = 0.f);
 
-	unsigned CloseHoles(unsigned nCloseHoles = 200, std::vector<std::vector<FIndex>>* holesFaces = NULL);
+	// fill every hole (boundary loop) spanned by at most maxHoleEdges edges,
+	// smallest first, by Liepa minimum-weight triangulation followed by refining
+	// and fairing the patch, which appends interior vertices to match the
+	// surrounding density. Loops that repeat a vertex are not triangulable and
+	// are skipped. Filling invalidates the texture attributes (the new faces have
+	// no authored UVs), so they are cleared.
+	//  - maxHoleEdges: largest hole to fill, in boundary edges (0 is a no-op)
+	//  - holesFaces: optionally receives the new face indices, per filled hole
+	// return the number of holes closed
+	unsigned CloseHoles(unsigned maxHoleEdges = 30, std::vector<std::vector<FIndex>>* holesFaces = NULL);
 
 	// smooth the vertex positions in place using HC Laplacian smoothing:
 	// "Improved Laplacian Smoothing of Noisy Surface Meshes", Vollmer, Mencl

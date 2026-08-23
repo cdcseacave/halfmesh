@@ -1160,80 +1160,68 @@ static void EnumerateBoundaryLoops(const HalfMesh& hm,
 
 static unsigned FillBoundaryLoops(Mesh& mesh,
                                   const std::vector<BoundaryLoop>& loops, const std::vector<unsigned>& candidates,
-                                  unsigned maxHoles, std::vector<std::vector<Mesh::FIndex>>* holesFaces,
-                                  bool rebuildHalfMesh = true)
+                                  std::vector<std::vector<Mesh::FIndex>>* holesFaces,
+                                  bool refine = true, bool rebuildHalfMesh = true)
 {
-	// Stage 2/3 (refine + fairing) are enabled by default: they remesh the patch
-	// to the surrounding density and smooth the interior. They never remove
-	// boundary vertices and degrade gracefully if the SPD solve fails.
-	const bool doRefine = true;
-	const bool doFair = true;
+	// Stage 2/3 (refine + fairing) remesh the patch to the surrounding density and
+	// smooth its interior, adding vertices; callers that only want the hole spanned
+	// (decimation) pass refine=false. Neither stage removes boundary vertices, and
+	// both degrade gracefully if the SPD solve fails.
 
 	// Fill holes in parallel and harvest sequentially (phased launch-then-harvest).
 	// Each HoleFilling only reads immutable parent state, and fixed harvest order
 	// keeps appended vertices/faces deterministic.
-	unsigned closed = 0;
-	unsigned next = 0;
+	std::vector<HoleFilling> hfs;
+	hfs.reserve(candidates.size());
+	for (unsigned candidate : candidates) {
+		const BoundaryLoop& loop = loops[candidate];
+		hfs.emplace_back(mesh, loop.verts, loop.oppNorms);
+	}
+	std::vector<char> ok(hfs.size(), 0);
 	BS::light_thread_pool pool;
-	while (closed < maxHoles && next < candidates.size()) {
-		const unsigned need = maxHoles - closed;
-		const unsigned begin = next;
-		const unsigned end =
-		    std::min<unsigned>(begin + need, static_cast<unsigned>(candidates.size()));
-		next = end;
+	pool.detach_blocks(std::size_t(0), hfs.size(), [&](std::size_t b, std::size_t e) {
+		for (std::size_t j = b; j < e; ++j)
+			ok[j] = hfs[j].Fill(refine, refine);
+	});
+	pool.wait();
 
-		std::vector<HoleFilling> hfs;
-		hfs.reserve(end - begin);
-		for (unsigned i = begin; i < end; ++i) {
-			const BoundaryLoop& loop = loops[candidates[i]];
-			hfs.emplace_back(mesh, loop.verts, loop.oppNorms);
+	unsigned closed = 0;
+	for (std::size_t j = 0; j < hfs.size(); ++j) {
+		if (!ok[j])
+			continue;
+		HoleFilling& hf = hfs[j];
+
+		std::vector<Mesh::VIndex> interiorParent(hf.NumInterior());
+		for (int k = 0; k < hf.NumInterior(); ++k) {
+			interiorParent[k] = static_cast<Mesh::VIndex>(mesh.vertices.size());
+			mesh.vertices.emplace_back(hf.InteriorPoint(k));
 		}
-		std::vector<char> ok(hfs.size(), 0);
-		pool.detach_blocks(std::size_t(0), hfs.size(),
-		                   [&](std::size_t b, std::size_t e) {
-			                   for (std::size_t j = b; j < e; ++j)
-				                   ok[j] = hfs[j].Fill(doRefine, doFair);
-		                   });
-		pool.wait();
 
-		for (std::size_t j = 0; j < hfs.size() && closed < maxHoles; ++j) {
-			if (!ok[j])
+		const int nb = hf.NumBoundary();
+		auto LocalToParent = [&](int local) -> Mesh::VIndex {
+			return (local < nb) ? hf.ParentVertex(local) : interiorParent[local - nb];
+		};
+
+		std::vector<Mesh::FIndex> newFaces;
+		newFaces.reserve(hf.Triangles().size());
+		for (const auto& t : hf.Triangles()) {
+			const Mesh::VIndex a = LocalToParent(t[0]);
+			const Mesh::VIndex b = LocalToParent(t[1]);
+			const Mesh::VIndex c = LocalToParent(t[2]);
+			if (a == b || b == c || c == a)
 				continue;
-			HoleFilling& hf = hfs[j];
-
-			std::vector<Mesh::VIndex> interiorParent(hf.NumInterior());
-			for (int k = 0; k < hf.NumInterior(); ++k) {
-				interiorParent[k] = static_cast<Mesh::VIndex>(mesh.vertices.size());
-				mesh.vertices.emplace_back(hf.InteriorPoint(k));
-			}
-
-			const int nb = hf.NumBoundary();
-			auto LocalToParent = [&](int local) -> Mesh::VIndex {
-				return (local < nb) ? hf.ParentVertex(local)
-				                    : interiorParent[local - nb];
-			};
-
-			std::vector<Mesh::FIndex> newFaces;
-			newFaces.reserve(hf.Triangles().size());
-			for (const auto& t : hf.Triangles()) {
-				const Mesh::VIndex a = LocalToParent(t[0]);
-				const Mesh::VIndex b = LocalToParent(t[1]);
-				const Mesh::VIndex c = LocalToParent(t[2]);
-				if (a == b || b == c || c == a)
-					continue;
-				newFaces.push_back(static_cast<Mesh::FIndex>(mesh.faces.size()));
-				mesh.faces.emplace_back(Mesh::Face(a, b, c));
-			}
-
-			if (newFaces.empty()) {
-				mesh.vertices.resize(mesh.vertices.size() - interiorParent.size());
-				continue;
-			}
-
-			if (holesFaces != nullptr)
-				holesFaces->emplace_back(std::move(newFaces));
-			++closed;
+			newFaces.push_back(static_cast<Mesh::FIndex>(mesh.faces.size()));
+			mesh.faces.emplace_back(Mesh::Face(a, b, c));
 		}
+
+		if (newFaces.empty()) {
+			mesh.vertices.resize(mesh.vertices.size() - interiorParent.size());
+			continue;
+		}
+
+		if (holesFaces != nullptr)
+			holesFaces->emplace_back(std::move(newFaces));
+		++closed;
 	}
 
 	if (closed > 0) {
@@ -1256,17 +1244,17 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 // ---------------------------------------------------------------------------
 // Mesh::CloseHoles
 //
-// Enumerate the mesh's boundary loops (holes) and fill the smallest `nCloseHoles`
-// of them by Liepa minimum-weight triangulation, optionally refining and fairing
-// the patch (PMP pipeline). New patch triangles are appended to `faces` and any
-// interior vertices added by refine/fairing are appended to `vertices`. If
-// `holesFaces` is non-null it receives, per filled hole, the indices of the new
-// faces. Returns the number of holes actually closed.
+// Enumerate the mesh's boundary loops (holes) and fill every one spanned by at
+// most `maxHoleEdges` boundary edges, by Liepa minimum-weight triangulation
+// followed by refining and fairing the patch (PMP pipeline). New patch triangles
+// are appended to `faces` and the interior vertices added by refine/fairing are
+// appended to `vertices`. If `holesFaces` is non-null it receives, per filled
+// hole, the indices of the new faces. Returns the number of holes closed.
 // ---------------------------------------------------------------------------
-unsigned Mesh::CloseHoles(unsigned nCloseHoles,
+unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
                           std::vector<std::vector<FIndex>>* holesFaces)
 {
-	if (faces.empty() || nCloseHoles == 0)
+	if (faces.empty() || maxHoleEdges == 0)
 		return 0;
 
 	// Force a fresh half-edge build: ListHalfEdges() caches by vertex count, so a
@@ -1282,34 +1270,26 @@ unsigned Mesh::CloseHoles(unsigned nCloseHoles,
 	if (loops.empty())
 		return 0;
 
-	// Fill the smallest holes first (by boundary-vertex count), as the brief
-	// requires. A hole needs at least 3 boundary vertices to be triangulable.
-	std::vector<unsigned> order(loops.size());
-	for (unsigned i = 0; i < order.size(); ++i)
-		order[i] = i;
-	std::sort(order.begin(), order.end(), [&](unsigned a, unsigned b) {
-		return loops[a].verts.size() < loops[b].verts.size();
-	});
-
-	// Collect the simple, triangulable candidate loops (>= 3 vertices, no repeated
-	// vertex) in the fixed smallest-first order.
+	// Collect the simple, triangulable loops small enough to fill: a closed loop
+	// spans as many edges as it has vertices, needs at least 3 to be triangulable,
+	// and must not repeat a vertex.
 	std::vector<unsigned> candidates;
-	candidates.reserve(order.size());
-	for (unsigned oi = 0; oi < order.size(); ++oi) {
-		const BoundaryLoop& loop = loops[order[oi]];
-		if (loop.verts.size() < 3)
+	candidates.reserve(loops.size());
+	for (unsigned idxLoop = 0; idxLoop < loops.size(); ++idxLoop) {
+		const BoundaryLoop& loop = loops[idxLoop];
+		if (loop.verts.size() < 3 || loop.verts.size() > maxHoleEdges)
 			continue;
-		std::unordered_map<VIndex, int> seen;
+		std::unordered_set<VIndex> seen;
 		bool simple = true;
 		for (VIndex v : loop.verts)
-			if (++seen[v] > 1) {
+			if (!seen.emplace(v).second) {
 				simple = false;
 				break;
 			}
 		if (simple)
-			candidates.push_back(order[oi]);
+			candidates.push_back(idxLoop);
 	}
-	return FillBoundaryLoops(*this, loops, candidates, nCloseHoles, holesFaces);
+	return FillBoundaryLoops(*this, loops, candidates, holesFaces);
 }
 
 unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
@@ -1473,8 +1453,9 @@ unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 		if (loop.verts.size() >= 3 && newlyExposed && !touchesOriginalBoundary)
 			candidates.emplace_back(idxLoop);
 	}
-	const unsigned closed = FillBoundaryLoops(
-	    *this, loops, candidates, static_cast<unsigned>(candidates.size()), nullptr, false);
+	// Span the exposed loops without refining: this path decimates, so re-adding
+	// interior vertices to match the surrounding density would undo the removal.
+	const unsigned closed = FillBoundaryLoops(*this, loops, candidates, nullptr, false, false);
 	RemoveUnreferencedVertices();
 	faceNormals.clear();
 	vertexFaces.clear();

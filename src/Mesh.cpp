@@ -140,6 +140,19 @@ real Mesh::ComputeArea(const std::vector<FIndex>& indices) const
 	return area * real(0.5);
 }
 
+Mesh::Type Mesh::ComputeMeanEdgeLength()
+{
+	ListHalfEdges();
+	if (halfMesh.ESize() == 0)
+		return 0;
+	real sumLength(0);
+	for (EIndex idxEdge = 0; idxEdge < halfMesh.ESize(); ++idxEdge) {
+		const auto verts = halfMesh.EVertices(idxEdge);
+		sumLength += (vertices[verts.first] - vertices[verts.second]).norm();
+	}
+	return Type(sumLength / halfMesh.ESize());
+}
+
 Eigen::AlignedBox<Mesh::Type, 3> Mesh::ComputeAABBox() const
 {
 	Eigen::AlignedBox<Type, 3> bbox;

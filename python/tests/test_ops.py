@@ -131,7 +131,7 @@ def test_simplify_rejects_nonpositive_target():
 
 def test_close_holes_makes_an_open_cube_watertight():
     v, f = _cube_mesh()
-    rv, rf, closed = hm.close_holes(v, f[:-1].copy(), 200)
+    rv, rf, closed = hm.close_holes(v, f[:-1].copy(), 4)
     assert closed == 1
     assert _euler_characteristic(rv, rf) == 2  # closed genus-0 surface
 
