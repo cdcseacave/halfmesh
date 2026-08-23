@@ -326,6 +326,15 @@ TEST(MeshRepairTest, RemoveSpuriousComponentsDisabledIsNoOp)
 	EXPECT_EQ(mesh.faces, faces);
 }
 
+TEST(MeshRepairTest, RemoveSpuriousComponentsCountsAutoRepairRemovals)
+{
+	Mesh mesh;
+	mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}, {0, 1, 2}};
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(100.f), 1u);
+	EXPECT_EQ(mesh.faces.size(), 1u);
+}
+
 TEST(MeshRepairTest, RemoveSpuriousComponentsDropsSmallDisconnectedSurface)
 {
 	Mesh mesh;

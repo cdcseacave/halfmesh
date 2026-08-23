@@ -1423,9 +1423,8 @@ TEST(SegmentCharts, PostRepairMergeReducesChartsFoldFree)
 TEST(RectPacking, UsesCvRectsAndPreservesInputOrder)
 {
 	const std::vector<cv::Rect> rects{
-		cv::Rect(17, 23, 4, 8),
-		cv::Rect(0, 0, 8, 4)
-	};
+	    cv::Rect(17, 23, 4, 8),
+	    cv::Rect(0, 0, 8, 4)};
 	RectPackParams params;
 	params.pageSize = cv::Size(8, 8);
 	params.padding = 0;
@@ -1443,9 +1442,8 @@ TEST(RectPacking, UsesCvRectsAndPreservesInputOrder)
 TEST(RectPacking, FixedSinglePageReportsUnpackedInputs)
 {
 	const std::vector<cv::Rect> rects{
-		cv::Rect(0, 0, 8, 8),
-		cv::Rect(0, 0, 8, 8)
-	};
+	    cv::Rect(0, 0, 8, 8),
+	    cv::Rect(0, 0, 8, 8)};
 	RectPackParams params;
 	params.pageSize = cv::Size(8, 8);
 	params.padding = 0;
@@ -1457,12 +1455,24 @@ TEST(RectPacking, FixedSinglePageReportsUnpackedInputs)
 	EXPECT_NE(placements[0].packed, placements[1].packed);
 }
 
+TEST(RectPacking, FixedSinglePageReportsPageWhenAllInputsAreOversized)
+{
+	const std::vector<cv::Rect> rects{cv::Rect(0, 0, 9, 9)};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.padding = 0;
+	params.mode = RectPackMode::FixedSinglePage;
+	std::vector<RectPlacement> placements;
+	const RectPackResult result = PackRectangles(rects, params, placements);
+	EXPECT_EQ(result.numPages, 1u);
+	EXPECT_EQ(result.numPacked, 0u);
+}
+
 TEST(RectPacking, UnlimitedModeOpensAdditionalPages)
 {
 	const std::vector<cv::Rect> rects{
-		cv::Rect(0, 0, 8, 8),
-		cv::Rect(0, 0, 8, 8)
-	};
+	    cv::Rect(0, 0, 8, 8),
+	    cv::Rect(0, 0, 8, 8)};
 	RectPackParams params;
 	params.pageSize = cv::Size(8, 8);
 	params.padding = 0;
@@ -1491,9 +1501,8 @@ TEST(RectPacking, GrowToFitExpandsPageForOversizedInput)
 TEST(RectPacking, GrowSinglePageRepacksUntilAllRectsFit)
 {
 	const std::vector<cv::Rect> rects{
-		cv::Rect(0, 0, 8, 8),
-		cv::Rect(0, 0, 8, 8)
-	};
+	    cv::Rect(0, 0, 8, 8),
+	    cv::Rect(0, 0, 8, 8)};
 	RectPackParams params;
 	params.pageSize = cv::Size(8, 8);
 	params.padding = 0;
@@ -1509,9 +1518,8 @@ TEST(RectPacking, GrowSinglePageRepacksUntilAllRectsFit)
 TEST(RectPacking, GrowSinglePageHonorsMaximumSize)
 {
 	const std::vector<cv::Rect> rects{
-		cv::Rect(0, 0, 8, 8),
-		cv::Rect(0, 0, 8, 8)
-	};
+	    cv::Rect(0, 0, 8, 8),
+	    cv::Rect(0, 0, 8, 8)};
 	RectPackParams params;
 	params.pageSize = cv::Size(8, 8);
 	params.maxPageSize = cv::Size(8, 8);
@@ -1523,12 +1531,26 @@ TEST(RectPacking, GrowSinglePageHonorsMaximumSize)
 	EXPECT_EQ(result.numPacked, 1u);
 }
 
+TEST(RectPacking, GrowSinglePageStopsWhenAxisCapMakesInputImpossible)
+{
+	const std::vector<cv::Rect> rects{cv::Rect(0, 0, 12, 7)};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.maxPageSize = cv::Size(8, 0);
+	params.padding = 2;
+	params.mode = RectPackMode::GrowSinglePage;
+	std::vector<RectPlacement> placements;
+	const RectPackResult result = PackRectangles(rects, params, placements);
+	EXPECT_EQ(result.pageSize, cv::Size(8, 11));
+	EXPECT_EQ(result.numPages, 1u);
+	EXPECT_EQ(result.numPacked, 0u);
+}
+
 TEST(RectPacking, EstimatesRoundedSquareTextureSize)
 {
 	const std::vector<cv::Rect> rects{
-		cv::Rect(0, 0, 10, 10),
-		cv::Rect(0, 0, 10, 10)
-	};
+	    cv::Rect(0, 0, 10, 10),
+	    cv::Rect(0, 0, 10, 10)};
 	EXPECT_EQ(EstimateSquareTextureSize(rects, 8, 1.f), 16);
 	EXPECT_EQ(EstimateSquareTextureSize(rects, 0, 1.f), 16);
 }

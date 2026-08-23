@@ -467,13 +467,31 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 				height = std::min(height, params.maxPageSize.height);
 		};
 		NormalizePageSize(pageW, pageH);
+		const int64_t maxPageW = params.maxPageSize.width > 0
+		                             ? params.maxPageSize.width
+		                             : std::numeric_limits<int>::max();
+		const int64_t maxPageH = params.maxPageSize.height > 0
+		                             ? params.maxPageSize.height
+		                             : std::numeric_limits<int>::max();
+		const bool impossible = std::any_of(rects.begin(), rects.end(), [&](const cv::Rect& rect) {
+			if (rect.width <= 0 || rect.height <= 0)
+				return false;
+			const int64_t paddedW = static_cast<int64_t>(rect.width) + 2 * static_cast<int64_t>(params.padding);
+			const int64_t paddedH = static_cast<int64_t>(rect.height) + 2 * static_cast<int64_t>(params.padding);
+			return !((paddedW <= maxPageW && paddedH <= maxPageH)
+			         || (params.allowRotation && paddedH <= maxPageW && paddedW <= maxPageH));
+		});
+		if (impossible) {
+			probe.pageSize = cv::Size(pageW, pageH);
+			return PackRectangles(rects, probe, placements);
+		}
 		for (;;) {
 			probe.pageSize = cv::Size(pageW, pageH);
 			RectPackResult result = PackRectangles(rects, probe, placements);
 			if (result.numPacked == targetCount)
 				return result;
-			int nextW = pageW <= std::numeric_limits<int>::max()/2 ? pageW*2 : pageW;
-			int nextH = pageH <= std::numeric_limits<int>::max()/2 ? pageH*2 : pageH;
+			int nextW = pageW <= std::numeric_limits<int>::max() / 2 ? pageW * 2 : pageW;
+			int nextH = pageH <= std::numeric_limits<int>::max() / 2 ? pageH * 2 : pageH;
 			NormalizePageSize(nextW, nextH);
 			if (nextW == pageW && nextH == pageH)
 				return result;
@@ -511,11 +529,12 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 		const int paddedW = rect.width + 2 * static_cast<int>(pad);
 		const int paddedH = rect.height + 2 * static_cast<int>(pad);
 		return (paddedW <= static_cast<int>(pageW) && paddedH <= static_cast<int>(pageH))
-			|| (params.allowRotation && paddedH <= static_cast<int>(pageW)
-				&& paddedW <= static_cast<int>(pageH));
+		       || (params.allowRotation && paddedH <= static_cast<int>(pageW)
+		           && paddedW <= static_cast<int>(pageH));
 	});
 	if (!hasPackableInput) {
 		RectPackResult result;
+		result.numPages = params.mode == RectPackMode::FixedSinglePage ? 1u : 0u;
 		result.pageSize = cv::Size(static_cast<int>(pageW), static_cast<int>(pageH));
 		return result;
 	}
@@ -550,8 +569,7 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 		int rw = cr.width + 2 * static_cast<int>(pad);
 		int rh = cr.height + 2 * static_cast<int>(pad);
 		if (rw > static_cast<int>(pageW) || rh > static_cast<int>(pageH)) {
-			if (!params.allowRotation ||
-				rh > static_cast<int>(pageW) || rw > static_cast<int>(pageH))
+			if (!params.allowRotation || rh > static_cast<int>(pageW) || rw > static_cast<int>(pageH))
 				continue;
 		}
 		if (std::max(rw, rh) >= tierThreshold) {
@@ -598,11 +616,10 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 		const int width = placed.rotated ? cr.height : cr.width;
 		const int height = placed.rotated ? cr.width : cr.height;
 		placements[ci] = {
-			cv::Rect(static_cast<int>(placed.x) + static_cast<int>(pad),
-			         static_cast<int>(placed.y) + static_cast<int>(pad),
-			         width, height),
-			placed.rotated, page, true
-		};
+		    cv::Rect(static_cast<int>(placed.x) + static_cast<int>(pad),
+		             static_cast<int>(placed.y) + static_cast<int>(pad),
+		             width, height),
+		    placed.rotated, page, true};
 		// Accumulate placed area INCLUDING padding (same basis as pageW*pageH*pages).
 		packedArea += static_cast<uint64_t>(placed.w) * static_cast<uint64_t>(placed.h);
 	}
@@ -652,16 +669,15 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 	};
 	for (const TailRect& t : tail) {
 		if ((!shelf.open || shelf.cursor + t.rw > shelf.x + shelf.w + 1e-3f || t.rh > shelf.h + 1e-3f)
-			&& !openShelf(static_cast<float>(t.rw), static_cast<float>(t.rh)))
+		    && !openShelf(static_cast<float>(t.rw), static_cast<float>(t.rh)))
 			continue;
 		const cv::Rect& cr = crects[t.ci];
 		placements[t.ci] = {
-			cv::Rect(static_cast<int>(shelf.cursor) + static_cast<int>(pad),
-			         static_cast<int>(shelf.y) + static_cast<int>(pad),
-			         t.rot ? cr.height : cr.width,
-			         t.rot ? cr.width : cr.height),
-			t.rot, shelf.page, true
-		};
+		    cv::Rect(static_cast<int>(shelf.cursor) + static_cast<int>(pad),
+		             static_cast<int>(shelf.y) + static_cast<int>(pad),
+		             t.rot ? cr.height : cr.width,
+		             t.rot ? cr.width : cr.height),
+		    t.rot, shelf.page, true};
 		shelf.cursor += t.rw;
 		packedArea += static_cast<uint64_t>(t.rw) * static_cast<uint64_t>(t.rh);
 	}
@@ -669,8 +685,8 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 	RectPackResult result;
 	result.numPages = static_cast<unsigned>(bins.size());
 	result.numPacked = static_cast<unsigned>(std::count_if(
-		placements.begin(), placements.end(),
-		[](const RectPlacement& placement) { return placement.packed; }));
+	    placements.begin(), placements.end(),
+	    [](const RectPlacement& placement) { return placement.packed; }));
 	result.pageSize = cv::Size(static_cast<int>(pageW), static_cast<int>(pageH));
 	result.packedArea = packedArea;
 	return result;
@@ -690,8 +706,8 @@ int EstimateSquareTextureSize(const std::vector<cv::Rect>& rects,
 		maxSide = std::max(maxSide, std::max(rect.width, rect.height));
 	}
 	const int side = std::max(
-		static_cast<int>(std::ceil(std::sqrt(static_cast<double>(area) / targetOccupancy))),
-		maxSide);
+	    static_cast<int>(std::ceil(std::sqrt(static_cast<double>(area) / targetOccupancy))),
+	    maxSide);
 	if (multiple > 0)
 		return ((side + multiple - 1) / multiple) * multiple;
 	return static_cast<int>(NextPow2(static_cast<unsigned>(side)));

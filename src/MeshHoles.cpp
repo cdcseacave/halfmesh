@@ -1331,34 +1331,91 @@ unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 		return (static_cast<uint64_t>(a) << 32) | b;
 	};
 	std::unordered_set<uint64_t> originalBoundaryEdges;
+	std::vector<char> originalBoundaryVertex(vertices.size(), 0);
 	for (HIndex halfedge = 0; halfedge < halfMesh.HeSize(); ++halfedge) {
 		if (!halfMesh.HeIsBoundary(halfedge))
 			continue;
-		originalBoundaryEdges.emplace(EdgeKey(
-		    halfMesh.HeVertex(halfedge), halfMesh.HeVertex(halfMesh.HeNext(halfedge))));
+		const VIndex tail = halfMesh.HeVertex(halfedge);
+		const VIndex head = halfMesh.HeVertex(halfMesh.HeNext(halfedge));
+		originalBoundaryEdges.emplace(EdgeKey(tail, head));
+		originalBoundaryVertex[tail] = originalBoundaryVertex[head] = 1;
 	}
 
 	std::vector<char> removedVertex(vertices.size(), 0);
 	for (VIndex vertex : vertexRemoves)
 		removedVertex[vertex] = 1;
+	// Carry original-boundary contact across each connected removed region to
+	// the surviving frontier that replaces it after vertex compaction.
+	std::vector<VIndex> removedParent(vertices.size(), math::NO_ID);
+	for (VIndex vertex : vertexRemoves)
+		removedParent[vertex] = vertex;
+	const auto FindRemovedRoot = [&removedParent](VIndex vertex) {
+		VIndex root = vertex;
+		while (removedParent[root] != root)
+			root = removedParent[root];
+		while (removedParent[vertex] != vertex) {
+			const VIndex next = removedParent[vertex];
+			removedParent[vertex] = root;
+			vertex = next;
+		}
+		return root;
+	};
+	const auto JoinRemoved = [&FindRemovedRoot, &removedParent](VIndex a, VIndex b) {
+		const VIndex rootA = FindRemovedRoot(a);
+		const VIndex rootB = FindRemovedRoot(b);
+		if (rootA != rootB)
+			removedParent[rootB] = rootA;
+	};
+	for (const Face& face : faces) {
+		for (int edge = 0; edge < 3; ++edge) {
+			const VIndex a = face[edge];
+			const VIndex b = face[(edge + 1) % 3];
+			if (removedVertex[a] && removedVertex[b])
+				JoinRemoved(a, b);
+		}
+	}
+	std::vector<char> removedComponentTouchesBoundary(vertices.size(), 0);
+	for (VIndex vertex : vertexRemoves)
+		if (originalBoundaryVertex[vertex])
+			removedComponentTouchesBoundary[FindRemovedRoot(vertex)] = 1;
+
 	std::unordered_map<uint64_t, uint8_t> edgeSides;
+	std::unordered_set<uint64_t> boundaryRemovalEdges;
 	std::vector<FIndex> faceRemoves;
 	for (FIndex idxFace = 0; idxFace < faces.size(); ++idxFace) {
 		const Face& face = faces[idxFace];
 		const bool remove = removedVertex[face[0]] || removedVertex[face[1]] || removedVertex[face[2]];
+		bool removalTouchesBoundary = false;
+		if (remove) {
+			for (int corner = 0; corner < 3; ++corner)
+				if (removedVertex[face[corner]]
+				    && removedComponentTouchesBoundary[FindRemovedRoot(face[corner])]) {
+					removalTouchesBoundary = true;
+					break;
+				}
+		}
 		if (remove)
 			faceRemoves.emplace_back(idxFace);
 		for (int edge = 0; edge < 3; ++edge) {
 			const VIndex a = face[edge];
 			const VIndex b = face[(edge + 1) % 3];
-			if (!removedVertex[a] && !removedVertex[b])
-				edgeSides[EdgeKey(a, b)] |= remove ? uint8_t(1) : uint8_t(2);
+			if (!removedVertex[a] && !removedVertex[b]) {
+				const uint64_t key = EdgeKey(a, b);
+				edgeSides[key] |= remove ? uint8_t(1) : uint8_t(2);
+				if (remove && removalTouchesBoundary)
+					boundaryRemovalEdges.emplace(key);
+			}
 		}
 	}
 	std::unordered_set<uint64_t> exposedEdges;
-	for (const auto& [edge, sides] : edgeSides)
-		if (sides == 3)
+	std::unordered_set<uint64_t> boundaryExposedEdges;
+	for (const auto& [edge, sides] : edgeSides) {
+		if (sides == 3) {
 			exposedEdges.emplace(edge);
+			if (boundaryRemovalEdges.contains(edge))
+				boundaryExposedEdges.emplace(edge);
+		}
+	}
 
 	RemoveFaces(faceRemoves);
 	// RemoveVertices compacts by moving the current last vertex into each removed
@@ -1391,6 +1448,7 @@ unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 	};
 	RemapEdges(originalBoundaryEdges);
 	RemapEdges(exposedEdges);
+	RemapEdges(boundaryExposedEdges);
 	halfMesh.Clear();
 	ListHalfEdges();
 	std::vector<BoundaryLoop> loops;
@@ -1409,7 +1467,8 @@ unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 			}
 			const uint64_t edge = EdgeKey(loop.verts[i], loop.verts[(i + 1) % loop.verts.size()]);
 			newlyExposed |= exposedEdges.contains(edge);
-			touchesOriginalBoundary |= originalBoundaryEdges.contains(edge);
+			touchesOriginalBoundary |= originalBoundaryEdges.contains(edge)
+			                           || boundaryExposedEdges.contains(edge);
 		}
 		if (loop.verts.size() >= 3 && newlyExposed && !touchesOriginalBoundary)
 			candidates.emplace_back(idxLoop);

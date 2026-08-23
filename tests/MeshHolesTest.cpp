@@ -201,6 +201,37 @@ TEST(MeshHolesTest, RemoveVerticesAndFillLeavesPreExistingHoles)
 		    << "selected-vertex fill closed the unrelated smaller hole";
 }
 
+TEST(MeshHolesTest, RemoveVerticesAndFillLeavesTrimmedBoundaryOpen)
+{
+	constexpr unsigned radialSegments = 8;
+	constexpr unsigned heightSegments = 2;
+	Mesh mesh;
+	for (unsigned height = 0; height <= heightSegments; ++height) {
+		for (unsigned radial = 0; radial < radialSegments; ++radial) {
+			const float angle = 6.283185307179586f * radial / radialSegments;
+			mesh.vertices.emplace_back(std::cos(angle), static_cast<float>(height), std::sin(angle));
+		}
+	}
+	for (unsigned height = 0; height < heightSegments; ++height) {
+		for (unsigned radial = 0; radial < radialSegments; ++radial) {
+			const unsigned next = (radial + 1) % radialSegments;
+			const Mesh::VIndex a = height * radialSegments + radial;
+			const Mesh::VIndex b = height * radialSegments + next;
+			const Mesh::VIndex c = (height + 1) * radialSegments + radial;
+			const Mesh::VIndex d = (height + 1) * radialSegments + next;
+			mesh.faces.emplace_back(a, b, d);
+			mesh.faces.emplace_back(a, d, c);
+		}
+	}
+	std::vector<Mesh::VIndex> topRing;
+	for (unsigned radial = 0; radial < radialSegments; ++radial)
+		topRing.emplace_back(heightSegments * radialSegments + radial);
+	ASSERT_EQ(CountBoundaryLoops(mesh), 2u);
+
+	EXPECT_EQ(mesh.RemoveVerticesAndFill(topRing), 0u);
+	EXPECT_EQ(CountBoundaryLoops(mesh), 2u);
+}
+
 // ---------------------------------------------------------------------------
 // 1b. Wavy (non-planar) hole: the refine-stage valence/cap flips act on
 // non-planar quads, where a flip can fold a patch triangle over. After
