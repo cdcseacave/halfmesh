@@ -233,6 +233,11 @@ class Mesh
 	// faces referencing the REMOVED vertices are left untouched -- a fast
 	// path for callers that remove those faces themselves.
 	void RemoveVertices(std::vector<VIndex>&, bool updateLists = true);
+	// remove the selected vertices and their incident faces, then fill only the
+	// closed boundary loops created by that removal using Liepa triangulation.
+	// Pre-existing holes are never filled; a removed region touching an existing
+	// boundary remains open. Returns the number of newly created holes filled.
+	unsigned RemoveVerticesAndFill(std::vector<VIndex>);
 	// remove duplicate faces (referencing the same vertices)
 	//  - removeBothFaces: it is recommended that the input mesh to be manifold
 	//                       and so the duplicated faces can only be isolated from
@@ -268,6 +273,23 @@ class Mesh
 	// clean the mesh by removing small components
 	//  - minComponentSize: remove components with less number of faces
 	unsigned RemoveSmallComponents(unsigned minComponentSize);
+
+	// remove reconstruction debris relative to the mesh's own edge-length
+	// distribution: first discard faces containing an edge longer than
+	// percentile95(edgeLength)*factor, then discard connected components whose
+	// bounding-box diagonal is shorter than percentile55(edgeLength)*factor.
+	// return number of faces removed
+	FIndex RemoveSpuriousComponents(float factor);
+
+	// remove spike/needle vertices: a vertex incident to at most one face is not
+	// part of a surface, it is either isolated or the tip of a dangling triangle.
+	// Dropping such a vertex takes its incident face with it, which can starve a
+	// neighbour down to a single face, so the sweep repeats until the mesh is
+	// stable or maxIterations rounds have run.
+	// invalidates vertexFaces and the half-edge structure; unreferenced vertices
+	// are not created (the spikes themselves are removed)
+	// return number of vertices removed
+	unsigned RemoveSpikes(unsigned maxIterations = 100);
 
 	// implement edge collapse mesh simplification approximating the error
 	// locally for each vertex using a quadric representation;
@@ -369,8 +391,8 @@ class Mesh
 	{
 		float edgeMinLength{0}; // no edge should be shorter than this value (used when collapsing)
 		float edgeMaxLength{0}; // no edge should be longer than this value (used when refining);
-		    // 0 is deliberately INVALID — RemeshIsotropic validates and no-ops
-		    // (a non-positive threshold would split every edge forever)
+		// 0 is deliberately INVALID — RemeshIsotropic validates and no-ops
+		// (a non-positive threshold would split every edge forever)
 
 		float minAdaptiveMult{1};
 		float maxAdaptiveMult{1};

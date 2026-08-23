@@ -22,6 +22,7 @@
 #include <halfmesh/AtlasPacking.h>
 #include <halfmesh/Mesh.h>
 #include <halfmesh/Parametrize.h>
+#include <halfmesh/RectPacking.h>
 
 #include <gtest/gtest.h>
 
@@ -1329,6 +1330,31 @@ TEST(PackAtlas, FitToResolutionHonorsPageDimensions)
 	EXPECT_LE(res.height, params.resolution);
 }
 
+TEST(PackAtlas, NonFitModeGrowsPageForOversizedChart)
+{
+	Mesh mesh;
+	mesh.vertices = {{0.f, 0.f, 0.f}, {100.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}};
+	mesh.faceTexcoords = {{0.f, 0.f}, {100.f, 0.f}, {0.f, 1.f}};
+	const std::vector<unsigned> faceChart = {0};
+
+	AtlasParams params;
+	params.resolution = 16;
+	params.padding = 2;
+	params.fitToResolution = false;
+
+	const AtlasResult res = PackAtlas(mesh, faceChart, 1u, params);
+	EXPECT_EQ(res.numPages, 1u);
+	EXPECT_GE(res.width, 104u);
+	EXPECT_GE(res.height, 5u);
+	for (const Mesh::TexCoord& uv : mesh.faceTexcoords) {
+		EXPECT_GE(uv.x(), 0.f);
+		EXPECT_LE(uv.x(), 1.f);
+		EXPECT_GE(uv.y(), 0.f);
+		EXPECT_LE(uv.y(), 1.f);
+	}
+}
+
 // Deterministic "staircase terrain": an n×n grid whose vertex heights are
 // quantized random levels — many high-angle-defect vertices, like a
 // tetra-extracted MVS surface. Cone-Lloyd fragments it, flip repair splits
@@ -1392,6 +1418,119 @@ TEST(SegmentCharts, PostRepairMergeReducesChartsFoldFree)
 			continue;
 		EXPECT_FALSE(detail::ChartFacesFold(m2, fl[c], p2)) << "chart " << c << " folds after re-merge";
 	}
+}
+
+TEST(RectPacking, UsesCvRectsAndPreservesInputOrder)
+{
+	const std::vector<cv::Rect> rects{
+		cv::Rect(17, 23, 4, 8),
+		cv::Rect(0, 0, 8, 4)
+	};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.padding = 0;
+	params.mode = RectPackMode::FixedMultiPage;
+	std::vector<RectPlacement> placements;
+	const RectPackResult result = PackRectangles(rects, params, placements);
+	ASSERT_EQ(placements.size(), rects.size());
+	EXPECT_EQ(result.numPacked, 2u);
+	EXPECT_TRUE(placements[0].packed);
+	EXPECT_TRUE(placements[1].packed);
+	EXPECT_EQ(placements[0].rect.area(), rects[0].area());
+	EXPECT_EQ(placements[1].rect.area(), rects[1].area());
+}
+
+TEST(RectPacking, FixedSinglePageReportsUnpackedInputs)
+{
+	const std::vector<cv::Rect> rects{
+		cv::Rect(0, 0, 8, 8),
+		cv::Rect(0, 0, 8, 8)
+	};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.padding = 0;
+	params.mode = RectPackMode::FixedSinglePage;
+	std::vector<RectPlacement> placements;
+	const RectPackResult result = PackRectangles(rects, params, placements);
+	EXPECT_EQ(result.numPages, 1u);
+	EXPECT_EQ(result.numPacked, 1u);
+	EXPECT_NE(placements[0].packed, placements[1].packed);
+}
+
+TEST(RectPacking, UnlimitedModeOpensAdditionalPages)
+{
+	const std::vector<cv::Rect> rects{
+		cv::Rect(0, 0, 8, 8),
+		cv::Rect(0, 0, 8, 8)
+	};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.padding = 0;
+	params.mode = RectPackMode::FixedMultiPage;
+	std::vector<RectPlacement> placements;
+	const RectPackResult result = PackRectangles(rects, params, placements);
+	EXPECT_EQ(result.numPages, 2u);
+	EXPECT_EQ(result.numPacked, 2u);
+}
+
+TEST(RectPacking, GrowToFitExpandsPageForOversizedInput)
+{
+	const std::vector<cv::Rect> rects{cv::Rect(0, 0, 12, 7)};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.padding = 2;
+	params.mode = RectPackMode::GrowSinglePage;
+	std::vector<RectPlacement> placements;
+	const RectPackResult result = PackRectangles(rects, params, placements);
+	EXPECT_GE(result.pageSize.width, 16);
+	EXPECT_GE(result.pageSize.height, 11);
+	ASSERT_EQ(placements.size(), 1u);
+	EXPECT_TRUE(placements[0].packed);
+}
+
+TEST(RectPacking, GrowSinglePageRepacksUntilAllRectsFit)
+{
+	const std::vector<cv::Rect> rects{
+		cv::Rect(0, 0, 8, 8),
+		cv::Rect(0, 0, 8, 8)
+	};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.padding = 0;
+	params.mode = RectPackMode::GrowSinglePage;
+	std::vector<RectPlacement> placements;
+	const RectPackResult result = PackRectangles(rects, params, placements);
+	EXPECT_EQ(result.numPages, 1u);
+	EXPECT_EQ(result.numPacked, 2u);
+	EXPECT_GE(result.pageSize.width, 16);
+	EXPECT_GE(result.pageSize.height, 16);
+}
+
+TEST(RectPacking, GrowSinglePageHonorsMaximumSize)
+{
+	const std::vector<cv::Rect> rects{
+		cv::Rect(0, 0, 8, 8),
+		cv::Rect(0, 0, 8, 8)
+	};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.maxPageSize = cv::Size(8, 8);
+	params.padding = 0;
+	params.mode = RectPackMode::GrowSinglePage;
+	std::vector<RectPlacement> placements;
+	const RectPackResult result = PackRectangles(rects, params, placements);
+	EXPECT_EQ(result.pageSize, cv::Size(8, 8));
+	EXPECT_EQ(result.numPacked, 1u);
+}
+
+TEST(RectPacking, EstimatesRoundedSquareTextureSize)
+{
+	const std::vector<cv::Rect> rects{
+		cv::Rect(0, 0, 10, 10),
+		cv::Rect(0, 0, 10, 10)
+	};
+	EXPECT_EQ(EstimateSquareTextureSize(rects, 8, 1.f), 16);
+	EXPECT_EQ(EstimateSquareTextureSize(rects, 0, 1.f), 16);
 }
 
 } // namespace

@@ -565,4 +565,106 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 	return numSmallComponents;
 }
 
+Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
+{
+	if (factor <= 0.f || faces.empty())
+		return 0;
+	TIMER_START("RemoveSpuriousComponents");
+	ListHalfEdgesSafe();
+	if (halfMesh.Empty())
+		return 0;
+
+	std::vector<float> edgeLengths;
+	edgeLengths.reserve(halfMesh.ESize());
+	for (EIndex edge = 0; edge < halfMesh.ESize(); ++edge) {
+		const auto verts = halfMesh.EVertices(edge);
+		edgeLengths.emplace_back((vertices[verts.first]-vertices[verts.second]).norm());
+	}
+	if (edgeLengths.empty())
+		return 0;
+	const size_t idx95 = edgeLengths.size()*95/100;
+	const size_t idx55 = edgeLengths.size()*55/100;
+	std::nth_element(edgeLengths.begin(), edgeLengths.begin()+idx95, edgeLengths.end());
+	const float maxEdgeLength = edgeLengths[idx95]*factor;
+	std::nth_element(edgeLengths.begin(), edgeLengths.begin()+idx55, edgeLengths.end());
+	const float minComponentDiameter = edgeLengths[idx55]*factor;
+
+	const FIndex initialFaces = static_cast<FIndex>(faces.size());
+	std::vector<FIndex> removeFaces;
+	for (FIndex idxFace = 0; idxFace < faces.size(); ++idxFace) {
+		const Face& face = faces[idxFace];
+		for (int i = 0; i < 3; ++i) {
+			if ((vertices[face[i]]-vertices[face[(i+1)%3]]).norm() > maxEdgeLength) {
+				removeFaces.emplace_back(idxFace);
+				break;
+			}
+		}
+	}
+	if (!removeFaces.empty()) {
+		RemoveFaces(removeFaces);
+		RemoveUnreferencedVertices();
+		ListHalfEdgesSafe();
+	}
+	if (faces.empty() || halfMesh.Empty())
+		return initialFaces-static_cast<FIndex>(faces.size());
+
+	std::vector<FIndex> components;
+	const FIndex numComponents = halfMesh.ConnectedComponents(components);
+	if (numComponents > 1) {
+		std::vector<Eigen::AlignedBox<float,3>> bounds(numComponents);
+		for (FIndex idxFace = 0; idxFace < faces.size(); ++idxFace) {
+			const Face& face = faces[idxFace];
+			for (int i = 0; i < 3; ++i)
+				bounds[components[idxFace]].extend(vertices[face[i]]);
+		}
+		removeFaces.clear();
+		for (FIndex idxFace = 0; idxFace < faces.size(); ++idxFace) {
+			const Eigen::AlignedBox<float,3>& bound = bounds[components[idxFace]];
+			if (!bound.isEmpty() && bound.diagonal().norm() < minComponentDiameter)
+				removeFaces.emplace_back(idxFace);
+		}
+		if (!removeFaces.empty()) {
+			RemoveFaces(removeFaces);
+			RemoveUnreferencedVertices();
+		}
+	}
+
+	const FIndex removed = initialFaces-static_cast<FIndex>(faces.size());
+	if (removed > 0) {
+		vertexFaces = std::vector<Mesh::VertexFaces>();
+		halfMesh.Clear();
+		REPORT_STATUS_NOW("Removed {} spurious faces ({})", removed, TIMER_STR());
+	}
+	return removed;
+}
+
+unsigned Mesh::RemoveSpikes(unsigned maxIterations)
+{
+	if (vertices.empty())
+		return 0;
+	TIMER_START("RemoveSpikes");
+	unsigned numSpikes = 0;
+	for (unsigned iteration = 0; iteration < maxIterations; ++iteration) {
+		if (vertexFaces.size() != vertices.size())
+			ListVertexFaces();
+		std::vector<VIndex> spikes;
+		FOREACHIDX (VIndex, idxVert, vertices) {
+			if (vertexFaces[idxVert].size() <= 1)
+				spikes.emplace_back(idxVert);
+		}
+		if (spikes.empty())
+			break;
+		numSpikes += static_cast<unsigned>(spikes.size());
+		// drops the spike vertices together with their incident face, which can
+		// starve a neighbour down to a single face and expose it next round
+		RemoveVertices(spikes, true);
+	}
+	if (numSpikes == 0)
+		return 0;
+	vertexFaces = std::vector<Mesh::VertexFaces>();
+	halfMesh.Clear();
+	REPORT_STATUS_NOW("Removed {} spike vertices ({})", numSpikes, TIMER_STR());
+	return numSpikes;
+}
+
 } // namespace halfmesh

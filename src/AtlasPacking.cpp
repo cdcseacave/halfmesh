@@ -14,6 +14,7 @@
 
 #include <halfmesh/AtlasPacking.h>
 #include <halfmesh/AtlasCharting.h>
+#include <halfmesh/RectPacking.h>
 #include <halfmesh/Util/Assert.h>
 #include <halfmesh/Util/Log.h>
 
@@ -267,6 +268,8 @@ double MinAreaRectAngle(const std::vector<Eigen::Vector2d>& pts)
 // unnormalized extent cannot bleed over neighbours or exceed [0,1].
 struct ChartRect
 {
+	// Keep pre-pack dimensions as floats because fit-to-resolution repeatedly
+	// rescales UVs; rounding at every probe would accumulate density error.
 	float w = 0.f, h = 0.f; // size in texels (before padding)
 	float uvMinX = 0.f, uvMinY = 0.f; // bbox min (should be ~0)
 	float uvMaxX = 0.f, uvMaxY = 0.f;
@@ -281,26 +284,20 @@ struct Placement
 	unsigned page = 0;
 };
 
-// Pack the (already density-normalised and pre-scaled) chart rects into pages via
-// first-fit-decreasing over a GROWING set of skyline bins, opening a new page only when
-// no existing one fits. Keeping every page open (instead of discarding the active bin on
-// the first overflow) lets a later small chart fill the free space a large chart left on
-// an earlier page — provably never more pages, usually fewer. Fills `placements` and
-// returns the page dims / page count / total placed (padded) area. Writes NOTHING to the
-// mesh, so the fit-to-resolution loop can probe page counts cheaply.
+// Pack float chart extents without quantizing each fit-to-resolution probe to
+// integer texels. The public rectangle API below intentionally uses cv::Rect,
+// but UV chart scaling depends on preserving sub-texel dimensions here.
 void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
                const AtlasParams& params, unsigned pad,
                std::vector<Placement>& placements, unsigned& outPages,
                unsigned& outPw, unsigned& outPh, float& outPackedArea)
 {
-	// Sort charts descending by area.
 	std::vector<unsigned> order(numCharts);
 	std::iota(order.begin(), order.end(), 0u);
 	std::sort(order.begin(), order.end(), [&](unsigned a, unsigned b) {
 		return crects[a].w * crects[a].h > crects[b].w * crects[b].h;
 	});
 
-	// Page dims: requested resolution grown to fit the largest padded chart.
 	unsigned pageW = params.resolution;
 	unsigned pageH = params.resolution;
 	for (unsigned ci : order) {
@@ -326,6 +323,207 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 	bins.emplace_back(static_cast<float>(pageW), static_cast<float>(pageH));
 	float packedArea = 0.f;
 
+	const float tierThreshold = static_cast<float>(pageW) / 32.f;
+	struct TailRect
+	{
+		unsigned ci;
+		float rw, rh;
+		bool rot;
+	};
+	std::vector<unsigned> head;
+	std::vector<TailRect> tail;
+	for (unsigned ci : order) {
+		const ChartRect& cr = crects[ci];
+		if (cr.w <= 0.f || cr.h <= 0.f)
+			continue;
+		float rw = cr.w + 2.f * static_cast<float>(pad);
+		float rh = cr.h + 2.f * static_cast<float>(pad);
+		if (std::max(rw, rh) >= tierThreshold) {
+			head.push_back(ci);
+			continue;
+		}
+		bool rot = false;
+		if (params.allowRotation && rh > rw) {
+			std::swap(rw, rh);
+			rot = true;
+		}
+		tail.push_back({ci, rw, rh, rot});
+	}
+
+	for (unsigned ci : head) {
+		const ChartRect& cr = crects[ci];
+		const float rw = cr.w + 2.f * static_cast<float>(pad);
+		const float rh = cr.h + 2.f * static_cast<float>(pad);
+		Rect placed;
+		unsigned page = 0;
+		bool ok = false;
+		for (unsigned p = 0; p < static_cast<unsigned>(bins.size()); ++p) {
+			if (bins[p].Insert(rw, rh, params.allowRotation, placed)) {
+				page = p;
+				ok = true;
+				break;
+			}
+		}
+		if (!ok) {
+			page = static_cast<unsigned>(bins.size());
+			bins.emplace_back(static_cast<float>(pageW), static_cast<float>(pageH));
+			if (!bins[page].Insert(rw, rh, params.allowRotation, placed)) {
+				ASSERT(false && "PackAtlas: chart still does not fit a fresh page after grow-to-fit");
+				placed = {0.f, 0.f, rw, rh, false};
+			}
+		}
+		placements[ci] = {placed.x + static_cast<float>(pad),
+		                  placed.y + static_cast<float>(pad), placed.rotated, page};
+		packedArea += placed.w * placed.h;
+	}
+
+	std::sort(tail.begin(), tail.end(), [](const TailRect& a, const TailRect& b) {
+		return a.rh > b.rh;
+	});
+	struct Shelf
+	{
+		float x = 0.f, y = 0.f, w = 0.f, h = 0.f, cursor = 0.f;
+		unsigned page = 0;
+		bool open = false;
+	};
+	Shelf shelf;
+	const auto openShelf = [&](float rw, float rh) {
+		for (const int denom : {1, 2, 4, 8}) {
+			const float sw = std::max(rw, static_cast<float>(pageW) / static_cast<float>(denom));
+			for (unsigned p = 0; p < static_cast<unsigned>(bins.size()); ++p) {
+				Rect rect;
+				if (bins[p].Insert(sw, rh, false, rect)) {
+					shelf = {rect.x, rect.y, sw, rh, rect.x, p, true};
+					return;
+				}
+			}
+		}
+		const unsigned page = static_cast<unsigned>(bins.size());
+		bins.emplace_back(static_cast<float>(pageW), static_cast<float>(pageH));
+		Rect rect;
+		const float sw = std::max(rw, static_cast<float>(pageW));
+		if (!bins[page].Insert(sw, rh, false, rect)) {
+			ASSERT(false && "PackAtlas: shelf does not fit a fresh page");
+			rect = {0.f, 0.f, sw, rh, false};
+		}
+		shelf = {rect.x, rect.y, sw, rh, rect.x, page, true};
+	};
+	for (const TailRect& rect : tail) {
+		if (!shelf.open || shelf.cursor + rect.rw > shelf.x + shelf.w + 1e-3f || rect.rh > shelf.h + 1e-3f)
+			openShelf(rect.rw, rect.rh);
+		placements[rect.ci] = {shelf.cursor + static_cast<float>(pad),
+		                       shelf.y + static_cast<float>(pad), rect.rot, shelf.page};
+		shelf.cursor += rect.rw;
+		packedArea += rect.rw * rect.rh;
+	}
+
+	outPages = static_cast<unsigned>(bins.size());
+	outPw = pageW;
+	outPh = pageH;
+	outPackedArea = packedArea;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Generic rectangle bin packing — the API declared in halfmesh/RectPacking.h.
+// Two-tier first-fit-decreasing over a bounded or unbounded set of skyline bins,
+// opening a new page only when no existing one fits. Keeping every page open (instead of
+// discarding the active bin on the first overflow) lets a later small rect fill
+// the free space a large rect left on an earlier page — provably never more
+// pages, usually fewer.
+// ---------------------------------------------------------------------------
+RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
+                              const RectPackParams& params,
+                              std::vector<RectPlacement>& placements)
+{
+	if (params.mode == RectPackMode::GrowSinglePage) {
+		RectPackParams probe(params);
+		probe.mode = RectPackMode::FixedSinglePage;
+		probe.maxPageSize = cv::Size();
+		probe.powerOfTwo = false;
+		probe.square = false;
+
+		int pageW = std::max(params.pageSize.width, 1);
+		int pageH = std::max(params.pageSize.height, 1);
+		unsigned targetCount = 0;
+		for (const cv::Rect& rect : rects) {
+			if (rect.width <= 0 || rect.height <= 0)
+				continue;
+			++targetCount;
+			pageW = std::max(pageW, rect.width + 2 * static_cast<int>(params.padding));
+			pageH = std::max(pageH, rect.height + 2 * static_cast<int>(params.padding));
+		}
+		const auto NormalizePageSize = [&](int& width, int& height) {
+			if (params.powerOfTwo) {
+				width = static_cast<int>(NextPow2(static_cast<unsigned>(width)));
+				height = static_cast<int>(NextPow2(static_cast<unsigned>(height)));
+			}
+			if (params.square)
+				width = height = std::max(width, height);
+			if (params.maxPageSize.width > 0)
+				width = std::min(width, params.maxPageSize.width);
+			if (params.maxPageSize.height > 0)
+				height = std::min(height, params.maxPageSize.height);
+		};
+		NormalizePageSize(pageW, pageH);
+		for (;;) {
+			probe.pageSize = cv::Size(pageW, pageH);
+			RectPackResult result = PackRectangles(rects, probe, placements);
+			if (result.numPacked == targetCount)
+				return result;
+			int nextW = pageW <= std::numeric_limits<int>::max()/2 ? pageW*2 : pageW;
+			int nextH = pageH <= std::numeric_limits<int>::max()/2 ? pageH*2 : pageH;
+			NormalizePageSize(nextW, nextH);
+			if (nextW == pageW && nextH == pageH)
+				return result;
+			pageW = nextW;
+			pageH = nextH;
+		}
+	}
+
+	const std::vector<cv::Rect>& crects = rects;
+	const unsigned numCharts = static_cast<unsigned>(rects.size());
+	const unsigned pad = params.padding;
+	// Sort rects descending by area.
+	std::vector<unsigned> order(numCharts);
+	std::iota(order.begin(), order.end(), 0u);
+	std::sort(order.begin(), order.end(), [&](unsigned a, unsigned b) {
+		return crects[a].area() > crects[b].area();
+	});
+
+	// Fixed-size core used by both fixed modes and by GrowSinglePage probes.
+	unsigned pageW = static_cast<unsigned>(std::max(params.pageSize.width, 1));
+	unsigned pageH = static_cast<unsigned>(std::max(params.pageSize.height, 1));
+	if (params.powerOfTwo) {
+		pageW = NextPow2(pageW);
+		pageH = NextPow2(pageH);
+	}
+	if (params.square) {
+		const unsigned side = std::max(pageW, pageH);
+		pageW = pageH = side;
+	}
+
+	placements.assign(numCharts, RectPlacement{});
+	const bool hasPackableInput = std::any_of(crects.begin(), crects.end(), [&](const cv::Rect& rect) {
+		if (rect.width <= 0 || rect.height <= 0)
+			return false;
+		const int paddedW = rect.width + 2 * static_cast<int>(pad);
+		const int paddedH = rect.height + 2 * static_cast<int>(pad);
+		return (paddedW <= static_cast<int>(pageW) && paddedH <= static_cast<int>(pageH))
+			|| (params.allowRotation && paddedH <= static_cast<int>(pageW)
+				&& paddedW <= static_cast<int>(pageH));
+	});
+	if (!hasPackableInput) {
+		RectPackResult result;
+		result.pageSize = cv::Size(static_cast<int>(pageW), static_cast<int>(pageH));
+		return result;
+	}
+	std::vector<SkylineBin> bins;
+	bins.emplace_back(static_cast<float>(pageW), static_cast<float>(pageH));
+	uint64_t packedArea = 0;
+	const bool singlePage = params.mode == RectPackMode::FixedSinglePage;
+
 	// ------------------------------------------------------------------
 	// Two-tier split. Insert() is a full min-waste scan — O(#segments) per
 	// PROBE and every rect probes every segment — so packing 100k+ tiny
@@ -339,20 +537,23 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 	struct TailRect
 	{
 		unsigned ci;
-		float rw, rh;
+		int rw, rh;
 		bool rot;
 	};
 	std::vector<unsigned> head;
 	std::vector<TailRect> tail;
 	for (unsigned ci : order) {
-		const ChartRect& cr = crects[ci];
-		if (cr.w <= 0.f || cr.h <= 0.f) {
-			// After the ≥1-texel clamp this is unreachable; keep it as a safety net.
-			placements[ci] = {0.f, 0.f, false, 0u};
+		const cv::Rect& cr = crects[ci];
+		if (cr.width <= 0 || cr.height <= 0) {
 			continue;
 		}
-		float rw = cr.w + 2.f * static_cast<float>(pad);
-		float rh = cr.h + 2.f * static_cast<float>(pad);
+		int rw = cr.width + 2 * static_cast<int>(pad);
+		int rh = cr.height + 2 * static_cast<int>(pad);
+		if (rw > static_cast<int>(pageW) || rh > static_cast<int>(pageH)) {
+			if (!params.allowRotation ||
+				rh > static_cast<int>(pageW) || rw > static_cast<int>(pageH))
+				continue;
+		}
 		if (std::max(rw, rh) >= tierThreshold) {
 			head.push_back(ci);
 			continue;
@@ -369,9 +570,9 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 
 	// Head: unchanged skyline min-waste first-fit-decreasing over growing bins.
 	for (unsigned ci : head) {
-		const ChartRect& cr = crects[ci];
-		const float rw = cr.w + 2.f * static_cast<float>(pad);
-		const float rh = cr.h + 2.f * static_cast<float>(pad);
+		const cv::Rect& cr = crects[ci];
+		const float rw = static_cast<float>(cr.width + 2 * pad);
+		const float rh = static_cast<float>(cr.height + 2 * pad);
 		Rect placed;
 		unsigned page = 0;
 		bool ok = false;
@@ -385,20 +586,25 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 			}
 		}
 		if (!ok) {
+			if (singlePage)
+				continue;
 			page = static_cast<unsigned>(bins.size());
 			bins.emplace_back(static_cast<float>(pageW), static_cast<float>(pageH));
 			if (!bins[page].Insert(rw, rh, params.allowRotation, placed)) {
-				// Unreachable: grow-to-fit above guarantees a fresh page fits every chart.
-				ASSERT(false && "PackAtlas: chart still does not fit a fresh page after "
-				                "grow-to-fit — invariant violated");
-				placed = {0.f, 0.f, rw, rh, false};
+				bins.pop_back();
+				continue;
 			}
 		}
-		placements[ci] = {placed.x + static_cast<float>(pad),
-		                  placed.y + static_cast<float>(pad),
-		                  placed.rotated, page};
+		const int width = placed.rotated ? cr.height : cr.width;
+		const int height = placed.rotated ? cr.width : cr.height;
+		placements[ci] = {
+			cv::Rect(static_cast<int>(placed.x) + static_cast<int>(pad),
+			         static_cast<int>(placed.y) + static_cast<int>(pad),
+			         width, height),
+			placed.rotated, page, true
+		};
 		// Accumulate placed area INCLUDING padding (same basis as pageW*pageH*pages).
-		packedArea += placed.w * placed.h;
+		packedArea += static_cast<uint64_t>(placed.w) * static_cast<uint64_t>(placed.h);
 	}
 
 	// Tail: shelf rows, height-descending so each shelf's FIRST rect is its
@@ -418,45 +624,78 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 		bool open = false;
 	};
 	Shelf shelf;
-	const auto openShelf = [&](float rw, float rh) {
+	const auto openShelf = [&](float rw, float rh) -> bool {
 		// Prefer wide shelves; fall back to narrower ones that still slot into
-		// leftover contour gaps; a fresh page always fits (grow-to-fit).
+		// leftover contour gaps.
 		for (const int denom : {1, 2, 4, 8}) {
 			const float sw = std::max(rw, static_cast<float>(pageW) / static_cast<float>(denom));
 			for (unsigned p = 0; p < static_cast<unsigned>(bins.size()); ++p) {
 				Rect r;
 				if (bins[p].Insert(sw, rh, false, r)) {
 					shelf = {r.x, r.y, sw, rh, r.x, p, true};
-					return;
+					return true;
 				}
 			}
 		}
+		if (singlePage)
+			return false;
 		const unsigned page = static_cast<unsigned>(bins.size());
 		bins.emplace_back(static_cast<float>(pageW), static_cast<float>(pageH));
 		Rect r;
 		const float sw = std::max(rw, static_cast<float>(pageW));
 		if (!bins[page].Insert(sw, rh, false, r)) {
-			ASSERT(false && "PackAtlas: shelf does not fit a fresh page — invariant violated");
-			r = {0.f, 0.f, sw, rh, false};
+			bins.pop_back();
+			return false;
 		}
 		shelf = {r.x, r.y, sw, rh, r.x, page, true};
+		return true;
 	};
 	for (const TailRect& t : tail) {
-		if (!shelf.open || shelf.cursor + t.rw > shelf.x + shelf.w + 1e-3f || t.rh > shelf.h + 1e-3f)
-			openShelf(t.rw, t.rh);
-		placements[t.ci] = {shelf.cursor + static_cast<float>(pad),
-		                    shelf.y + static_cast<float>(pad), t.rot, shelf.page};
+		if ((!shelf.open || shelf.cursor + t.rw > shelf.x + shelf.w + 1e-3f || t.rh > shelf.h + 1e-3f)
+			&& !openShelf(static_cast<float>(t.rw), static_cast<float>(t.rh)))
+			continue;
+		const cv::Rect& cr = crects[t.ci];
+		placements[t.ci] = {
+			cv::Rect(static_cast<int>(shelf.cursor) + static_cast<int>(pad),
+			         static_cast<int>(shelf.y) + static_cast<int>(pad),
+			         t.rot ? cr.height : cr.width,
+			         t.rot ? cr.width : cr.height),
+			t.rot, shelf.page, true
+		};
 		shelf.cursor += t.rw;
-		packedArea += t.rw * t.rh;
+		packedArea += static_cast<uint64_t>(t.rw) * static_cast<uint64_t>(t.rh);
 	}
 
-	outPages = static_cast<unsigned>(bins.size());
-	outPw = pageW;
-	outPh = pageH;
-	outPackedArea = packedArea;
+	RectPackResult result;
+	result.numPages = static_cast<unsigned>(bins.size());
+	result.numPacked = static_cast<unsigned>(std::count_if(
+		placements.begin(), placements.end(),
+		[](const RectPlacement& placement) { return placement.packed; }));
+	result.pageSize = cv::Size(static_cast<int>(pageW), static_cast<int>(pageH));
+	result.packedArea = packedArea;
+	return result;
 }
 
-} // namespace
+int EstimateSquareTextureSize(const std::vector<cv::Rect>& rects,
+                              int multiple,
+                              float targetOccupancy)
+{
+	ASSERT(targetOccupancy > 0.f && targetOccupancy <= 1.f);
+	uint64_t area = 0;
+	int maxSide = 0;
+	for (const cv::Rect& rect : rects) {
+		if (rect.width <= 0 || rect.height <= 0)
+			continue;
+		area += static_cast<uint64_t>(rect.width) * rect.height;
+		maxSide = std::max(maxSide, std::max(rect.width, rect.height));
+	}
+	const int side = std::max(
+		static_cast<int>(std::ceil(std::sqrt(static_cast<double>(area) / targetOccupancy))),
+		maxSide);
+	if (multiple > 0)
+		return ((side + multiple - 1) / multiple) * multiple;
+	return static_cast<int>(NextPow2(static_cast<unsigned>(side)));
+}
 
 // ---------------------------------------------------------------------------
 // Module D: skyline (min-waste) first-fit-decreasing multi-page packing + UV

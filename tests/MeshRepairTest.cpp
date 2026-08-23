@@ -9,6 +9,7 @@
 
 // Tests for MeshRepair.cpp:
 //   RemoveDuplicateFaces, RemoveDegenerateFaces, RemoveSmallComponents,
+//   RemoveSpuriousComponents, RemoveSpikes,
 //   RemoveFacesOutside, FixNonManifold, ListHalfEdgesSafe
 //   + sanity run on tests/data/mesh.ply
 
@@ -308,6 +309,44 @@ TEST(MeshRepairTest, RemoveSmallComponentsSingleComponent)
 	m.RemoveSmallComponents(/*minComponentSize=*/2);
 	// Face count must not decrease — the single big component is preserved
 	EXPECT_EQ(m.faces.size(), faceCountBefore);
+}
+
+// ---------------------------------------------------------------------------
+// RemoveSpuriousComponents
+// ---------------------------------------------------------------------------
+TEST(MeshRepairTest, RemoveSpuriousComponentsDisabledIsNoOp)
+{
+	Mesh mesh = MakeTetra();
+	const std::vector<Mesh::Vertex> vertices = mesh.vertices;
+	const std::vector<Mesh::Face> faces = mesh.faces;
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(0.f), 0u);
+	EXPECT_EQ(mesh.vertices, vertices);
+	EXPECT_EQ(mesh.faces, faces);
+}
+
+TEST(MeshRepairTest, RemoveSpuriousComponentsDropsSmallDisconnectedSurface)
+{
+	Mesh mesh;
+	for (unsigned x = 0; x <= 10; ++x) {
+		mesh.vertices.emplace_back(static_cast<float>(x), 0.f, 0.f);
+		mesh.vertices.emplace_back(static_cast<float>(x), 1.f, 0.f);
+	}
+	for (unsigned x = 0; x < 10; ++x) {
+		const Mesh::VIndex lower = 2*x;
+		mesh.faces.emplace_back(lower, lower+1, lower+3);
+		mesh.faces.emplace_back(lower, lower+3, lower+2);
+	}
+	const Mesh::VIndex tiny = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.emplace_back(20.f, 0.f, 0.f);
+	mesh.vertices.emplace_back(20.01f, 0.f, 0.f);
+	mesh.vertices.emplace_back(20.f, 0.01f, 0.f);
+	mesh.faces.emplace_back(tiny, tiny+1, tiny+2);
+
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(2.f), 1u);
+	EXPECT_EQ(mesh.faces.size(), 20u);
+	EXPECT_EQ(mesh.vertices.size(), 22u);
+	for (const Mesh::Vertex& vertex : mesh.vertices)
+		EXPECT_LT(vertex.x(), 20.f);
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +714,83 @@ TEST(MeshRepairTest, FixNonManifoldEmptyMeshIsNoOp)
 	Mesh mesh;
 	EXPECT_EQ(mesh.FixNonManifold(), 0u);
 	EXPECT_TRUE(mesh.Empty());
+}
+
+// ---------------------------------------------------------------------------
+// RemoveSpikes
+// ---------------------------------------------------------------------------
+
+// A closed surface has no vertex below valence 2, so nothing is a spike.
+TEST(MeshRepairTest, RemoveSpikesClosedSurfaceIsNoOp)
+{
+	Mesh mesh = MakeTetra();
+	EXPECT_EQ(mesh.RemoveSpikes(), 0u);
+	EXPECT_EQ(mesh.vertices.size(), 4u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+}
+
+TEST(MeshRepairTest, RemoveSpikesEmptyMeshIsNoOp)
+{
+	Mesh mesh;
+	EXPECT_EQ(mesh.RemoveSpikes(), 0u);
+	EXPECT_TRUE(mesh.Empty());
+}
+
+// An isolated vertex is incident to zero faces, so it is a spike and no face
+// is harmed removing it.
+TEST(MeshRepairTest, RemoveSpikesDropsIsolatedVertex)
+{
+	Mesh mesh = MakeTetra();
+	mesh.vertices.push_back(Mesh::Vertex(5.f, 5.f, 5.f));
+	EXPECT_EQ(mesh.RemoveSpikes(), 1u);
+	EXPECT_EQ(mesh.vertices.size(), 4u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+}
+
+// A triangle hanging off the surface by a single edge: its free tip is incident
+// to exactly one face, so tip and triangle both go.
+TEST(MeshRepairTest, RemoveSpikesDropsDanglingTriangle)
+{
+	Mesh mesh = MakeTetra();
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	mesh.faces.push_back(Mesh::Face(0, 1, tip));
+	EXPECT_EQ(mesh.RemoveSpikes(), 1u);
+	EXPECT_EQ(mesh.vertices.size(), 4u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+}
+
+// Removing a spike can starve its neighbour down to a single face, so the sweep
+// has to iterate: here the chain unwinds one triangle per round.
+TEST(MeshRepairTest, RemoveSpikesUnwindsChainOverIterations)
+{
+	Mesh mesh = MakeTetra();
+	const Mesh::VIndex mid = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(3.f, 0.f, 0.f));
+	mesh.faces.push_back(Mesh::Face(0, 1, mid)); // attached to the tetra by edge 0-1
+	mesh.faces.push_back(Mesh::Face(mid, 1, tip)); // attached to the previous by edge mid-1
+	// `mid` starts with two incident faces and only becomes a spike after `tip`
+	// takes the outer triangle with it.
+	EXPECT_EQ(mesh.RemoveSpikes(), 2u);
+	EXPECT_EQ(mesh.vertices.size(), 4u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+}
+
+// maxIterations bounds the sweep: one round peels exactly one link of the chain.
+TEST(MeshRepairTest, RemoveSpikesHonorsIterationLimit)
+{
+	Mesh mesh = MakeTetra();
+	const Mesh::VIndex mid = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(3.f, 0.f, 0.f));
+	mesh.faces.push_back(Mesh::Face(0, 1, mid));
+	mesh.faces.push_back(Mesh::Face(mid, 1, tip));
+	EXPECT_EQ(mesh.RemoveSpikes(1), 1u);
+	EXPECT_EQ(mesh.vertices.size(), 5u);
+	EXPECT_EQ(mesh.faces.size(), 5u);
 }
 
 } // namespace
