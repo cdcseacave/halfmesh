@@ -242,7 +242,9 @@ TEST(MeshRepairTest, RemoveSmallComponentsAllSmallRemovesEverything)
 	// Three isolated triangles: 3 components of 1 face each — ALL small.
 	Mesh m;
 	m.vertices = {
-	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.5f, 1.f, 0.f}, // component 0
+	    {0.f, 0.f, 0.f},
+	    {1.f, 0.f, 0.f},
+	    {0.5f, 1.f, 0.f}, // component 0
 	    {10.f, 0.f, 0.f},
 	    {11.f, 0.f, 0.f},
 	    {10.5f, 1.f, 0.f}, // component 1
@@ -332,17 +334,17 @@ TEST(MeshRepairTest, RemoveSpuriousComponentsDropsSmallDisconnectedSurface)
 		mesh.vertices.emplace_back(static_cast<float>(x), 1.f, 0.f);
 	}
 	for (unsigned x = 0; x < 10; ++x) {
-		const Mesh::VIndex lower = 2*x;
-		mesh.faces.emplace_back(lower, lower+1, lower+3);
-		mesh.faces.emplace_back(lower, lower+3, lower+2);
+		const Mesh::VIndex lower = 2 * x;
+		mesh.faces.emplace_back(lower, lower + 1, lower + 3);
+		mesh.faces.emplace_back(lower, lower + 3, lower + 2);
 	}
 	const Mesh::VIndex tiny = static_cast<Mesh::VIndex>(mesh.vertices.size());
 	mesh.vertices.emplace_back(20.f, 0.f, 0.f);
 	mesh.vertices.emplace_back(20.01f, 0.f, 0.f);
 	mesh.vertices.emplace_back(20.f, 0.01f, 0.f);
-	mesh.faces.emplace_back(tiny, tiny+1, tiny+2);
+	mesh.faces.emplace_back(tiny, tiny + 1, tiny + 2);
 
-	EXPECT_EQ(mesh.RemoveSpuriousComponents(2.f), 1u);
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(), 1u);
 	EXPECT_EQ(mesh.faces.size(), 20u);
 	EXPECT_EQ(mesh.vertices.size(), 22u);
 	for (const Mesh::Vertex& vertex : mesh.vertices)
@@ -466,7 +468,9 @@ TEST(MeshRepairTest, RemoveDuplicateVerticesWeldsCoincident)
 	// glTF stores them: 6 vertices at only 4 distinct positions.
 	Mesh m;
 	m.vertices = {
-	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, // tri 0
+	    {0.f, 0.f, 0.f},
+	    {1.f, 0.f, 0.f},
+	    {1.f, 1.f, 0.f}, // tri 0
 	    {0.f, 0.f, 0.f},
 	    {1.f, 1.f, 0.f},
 	    {0.f, 1.f, 0.f}, // tri 1 (v3,v4 dup v0,v2)

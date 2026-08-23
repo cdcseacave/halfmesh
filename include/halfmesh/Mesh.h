@@ -279,7 +279,7 @@ class Mesh
 	// percentile95(edgeLength)*factor, then discard connected components whose
 	// bounding-box diagonal is shorter than percentile55(edgeLength)*factor.
 	// return number of faces removed
-	FIndex RemoveSpuriousComponents(float factor);
+	FIndex RemoveSpuriousComponents(float factor = 2.f);
 
 	// remove spike/needle vertices: a vertex incident to at most one face is not
 	// part of a surface, it is either isolated or the tip of a dangling triangle.
