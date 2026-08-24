@@ -65,9 +65,17 @@ class Mesh
 	void ReleaseOptional();
 	void InvalidateFaces();
 	void SyncFaces();
+	// Internal multi-stage processing scope: build connectivity once, defer
+	// native-stage face snapshots, then harvest exactly once at End.
+	void BeginHalfEdgePipeline();
+	void EndHalfEdgePipeline();
 	void InvalidateHalfMesh();
 	bool ValidateInvariants() const;
 	bool ValidateHalfMesh() const;
+	// Public native methods use this at exit; it is suppressed only between
+	// BeginHalfEdgePipeline and EndHalfEdgePipeline.
+	void SyncFacesOnPublicExit();
+	bool deferFaceSync{false};
 	bool Empty() const
 	{
 		ASSERT(vertices.empty() == faces.empty() || vertices.empty() == halfMesh.Empty());

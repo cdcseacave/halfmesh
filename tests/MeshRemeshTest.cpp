@@ -984,6 +984,32 @@ TEST(MeshRemesh, StatsAndToggles)
 	}
 }
 
+TEST(MeshRemesh, HalfEdgeOnlyEntryMatchesPopulatedEntryWithoutBuild)
+{
+	Mesh populated = hmtest::corpus::UVSphere(8, 12);
+	Mesh native = populated;
+	populated.ListHalfEdges();
+	native.ListHalfEdges();
+	const float target = static_cast<float>(ComputeEdgeStats(populated).meanLen);
+	native.InvalidateFaces();
+	Mesh::RemeshParams params;
+	params.SetEdgeLength(target);
+	params.iterations = 1;
+	Mesh::RemeshStats populatedStats;
+	Mesh::RemeshStats nativeStats;
+
+	populated.RemeshIsotropic(params, &populatedStats);
+	HalfMesh::ResetBuildCount();
+	native.RemeshIsotropic(params, &nativeStats);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(native.vertices, populated.vertices);
+	EXPECT_EQ(native.faces, populated.faces);
+	EXPECT_EQ(nativeStats.splitCount, populatedStats.splitCount);
+	EXPECT_EQ(nativeStats.collapseCount, populatedStats.collapseCount);
+	EXPECT_EQ(nativeStats.flipCount, populatedStats.flipCount);
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
 // RemeshParams' edge lengths were the only fields without default
 // initializers — a default-constructed struct read indeterminate values, and
 // SplitLongEdges has no floor, so a garbage/non-positive edgeMaxLength

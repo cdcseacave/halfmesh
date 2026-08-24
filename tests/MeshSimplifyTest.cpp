@@ -604,5 +604,21 @@ TEST(MeshSimplifyTest, IdentityRatioIsNoOp)
 	EXPECT_EQ(mesh.faces.size(), numFaces);
 }
 
+TEST(MeshSimplifyTest, HalfEdgeOnlyEntryMatchesPopulatedEntryWithoutBuild)
+{
+	Mesh populated = hmtest::corpus::UVSphere(8, 12);
+	Mesh native = populated;
+	populated.ListHalfEdges();
+	native.ListHalfEdges();
+	native.InvalidateFaces();
+
+	populated.Simplify(0.5f);
+	HalfMesh::ResetBuildCount();
+	native.Simplify(0.5f);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(native.vertices, populated.vertices);
+	EXPECT_EQ(native.faces, populated.faces);
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
 } // namespace
 } // namespace halfmesh

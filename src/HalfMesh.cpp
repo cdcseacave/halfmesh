@@ -24,6 +24,7 @@ namespace halfmesh {
 namespace {
 
 std::atomic<uint64_t> gBuildCount{0};
+std::atomic<uint64_t> gFFacesCount{0};
 
 } // anonymous namespace
 
@@ -35,6 +36,25 @@ uint64_t HalfMesh::BuildCount()
 void HalfMesh::ResetBuildCount()
 {
 	gBuildCount.store(0, std::memory_order_relaxed);
+}
+
+uint64_t HalfMesh::FFacesCount()
+{
+	return gFFacesCount.load(std::memory_order_relaxed);
+}
+
+void HalfMesh::ResetFFacesCount()
+{
+	gFFacesCount.store(0, std::memory_order_relaxed);
+}
+
+void HalfMesh::FFacesImpl(std::vector<Face>& faces, bool countHarvest) const
+{
+	if (countHarvest)
+		gFFacesCount.fetch_add(1, std::memory_order_relaxed);
+	faces.reserve(faces.size() + fHalfedges.size());
+	for (HIndex iHe : fHalfedges)
+		faces.emplace_back(FHe(iHe));
 }
 
 void HalfMesh::Clear()

@@ -343,6 +343,29 @@ TEST(MeshCore, RepresentationInvariantAndHalfMeshValidation)
 	EXPECT_TRUE(m.ValidateInvariants());
 }
 
+TEST(MeshCore, HalfEdgePipelineBuildsAndHarvestsOnce)
+{
+	Mesh mesh = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}});
+	HalfMesh::ResetBuildCount();
+	HalfMesh::ResetFFacesCount();
+
+	mesh.BeginHalfEdgePipeline();
+	EXPECT_EQ(HalfMesh::BuildCount(), 1u);
+	EXPECT_EQ(HalfMesh::FFacesCount(), 0u);
+	EXPECT_TRUE(mesh.faces.empty());
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(HalfMesh::FFacesCount(), 0u);
+
+	mesh.EndHalfEdgePipeline();
+	EXPECT_EQ(HalfMesh::BuildCount(), 1u);
+	EXPECT_EQ(HalfMesh::FFacesCount(), 1u);
+	EXPECT_EQ(mesh.faces.size(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(HalfMesh::FFacesCount(), 1u);
+}
+
 TEST(MeshCore, InvalidateFacesDropsAttributesAndWarnsOnce)
 {
 	Mesh m = BuildMesh(

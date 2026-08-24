@@ -128,6 +128,8 @@ class HalfMesh
 	void Clear();
 	static uint64_t BuildCount();
 	static void ResetBuildCount();
+	static uint64_t FFacesCount();
+	static void ResetFFacesCount();
 
 	// create half-edge data-structures for the given mesh
 	bool Build(const Mesh& mesh);
@@ -137,6 +139,8 @@ class HalfMesh
 	friend class Mesh;
 	bool BuildForValidation(VIndex numVertices, const std::vector<Face>& faces);
 	bool BuildImpl(VIndex numVertices, const std::vector<Face>& faces, bool countBuild);
+	void FFacesForValidation(std::vector<Face>& faces) const { FFacesImpl(faces, false); }
+	void FFacesImpl(std::vector<Face>& faces, bool countHarvest) const;
 
 	public:
 	// restore the canonical all-even vHalfedges form (see alwaysEven). No-op
@@ -607,10 +611,7 @@ class HalfMesh
 	// fetch the array of faces back in the native Mesh format
 	void FFaces(std::vector<Face>& faces) const
 	{
-		faces.reserve(fHalfedges.size());
-		for (HIndex iHe : fHalfedges) {
-			faces.emplace_back(FHe(iHe));
-		}
+		FFacesImpl(faces, true);
 	}
 	// create a new face between the existing vertices defined by the given face;
 	// returns NO_ID if the face can not be added, as is the case if the face

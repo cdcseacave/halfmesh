@@ -136,7 +136,13 @@ class RemeshData
 	{
 		Mesh geo;
 		geo.vertices = src.vertices;
-		geo.faces = src.faces;
+		if (src.halfMesh.Empty()) {
+			geo.faces = src.faces;
+		} else {
+			geo.faces.reserve(src.halfMesh.FSize());
+			for (Mesh::FIndex face = 0; face < src.halfMesh.FSize(); ++face)
+				geo.faces.emplace_back(src.halfMesh.F(face));
+		}
 		return geo;
 	}
 
@@ -175,7 +181,7 @@ void RemeshData::TagCreaseEdges(bool /*forceTag*/)
 {
 	const Mesh::Type thQualityRadii = Mesh::Type(0.0001);
 	fvSelection.clear();
-	fvSelection.resize(mesh.faces.size() * 3, fvMark = 0);
+	fvSelection.resize(m.FSize() * 3, fvMark = 0);
 	ResetFaceVertexMark();
 	// Precompute the per-face normal and a per-face quality-pass byte once, in
 	// parallel. The old marking scan recomputed the own-face normal ~6x per interior
@@ -186,8 +192,8 @@ void RemeshData::TagCreaseEdges(bool /*forceTag*/)
 	std::vector<Mesh::Vertex> faceNormal(nf);
 	std::vector<uint8_t> qualityOk(nf);
 	ParallelForPool(pool, nf, [&](std::size_t f) {
-		const Mesh::Face& face = mesh.faces[f];
-		faceNormal[f] = mesh.ComputeFaceNormal(static_cast<HalfMesh::FIndex>(f));
+		const Mesh::Face face = m.F(static_cast<HalfMesh::FIndex>(f));
+		faceNormal[f] = mesh.ComputeFaceNormal(face);
 		const Mesh::Type q = TriangleQualityRadii(mesh.vertices[face[0]],
 		                                          mesh.vertices[face[1]],
 		                                          mesh.vertices[face[2]]);
@@ -198,7 +204,7 @@ void RemeshData::TagCreaseEdges(bool /*forceTag*/)
 			continue;
 		for (HalfMesh::HIndex iHe : m.FAdjacentHalfedges(idxFace)) {
 			if (m.EHeIsBoundary(iHe)) {
-				FaceVertexMark(idxFace * 3 + m.FVertexIth(iHe, mesh.faces[idxFace]));
+				FaceVertexMark(idxFace * 3 + m.FVertexIth(iHe, m.F(idxFace)));
 				continue;
 			}
 			// check the value of the scalar prod to the cos of the crease threshold
@@ -213,8 +219,8 @@ void RemeshData::TagCreaseEdges(bool /*forceTag*/)
 			if (cosAngle > params.thCreaseCosAngle || cosAngle < cosMaxAngle)
 				continue;
 			if (qualityOk[idxFaceAdj]) {
-				const Mesh::Face& faceAdj = mesh.faces[idxFaceAdj];
-				FaceVertexMark(idxFace * 3 + m.FVertexIth(iHe, mesh.faces[idxFace]));
+				const Mesh::Face faceAdj = m.F(idxFaceAdj);
+				FaceVertexMark(idxFace * 3 + m.FVertexIth(iHe, m.F(idxFace)));
 				FaceVertexMark(idxFaceAdj * 3 + m.FVertexIth(m.HeTwin(iHe), faceAdj));
 			}
 		}
@@ -235,7 +241,7 @@ void RemeshData::ClassifyFeatureVertices()
 	vFeatureNbrs.assign(mesh.vertices.size(), {});
 	std::vector<bool> edgeDone(m.ESize(), false);
 	FOREACHRAWIDX (HalfMesh::FIndex, idxFace, m.FSize()) {
-		const Mesh::Face& face = mesh.faces[idxFace];
+		const Mesh::Face face = m.F(idxFace);
 		for (HalfMesh::HIndex iHe : m.FAdjacentHalfedges(idxFace)) {
 			const HalfMesh::EIndex e = m.HeEdge(iHe);
 			if (edgeDone[e])
@@ -289,11 +295,11 @@ void RemeshData::BuildSizingField()
 		return std::acos(CLAMP(e1.dot(e2) / n, Mesh::Type(-1), Mesh::Type(1)));
 	};
 	FOREACHRAWIDX (HalfMesh::FIndex, idxFace, m.FSize()) {
-		const Mesh::Face& f = mesh.faces[idxFace];
+		const Mesh::Face f = m.F(idxFace);
 		const Mesh::Vertex& p0 = mesh.vertices[f[0]];
 		const Mesh::Vertex& p1 = mesh.vertices[f[1]];
 		const Mesh::Vertex& p2 = mesh.vertices[f[2]];
-		const Mesh::Type thirdArea = mesh.ComputeFaceDoubleArea(idxFace) * Mesh::Type(0.5) / Mesh::Type(3);
+		const Mesh::Type thirdArea = mesh.ComputeFaceNormal(f).norm() * Mesh::Type(0.5) / Mesh::Type(3);
 		area[f[0]] += thirdArea;
 		area[f[1]] += thirdArea;
 		area[f[2]] += thirdArea;
@@ -415,11 +421,8 @@ unsigned RemeshData::SplitLongEdges()
 	if (numSplits == 0)
 		return 0;
 
-	// Sync the flat face list from the updated half-edge structure, then refresh
-	// the per-face-vertex crease marks (recomputed from the new geometry) so the
-	// following collapse pass sees a consistently sized fvSelection.
-	mesh.faces.clear();
-	m.FFaces(mesh.faces);
+	// Refresh the per-face-vertex crease marks from the updated connectivity so
+	// the following collapse pass sees a consistently sized fvSelection.
 #if REMESH_DEBUG_OUTPUT
 	mesh.Save("mesh_split_update.ply");
 #endif
@@ -446,14 +449,14 @@ bool RemeshData::CheckVertexCanMoveOnCollapse(HalfMesh::HIndex iHe, bool relaxed
 	};
 	const Mesh::Type cosMaxAngleBetweenAdjFaces = 0.9f;
 	const Mesh::FIndex idxFace = m.HeFace(iHe);
-	const Mesh::Face& face = mesh.faces[idxFace];
+	const Mesh::Face face = m.F(idxFace);
 	const Mesh::Vertex edgeVector =
 	    (mesh.vertices[m.HeTailVertex(iHe)] - mesh.vertices[m.HeHeadVertex(iHe)]).normalized();
 	for (HalfMesh::HIndex iHeAdj : m.VOutgoingHalfedges(m.HeVertex(iHe))) {
 		if (m.HeIsBoundary(iHeAdj))
 			continue;
 		const Mesh::FIndex idxFaceAdj = m.HeFace(iHeAdj);
-		const Mesh::Face& faceAdj = mesh.faces[idxFaceAdj];
+		const Mesh::Face faceAdj = m.F(idxFaceAdj);
 		if (IsFaceVertexMarked(idxFaceAdj * 3 + m.FVertexIth(iHeAdj, faceAdj)) && !IsSeen(m.HeHeadVertex(iHeAdj))) {
 			seen.push_back(m.HeHeadVertex(iHeAdj));
 			const Mesh::Vertex movingEdgeVector0 =
@@ -464,7 +467,7 @@ bool RemeshData::CheckVertexCanMoveOnCollapse(HalfMesh::HIndex iHe, bool relaxed
 		}
 		const HalfMesh::HIndex iHeAdjPrev = m.HePrev(iHeAdj);
 		const Mesh::FIndex idxFaceAdjPrev = m.HeFace(iHeAdjPrev);
-		const Mesh::Face& faceAdjPrev = mesh.faces[idxFaceAdjPrev];
+		const Mesh::Face faceAdjPrev = m.F(idxFaceAdjPrev);
 		if (IsFaceVertexMarked(idxFaceAdjPrev * 3 + m.FVertexIth(iHeAdjPrev, faceAdjPrev)) && !IsSeen(m.HeTailVertex(iHeAdjPrev))) {
 			seen.push_back(m.HeTailVertex(iHeAdjPrev));
 			const Mesh::Vertex movingEdgeVector1 =
@@ -513,7 +516,7 @@ bool RemeshData::CheckFacesAfterCollapse(HalfMesh::HIndex iHe,
 			if (!relaxed && ((newPos - mesh.vertices[v1]).norm() > SplitThreshold(m.HeVertex(iHe), v1) || (newPos - mesh.vertices[v2]).norm() > SplitThreshold(m.HeVertex(iHe), v2)))
 				return false;
 
-			const auto oldNormal = mesh.ComputeFaceNormal(m.HeFace(iHeAdj));
+			const auto oldNormal = mesh.ComputeFaceNormal(m.F(m.HeFace(iHeAdj)));
 			const auto newNormal =
 			    Mesh::ComputeTriangleNormal(newPos, mesh.vertices[v1], mesh.vertices[v2]);
 			const Mesh::Type oldNormalNormSq = oldNormal.squaredNorm();
@@ -577,7 +580,7 @@ bool RemeshData::TestEdgeCollapse(HalfMesh::HIndex iHe,
 	const Mesh::Type th = CollapseThreshold(m.HeTailVertex(iHe), m.HeHeadVertex(iHe));
 	const Mesh::Type dist =
 	    (mesh.vertices[m.HeTailVertex(iHe)] - mesh.vertices[m.HeHeadVertex(iHe)]).norm();
-	const Mesh::Type area = mesh.ComputeFaceDoubleArea(m.HeFace(iHe)) * 0.5f;
+	const Mesh::Type area = mesh.ComputeFaceNormal(m.F(m.HeFace(iHe))).norm() * 0.5f;
 	return (dist < th || area < SQUARE(params.edgeMinLength) * minAreaPercentage) && CheckCollapseFacesAroundFirstVertex(iHe, newPos, dist < th * minLenghPercentage ? 2 : (relaxed ? 1 : 0));
 }
 
@@ -694,7 +697,6 @@ unsigned RemeshData::CollapseShortEdges()
 	for (size_t i = 0; i < nv0; ++i)
 		phys[i] = logl[i] = static_cast<Mesh::VIndex>(i);
 
-	mesh.faces.clear();
 	FOREACH (idxEdgePoint, collapseEdges) {
 		const auto& edgePoint = collapseEdges[idxEdgePoint];
 		const Mesh::VIndex pa = phys[std::get<0>(edgePoint)];
@@ -733,7 +735,6 @@ unsigned RemeshData::CollapseShortEdges()
 		logl.pop_back();
 		mesh.vertices[vertexMoved] = std::get<2>(edgePoint);
 	}
-	m.FFaces(mesh.faces);
 	return collapseEdges.size();
 }
 
@@ -755,7 +756,7 @@ bool RemeshData::TestEdgeFlip(const HalfMesh::HIndex iHe, float cosAngleNormals)
 	if (m.EHeIsBoundary(iHe))
 		return false;
 	const Mesh::FIndex idxFace = m.HeFace(iHe);
-	if (IsFaceVertexMarked(idxFace * 3 + m.FVertexIth(iHe, mesh.faces[idxFace])))
+	if (IsFaceVertexMarked(idxFace * 3 + m.FVertexIth(iHe, m.F(idxFace))))
 		return false;
 
 	// Stencil: iV0/iV2 are the shared-edge endpoints (they LOSE the edge on a
@@ -868,19 +869,15 @@ unsigned RemeshData::ImproveValence()
 		const Mesh::FIndex idxFaceA = static_cast<Mesh::FIndex>(f);
 		ASSERT(m.HeFace(iHa2) == idxFaceA);
 		const Mesh::FIndex idxFaceB = m.HeFace(iHb2);
-		Mesh::Face& faceA = mesh.faces[idxFaceA];
-		Mesh::Face& faceB = mesh.faces[idxFaceB];
+		const Mesh::Face faceA = m.F(idxFaceA);
+		const Mesh::Face faceB = m.F(idxFaceB);
 		const Mesh::VIndex idxFaceAVertex0 = m.FVertexIth(iHe, faceA);
 		const Mesh::VIndex idxFaceBVertex2 = m.FVertexIth(iHb0, faceB);
 		const Mesh::VIndex idxFaceAVertex1 = m.FVertexIth(iHa2, faceA);
-		const Mesh::VIndex idxVertex1 = faceA[idxFaceAVertex1];
 		const Mesh::VIndex idxFaceBVertex3 = m.FVertexIth(iHb2, faceB);
-		const Mesh::VIndex idxVertex3 = faceB[idxFaceBVertex3];
 		const bool creaseFa = IsFaceVertexMarked(idxFaceA * 3 + idxFaceAVertex1);
 		const bool creaseFb = IsFaceVertexMarked(idxFaceB * 3 + idxFaceBVertex3);
 		m.EFlip(m.HeEdge(iHe));
-		faceA[idxFaceAVertex0] = idxVertex3;
-		faceB[idxFaceBVertex2] = idxVertex1;
 		if (creaseFa)
 			FaceVertexMark(idxFaceB * 3 + idxFaceBVertex2);
 		else
@@ -905,7 +902,7 @@ void RemeshData::VertexCoordLaplacian(int iterations,
 {
 	std::vector<bool> fixedVertices(mesh.vertices.size(), false);
 	FOREACHRAWIDX (HalfMesh::FIndex, idxFace, m.FSize()) {
-		const Mesh::Face& face = mesh.faces[idxFace];
+		const Mesh::Face face = m.F(idxFace);
 		for (int i = 0; i < 3; ++i) {
 			if (!fixedVertices[face[i]] && (m.VIsBoundary(face[i]) || IsFaceVertexMarked(idxFace * 3 + i)))
 				fixedVertices[face[i]] = true;
@@ -919,7 +916,6 @@ void RemeshData::VertexCoordLaplacian(int iterations,
 	for (int iter = 0; iter < iterations; ++iter) {
 		std::fill(lpis.begin(), lpis.end(), LaplacianInfo(Mesh::Vertex::Zero(), 0));
 		FOREACHRAWIDX (HalfMesh::FIndex, idxFace, m.FSize()) {
-			[[maybe_unused]] const Mesh::Face& face = mesh.faces[idxFace];
 			for (HalfMesh::HIndex iHe : m.FAdjacentHalfedges(idxFace)) {
 				const Mesh::VIndex iV0 = m.HeTailVertex(iHe);
 				const Mesh::VIndex iV1 = m.HeHeadVertex(iHe);
@@ -990,7 +986,7 @@ void RemeshData::TangentialSmoothing(int iterations, Mesh::Type delta)
 	} else {
 		// otherwise: lock the boundary and every crease-marked corner.
 		FOREACHRAWIDX (HalfMesh::FIndex, idxFace, m.FSize()) {
-			const Mesh::Face& face = mesh.faces[idxFace];
+			const Mesh::Face face = m.F(idxFace);
 			for (int i = 0; i < 3; ++i)
 				if (m.VIsBoundary(face[i]) || IsFaceVertexMarked(idxFace * 3 + i))
 					mode[face[i]] = FIXED;
@@ -1033,8 +1029,8 @@ void RemeshData::TangentialSmoothing(int iterations, Mesh::Type delta)
 		std::fill(normals.begin(), normals.end(), Mesh::Vertex::Zero());
 		std::fill(lpis.begin(), lpis.end(), LaplacianInfo(Mesh::Vertex::Zero(), 0));
 		FOREACHRAWIDX (HalfMesh::FIndex, idxFace, m.FSize()) {
-			const Mesh::Vertex fn = mesh.ComputeFaceNormal(idxFace);
-			const Mesh::Face& face = mesh.faces[idxFace];
+			const Mesh::Face face = m.F(idxFace);
+			const Mesh::Vertex fn = mesh.ComputeFaceNormal(face);
 			normals[face[0]] += fn;
 			normals[face[1]] += fn;
 			normals[face[2]] += fn;
@@ -1199,7 +1195,6 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 	static_assert(HALFMESH_TRIS, "mesh faces must be triangs");
 	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return;
-	SyncFaces();
 	ASSERT(ValidateInvariants());
 	// Edge lengths have no safe default (a default-constructed RemeshParams
 	// zero-initializes them): a non-finite or non-positive edgeMaxLength
@@ -1209,11 +1204,12 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 	if (!std::isfinite(params.edgeMaxLength) || !(params.edgeMaxLength > 0.f) || !std::isfinite(params.edgeMinLength) || !(params.edgeMinLength >= 0.f)) {
 		REPORT_WARNING("RemeshIsotropic: invalid edge-length params (min={}, max={}); no-op",
 		               params.edgeMinLength, params.edgeMaxLength);
+		SyncFacesOnPublicExit();
 		return;
 	}
 	ListHalfEdges();
-	SyncFaces();
 	RemeshData data(*this, params);
+	InvalidateFaces();
 	data.TagCreaseEdges();
 	if (params.adapt)
 		data.BuildSizingField();
@@ -1274,7 +1270,7 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 	}
 	if (stats != nullptr)
 		*stats = acc;
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateInvariants());
 }
 

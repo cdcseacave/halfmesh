@@ -19,6 +19,11 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 - Formatting: the repo `.clang-format` (tabs, `ColumnLimit: 0`, opening brace on its own
   line for class/struct/function). Run `clang-format -i` before committing.
 - Every source file starts with a short MIT header block (filename + copyright + MIT note).
+- Topology authority: once `halfMesh` exists it is primary and `faces` is a derived snapshot.
+  Native mutators keep connectivity live and invalidate/regenerate `faces`; array mutators clear
+  connectivity. After editing public `faces` directly, call `InvalidateHalfMesh()` before any
+  half-edge consumer. OpenMVS-style multi-stage processing uses `BeginHalfEdgePipeline()` /
+  `EndHalfEdgePipeline()` to harvest `faces` once; ordinary public calls still return synced.
 
 ## Layout
 - `include/halfmesh/` — public API headers (+ `Util/` helpers). See its AGENTS.md.

@@ -50,9 +50,10 @@ void Mesh::SmoothHCLaplacian(int iterations, const std::vector<bool>* lockedVert
 	static_assert(HALFMESH_TRIS, "mesh faces must be triangles");
 	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return;
-	SyncFaces();
-	if (iterations <= 0)
+	if (iterations <= 0) {
+		SyncFacesOnPublicExit();
 		return;
+	}
 	ASSERT(lockedVertices == NULL || lockedVertices->size() == vertices.size());
 	ListHalfEdges();
 	ASSERT(ValidateInvariants());
@@ -107,7 +108,7 @@ void Mesh::SmoothHCLaplacian(int iterations, const std::vector<bool>* lockedVert
 	// for any change that stales cached normals; Mesh has no vertexNormals-style
 	// cache to mirror (ComputeVertexNormals() always recomputes fresh).
 	faceNormals.clear();
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateInvariants());
 }
 
@@ -138,9 +139,10 @@ void Mesh::SmoothTaubin(int iterations, Type lambda, Type mu, const std::vector<
 	static_assert(HALFMESH_TRIS, "mesh faces must be triangles");
 	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return;
-	SyncFaces();
-	if (iterations <= 0)
+	if (iterations <= 0) {
+		SyncFacesOnPublicExit();
 		return;
+	}
 	// documented parameter contract: lambda in (0, 1), mu negative with |mu| > lambda
 	// (mu < -lambda) so the inflate step slightly overshoots the shrink step (no net shrink)
 	ASSERT(lambda > Type(0) && lambda < Type(1) && mu < -lambda);
@@ -199,7 +201,7 @@ void Mesh::SmoothTaubin(int iterations, Type lambda, Type mu, const std::vector<
 	// vertex-only motion defeats the size-based freshness gate — see the
 	// identical note at the end of SmoothHCLaplacian above
 	faceNormals.clear();
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateInvariants());
 }
 

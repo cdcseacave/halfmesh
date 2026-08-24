@@ -67,6 +67,28 @@ void Mesh::SyncFaces()
 	ASSERT(ValidateInvariants());
 }
 
+void Mesh::SyncFacesOnPublicExit()
+{
+	if (!deferFaceSync)
+		SyncFaces();
+}
+
+void Mesh::BeginHalfEdgePipeline()
+{
+	ASSERT(!deferFaceSync);
+	ListHalfEdges();
+	if (!halfMesh.Empty())
+		InvalidateFaces();
+	deferFaceSync = true;
+}
+
+void Mesh::EndHalfEdgePipeline()
+{
+	ASSERT(deferFaceSync);
+	deferFaceSync = false;
+	SyncFaces();
+}
+
 void Mesh::InvalidateHalfMesh()
 {
 	halfMesh.Clear();
@@ -173,7 +195,7 @@ bool Mesh::ValidateHalfMesh() const
 	}
 
 	std::vector<Face> harvestedFaces;
-	live.FFaces(harvestedFaces);
+	live.FFacesForValidation(harvestedFaces);
 	if (!faces.empty()) {
 		if (faces.size() != harvestedFaces.size())
 			return false;
@@ -547,7 +569,7 @@ Mesh::VIndex Mesh::RemoveUnreferencedVerticesHalfEdge()
 	}
 	if (!removedVerts.empty())
 		InvalidateFaces();
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateHalfMesh());
 	return static_cast<VIndex>(removedVerts.size());
 }

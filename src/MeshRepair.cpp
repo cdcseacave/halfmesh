@@ -385,7 +385,7 @@ Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
 	ASSERT(!halfMesh.Empty());
 	ASSERT(halfMesh.VSize() == vertices.size());
 	if (thArea <= 0) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return 0;
 	}
 
@@ -472,7 +472,7 @@ Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
 	const FIndex numRemovedFaces = initialFaces - halfMesh.FSize();
 	if (topologyChanged)
 		InvalidateFaces();
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateHalfMesh());
 	if (numRemovedFaces > 0 || numFlips > 0)
 		REPORT_STATUS_NOW("Repaired degenerate topology ({} faces removed by {} collapses, {} cap flips)", numRemovedFaces, numCollapses, numFlips);
@@ -658,7 +658,7 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 	std::vector<FIndex> components;
 	const FIndex numComponents = halfMesh.ConnectedComponents(components);
 	if (numComponents <= 1) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return 0;
 	}
 	std::vector<unsigned> componentSizes(numComponents, 0);
@@ -667,7 +667,7 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 	const unsigned numSmallComponents = std::accumulate(componentSizes.begin(), componentSizes.end(), 0u,
 	                                                    [minComponentSize](unsigned num, unsigned size) { return size < minComponentSize ? num + 1 : num; });
 	if (numSmallComponents == 0) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return 0;
 	}
 	std::vector<FIndex> faceRemoves;
@@ -678,7 +678,7 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 	std::vector<VIndex> removedVerts;
 	std::vector<VIndex> splitSrcVerts;
 	RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts);
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateHalfMesh());
 	REPORT_STATUS_NOW("Removed {} small components from {} total ({})",
 	                  numSmallComponents, numComponents, TIMER_STR());
@@ -687,19 +687,20 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 
 Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 {
-	SyncFaces();
-	if (factor <= 0.f)
+	if (factor <= 0.f) {
+		SyncFacesOnPublicExit();
 		return 0;
-	if (faces.empty())
+	}
+	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return 0;
 	TIMER_START("RemoveSpuriousComponents");
-	const FIndex initialFaces = static_cast<FIndex>(faces.size());
+	const FIndex initialFaces = halfMesh.Empty() ? static_cast<FIndex>(faces.size()) : halfMesh.FSize();
 	// ListHalfEdges, not ListHalfEdgesSafe: the manifold build is a fraction of the
 	// cost of the weld/dedupe/repair sweep, and it falls back to the safe path by
 	// itself when the input turns out to be non-manifold
 	ListHalfEdges();
 	if (halfMesh.Empty()) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return initialFaces - static_cast<FIndex>(faces.size());
 	}
 
@@ -710,7 +711,7 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 		edgeLengths.emplace_back((vertices[verts.first] - vertices[verts.second]).norm());
 	}
 	if (edgeLengths.empty()) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return 0;
 	}
 	std::vector<float> percentiles(edgeLengths);
@@ -736,7 +737,7 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 		RemoveFacesHalfEdgeImpl(removeFaces, removedVerts, splitSrcVerts);
 	}
 	if (halfMesh.Empty()) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return initialFaces;
 	}
 
@@ -763,7 +764,7 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 	}
 
 	const FIndex removed = initialFaces - halfMesh.FSize();
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateHalfMesh());
 	if (removed > 0)
 		REPORT_STATUS_NOW("Removed {} spurious faces ({})", removed, TIMER_STR());
@@ -809,12 +810,12 @@ unsigned Mesh::RemoveSpikesArrays(unsigned maxIterations)
 unsigned Mesh::RemoveSpikesHalfEdge(unsigned maxIterations)
 {
 	if (vertices.empty() || maxIterations == 0) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return 0;
 	}
 	ListHalfEdges();
 	if (halfMesh.Empty()) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return 0;
 	}
 	TIMER_START("RemoveSpikesHalfEdge");
@@ -903,7 +904,7 @@ unsigned Mesh::RemoveSpikesHalfEdge(unsigned maxIterations)
 				candidates.emplace_back(vertex);
 	}
 
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateHalfMesh());
 	if (numSpikes > 0)
 		REPORT_STATUS_NOW("Removed {} spike vertices ({})", numSpikes, TIMER_STR());

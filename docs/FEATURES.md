@@ -87,10 +87,20 @@ buffers is a single copy in each direction. Geometry helpers include
 conversions: `ToTexCoordPerVertex()`, `ToTexCoordPerVertexUVOnly()`,
 `ToOneMeshPerTexblob()`.
 
-`faces` is a derived topology snapshot once `halfMesh` has been built. Call
-`Mesh::InvalidateHalfMesh()` after editing `faces` directly; half-edge
-consumers deliberately trust a non-empty `halfMesh` and cannot detect direct
-array edits.
+Topology has three valid representation states: arrays-only, half-edge-only,
+or both-and-consistent. Once `halfMesh` has been built it is authoritative and
+`faces` is a derived snapshot. Native topology mutators keep `halfMesh` live,
+call `InvalidateFaces()`, and regenerate the snapshot at public return;
+array-native mutators clear connectivity. Call `Mesh::InvalidateHalfMesh()`
+after editing `faces` directly because half-edge consumers deliberately trust
+a non-empty `halfMesh` and cannot detect direct array edits.
+
+An internal multi-stage consumer can call `BeginHalfEdgePipeline()` to build
+connectivity once and defer public-exit snapshots, then
+`EndHalfEdgePipeline()` to restore ordinary behavior and perform the single
+final face harvest. Direct calls to `SyncFaces()` always force a snapshot, so
+I/O/export and other array consumers remain safe. Do not expose a mesh to
+ordinary callers between Begin/End: `faces.empty()` is intentional there.
 
 Header: [`Mesh.h`](../include/halfmesh/Mesh.h).
 
@@ -148,6 +158,24 @@ self-edge faces, prune unreferenced vertices). Callers holding external
 per-vertex/per-face arrays must re-map them afterwards.
 
 Implementation: `src/MeshRepair.cpp`.
+
+### Processing texture policy
+
+Mesh processing targets **untextured geometry**. A method marked
+`attribute-preserving (bonus)` currently keeps the listed arrays aligned, but
+that behavior is not a cross-stage texture contract. Rebuild or rebake UVs
+after an `untextured-only` operation.
+
+| Public processing method | Policy |
+|---|---|
+| `RemoveDuplicateVertices`, `RemoveDuplicateFaces`, `RemoveFaces`, `RemoveVertices`, `RemoveFacesOutside` | attribute-preserving (bonus; vertex colors and face-keyed arrays remap in lockstep) |
+| `RemoveUnreferencedVerticesArrays`, `RemoveDegenerateFacesArrays`, `RemoveSpikesArrays` | attribute-preserving (bonus) |
+| `RemoveUnreferencedVertices`, `RemoveDegenerateFaces`, `RemoveSpikes` | representation-dependent: array arm preserves as a bonus; native arm is untextured-only |
+| `ECollapse`, `RemoveFacesHalfEdge`, `RemoveUnreferencedVerticesHalfEdge`, `RemoveDegenerateFacesHalfEdge`, `RemoveSpikesHalfEdge` | untextured-only |
+| `RemoveSmallComponents`, `RemoveSpuriousComponents`, `RemoveVerticesAndFill`, `CloseHoles` | untextured-only |
+| `FixNonManifold`, `ListHalfEdgesSafe` | untextured-only ingest repair |
+| `Simplify`, `RemeshIsotropic` | untextured-only |
+| `Smooth`, `SmoothHCLaplacian`, `SmoothTaubin` | attribute-preserving (bonus; positions move, topology/UVs/colors stay, cached face normals clear) |
 
 ## QEM decimation
 

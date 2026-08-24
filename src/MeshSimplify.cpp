@@ -64,14 +64,15 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return;
 	ListHalfEdges();
-	SyncFaces();
 	ASSERT(ValidateInvariants());
-	if (minEdgeLength <= 0 && decimateRatio == 1.f)
+	if (minEdgeLength <= 0 && decimateRatio == 1.f) {
+		SyncFacesOnPublicExit();
 		return; // identity: nothing to decimate
+	}
 	ASSERT(decimateRatio > 0);
 	ASSERT(minEdgeLength <= 0 || decimateRatio == 1.f);
 	TIMER_START("Simplify");
-	const size_t numFaces = faces.size();
+	const size_t numFaces = halfMesh.FSize();
 	const size_t numTargetFaces(minEdgeLength > 0     ? 1u
 	                            : decimateRatio > 1.f ? static_cast<size_t>(std::llround(decimateRatio))
 	                                                  : RoundCast<size_t>(numFaces * decimateRatio));
@@ -88,16 +89,16 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	// verticesQuadric then runs sequentially in the original face/half-edge order,
 	// keeping the floating-point summation order (hence the result) bit-identical —
 	// determinism is a hard invariant.
-	std::vector<Normal> facesNormal(faces.size());
-	std::vector<Quadric> facesQuadric(faces.size());
-	ParallelForPool(pool, faces.size(), [&](std::size_t iF) {
-		const Face& face = faces[iF];
+	std::vector<Normal> facesNormal(numFaces);
+	std::vector<Quadric> facesQuadric(numFaces);
+	ParallelForPool(pool, numFaces, [&](std::size_t iF) {
+		const Face face = halfMesh.F(static_cast<FIndex>(iF));
 		const Normal normal = ComputeFaceNormal(face).normalized();
 		facesNormal[iF] = normal;
 		const Type d = -normal.dot(vertices[face(0)]);
 		facesQuadric[iF] = Quadric(normal.x(), normal.y(), normal.z(), d);
 	});
-	FOREACH (iF, faces) {
+	for (FIndex iF = 0; iF < numFaces; ++iF) {
 		const Normal& normal = facesNormal[iF];
 		const Quadric& q = facesQuadric[iF];
 		for (HIndex iHe : halfMesh.FAdjacentHalfedges(iF)) {
@@ -140,7 +141,7 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 		// bit-identical to the sequential build.
 		std::vector<Normal> facesError(numFaces);
 		ParallelForPool(pool, numFaces, [&](std::size_t iF) {
-			const Face face = faces[iF];
+			const Face face = halfMesh.F(static_cast<FIndex>(iF));
 			Normal& faceError = facesError[iF];
 			for (int i = 0; i < 3; ++i) {
 				const VIndex iV0 = face(i), iV1 = face((i + 1) % 3);
@@ -400,9 +401,9 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 		               "validity checks; for needle/T-junction-heavy input run RemoveDegenerateFaces(1e-5f) + "
 		               "RemoveUnreferencedVertices() + FixNonManifold() before Simplify",
 		               halfMesh.FSize(), numTargetFaces);
-	halfMesh.FFaces(faces);
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateInvariants());
-	REPORT_STATUS_NOW("Mesh decimated: {} -> {} faces ({})", numFaces, faces.size(), TIMER_STR());
+	REPORT_STATUS_NOW("Mesh decimated: {} -> {} faces ({})", numFaces, halfMesh.FSize(), TIMER_STR());
 }
 
 } // namespace halfmesh

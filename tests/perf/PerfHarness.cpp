@@ -217,6 +217,7 @@ static void record(const std::string& label, double sec, unsigned n)
 constexpr unsigned SMALL_TARGET = 50000;
 constexpr unsigned MED_TARGET = 200000;
 constexpr unsigned LARGE_TARGET = 800000;
+constexpr unsigned TRUCK_TARGET = 5000000;
 
 // Wall-clock upper bound per op on largest mesh (generous: 120 s)
 constexpr double MAX_WALL_SECONDS = 120.0;
@@ -300,6 +301,53 @@ TEST(PerfHarness, PrebuiltRepairPipelinePerformsZeroBuilds)
 	mesh.RemoveUnreferencedVertices();
 	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 0u);
 	EXPECT_FALSE(mesh.halfMesh.Empty());
+}
+
+TEST(PerfHarness, SimulatedCleanPerformsOneBuildAndOneFaceHarvest)
+{
+	halfmesh::Mesh mesh = hmtest::corpus::UVSphere(16, 24);
+	halfmesh::HalfMesh::ResetBuildCount();
+	halfmesh::HalfMesh::ResetFFacesCount();
+	mesh.BeginHalfEdgePipeline();
+	mesh.RemoveSpuriousComponents(100.f);
+	mesh.RemoveSpikes();
+	mesh.Simplify(0.8f);
+	mesh.CloseHoles();
+	mesh.SmoothTaubin(1);
+	halfmesh::Mesh::RemeshParams params;
+	params.SetEdgeLength(mesh.ComputeMeanEdgeLength());
+	params.iterations = 1;
+	mesh.RemeshIsotropic(params);
+	EXPECT_TRUE(mesh.faces.empty());
+	mesh.EndHalfEdgePipeline();
+
+	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 1u);
+	EXPECT_EQ(halfmesh::HalfMesh::FFacesCount(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
+TEST(PerfHarness, TruckScaleNativeCleaningPerformsOneBuildAndOneFaceHarvest)
+{
+	unsigned actual = 0;
+	halfmesh::Mesh mesh = hmtest::corpus::LargeMesh(TRUCK_TARGET, &actual);
+	halfmesh::HalfMesh::ResetBuildCount();
+	halfmesh::HalfMesh::ResetFFacesCount();
+	const auto t0 = Clock::now();
+	mesh.BeginHalfEdgePipeline();
+	mesh.RemoveSpuriousComponents(100.f);
+	mesh.RemoveSpikes();
+	mesh.CloseHoles();
+	mesh.RemoveUnreferencedVertices();
+	mesh.EndHalfEdgePipeline();
+	const double dt = elapsedS(t0);
+	record("NativeClean_5m", dt, actual);
+	std::cout << "  NativeClean_5m: " << dt << " s\n";
+
+	EXPECT_GE(actual, TRUCK_TARGET);
+	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 1u);
+	EXPECT_EQ(halfmesh::HalfMesh::FFacesCount(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_LT(dt, MAX_WALL_SECONDS);
 }
 
 // ======================== Simplify (50k and 200k) ==========================

@@ -1264,18 +1264,23 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
 {
 	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return 0;
-	SyncFaces();
-	if (maxHoleEdges == 0)
+	if (maxHoleEdges == 0) {
+		SyncFacesOnPublicExit();
 		return 0;
+	}
 
 	ListHalfEdges();
-	if (halfMesh.Empty())
+	if (halfMesh.Empty()) {
+		SyncFacesOnPublicExit();
 		return 0;
+	}
 
 	std::vector<BoundaryLoop> loops;
 	EnumerateBoundaryLoops(halfMesh, vertices, loops);
-	if (loops.empty())
+	if (loops.empty()) {
+		SyncFacesOnPublicExit();
 		return 0;
+	}
 
 	// Collect the simple, triangulable loops small enough to fill: a closed loop
 	// spans as many edges as it has vertices, needs at least 3 to be triangulable,
@@ -1297,7 +1302,7 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
 			candidates.push_back(idxLoop);
 	}
 	const unsigned closed = FillBoundaryLoops(*this, loops, candidates, holesFaces);
-	SyncFaces();
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateHalfMesh());
 	return closed;
 }

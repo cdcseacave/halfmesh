@@ -1,6 +1,6 @@
 # Half-edge–primary mesh processing — implementation plan
 
-Status: **planned** — standalone hand-off tasks in `docs/tasks/` · Branch: `openmvs-integration`
+Status: **shipped through M5** — T0–T7 landed; M6 Build speed remains optional backlog · Branch: `openmvs-integration`
 Driven by the OpenMVS `Mesh::Clean` integration; measured numbers below are from
 Tanks&Temples *Truck* (6.1M faces) via `ReconstructMesh --mesh-file` clean-only runs.
 
@@ -17,8 +17,8 @@ deletes the rebuild that today guarantees the all-even form `FAdd` depends on;
 texture policy: processing methods target **untextured** meshes (§2.2); public
 repair API keeps the array variants via representation dispatch (§4.9);
 `Build` on `NO_ID` vHalfedges fails in *release*, not debug-only (§3.3);
-Simplify/Remesh need `SyncFaces` on **entry** even in pipelines that skip
-exit-syncs (§2.1/§4.8); public `Mesh::InvalidateHalfMesh()` for hand-edited
+Simplify/Remesh historically needed `SyncFaces` on entry until M5 moved their
+setup and working loops onto half-edge faces (§4.8); public `Mesh::InvalidateHalfMesh()` for hand-edited
 `faces` (§2.1); optional `Build`-speed backlog (M6).
 
 Correction pass 3 (2026-08-24, implementation-verified): a scratch `Build`
@@ -512,25 +512,21 @@ repair native.
 **Do not** replace their `FFaces` with `InvalidateFaces()` on entry in M0/M5
 as an earlier draft stated.
 
-- **Simplify** still reads `faces` to assemble quadrics **before** it empties
-  them. Invalidate-on-entry breaks setup unless quadrics walk `fHalfedges`.
-  After setup it already empties `faces` and `FFaces`s at the end — public
-  `SyncFaces` on exit matches that.
-- **Remesh** keeps `faces` **live** for crease tags, `fvSelection`
-  (`faces.size()*3`), collapse/flip tests, mid-pass `FFaces` after split and
-  after collapse, and `RemeshData` copies `originalMesh` for the projection
-  BVH at construction. Emptying `faces` on entry empties that BVH. Treat
-  “Remesh stops reading `mesh.faces`” (walk `HalfMesh::F(i)` / half-edges
-  instead) as **its own milestone**. Until then Remesh must keep resyncing
-  `faces` after split/collapse even if the rest of the pipeline is
-  half-edge-primary.
+- **Simplify** assembles quadrics and fast-mode face errors from
+  `halfMesh.F(iF)`, so an HE-only pipeline entry needs no snapshot.
+- **Remesh** reads faces and face-corner order exclusively through `HalfMesh`;
+  `fvSelection` is sized from `FSize()`, split/collapse need no mid-pass
+  harvest, and the immutable projection-BVH copy harvests directly from the
+  source connectivity.
 - **Smooth*** touches positions only. If faces were populated, they stay
   valid (topology unchanged) — call neither Invalidate nor Sync. If a
   pipeline left faces empty, Smooth must **not** early-out on `faces.empty()`;
   it still needs HE for adjacency.
 
-Public Simplify/Remesh still `SyncFaces` (or keep today’s `FFaces`) on exit
-until the OpenMVS pipeline opts out. The Clean win is **zero extra `Build`s**.
+Public Simplify/Remesh still synchronize on exit. An explicit
+`BeginHalfEdgePipeline()` / `EndHalfEdgePipeline()` scope defers those stage
+snapshots and performs one final harvest; the measured Clean contract is one
+`Build` plus one `FFaces`.
 
 ### 4.9 Public API: representation dispatch (dual variants)
 
