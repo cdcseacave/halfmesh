@@ -571,7 +571,10 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 		return 0;
 	TIMER_START("RemoveSpuriousComponents");
 	const FIndex initialFaces = static_cast<FIndex>(faces.size());
-	ListHalfEdgesSafe();
+	// ListHalfEdges, not ListHalfEdgesSafe: the manifold build is a fraction of the
+	// cost of the weld/dedupe/repair sweep, and it falls back to the safe path by
+	// itself when the input turns out to be non-manifold
+	ListHalfEdges();
 	if (halfMesh.Empty())
 		return initialFaces - static_cast<FIndex>(faces.size());
 
@@ -603,7 +606,7 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 	if (!removeFaces.empty()) {
 		RemoveFaces(removeFaces);
 		RemoveUnreferencedVertices();
-		ListHalfEdgesSafe();
+		ListHalfEdges();
 	}
 	if (faces.empty() || halfMesh.Empty())
 		return initialFaces - static_cast<FIndex>(faces.size());
