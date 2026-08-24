@@ -88,8 +88,8 @@ no `NO_ID` slots, see plan §3.3.)
 
 ## Acceptance
 
-Tests (each followed by `ValidateHalfMesh` + comparison against a
-from-scratch `Build` of the harvested faces):
+Tests (each followed by `ValidateHalfMesh` + semantic comparison against a
+from-scratch `Build` of the harvested faces; never raw array identity):
 - multi-border-edge faces (2 and 3 border edges);
 - a removal pattern that REQUIRES a pinch split (e.g. remove two opposite
   faces of a 6-fan interior vertex); verify `splitSrcVerts`, verify

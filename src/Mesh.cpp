@@ -83,16 +83,140 @@ bool Mesh::ValidateHalfMesh() const
 		return false;
 	if (halfMesh.Empty())
 		return vertices.empty() && faces.empty();
-	std::vector<Face> harvestedFaces;
-	const std::vector<Face>* sourceFaces = &faces;
-	if (faces.empty()) {
-		halfMesh.FFaces(harvestedFaces);
-		sourceFaces = &harvestedFaces;
-	}
-	HalfMesh rebuilt;
-	if (!rebuilt.Build(static_cast<VIndex>(vertices.size()), *sourceFaces))
+
+	const HalfMesh& live = halfMesh;
+	const std::size_t numHalfedges = live.heNexts.size();
+	const VIndex numVertices = live.VSize();
+	const FIndex numFaces = live.FSize();
+	if (numHalfedges == 0 || (numHalfedges & 1u) != 0 || live.heVertices.size() != numHalfedges || live.heFaces.size() != numHalfedges || numVertices != vertices.size() || numFaces == 0)
 		return false;
-	return rebuilt.vHalfedges == halfMesh.vHalfedges && rebuilt.fHalfedges == halfMesh.fHalfedges && rebuilt.heNexts == halfMesh.heNexts && rebuilt.heVertices == halfMesh.heVertices && rebuilt.heFaces == halfMesh.heFaces;
+
+	std::vector<HIndex> outgoingCount(numVertices, 0);
+	std::vector<bool> boundaryVertices(numVertices, false);
+	for (HIndex iHe = 0; iHe < numHalfedges; ++iHe) {
+		const HIndex next = live.heNexts[iHe];
+		const VIndex vertex = live.heVertices[iHe];
+		const FIndex face = live.heFaces[iHe];
+		if (next >= numHalfedges || vertex >= numVertices || (face != NO_ID && face >= numFaces))
+			return false;
+		if (live.heVertices[live.HeTwin(iHe)] != live.heVertices[next])
+			return false;
+		++outgoingCount[vertex];
+		if (face == NO_ID) {
+			if ((iHe & 1u) == 0)
+				return false;
+			boundaryVertices[vertex] = true;
+			boundaryVertices[live.HeVertex(live.HeTwin(iHe))] = true;
+		}
+	}
+
+	std::vector<bool> visitedFaceHalfedges(numHalfedges, false);
+	for (FIndex iF = 0; iF < numFaces; ++iF) {
+		const HIndex start = live.fHalfedges[iF];
+		if (start >= numHalfedges || live.heFaces[start] != iF)
+			return false;
+		HIndex current = start;
+		unsigned degree = 0;
+		do {
+			if (current >= numHalfedges || live.heFaces[current] != iF || visitedFaceHalfedges[current])
+				return false;
+			visitedFaceHalfedges[current] = true;
+			current = live.heNexts[current];
+			if (++degree > numHalfedges)
+				return false;
+		} while (current != start);
+#if HALFMESH_TRIS
+		if (degree != 3)
+			return false;
+#endif
+	}
+	for (HIndex iHe = 0; iHe < numHalfedges; ++iHe)
+		if (live.heFaces[iHe] != NO_ID && !visitedFaceHalfedges[iHe])
+			return false;
+
+	std::vector<bool> visitedBoundaryHalfedges(numHalfedges, false);
+	for (HIndex iHe = 0; iHe < numHalfedges; ++iHe) {
+		if (live.heFaces[iHe] != NO_ID || visitedBoundaryHalfedges[iHe])
+			continue;
+		const HIndex start = iHe;
+		HIndex current = start;
+		std::size_t steps = 0;
+		do {
+			if (current >= numHalfedges || live.heFaces[current] != NO_ID || visitedBoundaryHalfedges[current])
+				return false;
+			visitedBoundaryHalfedges[current] = true;
+			current = live.heNexts[current];
+			if (++steps > numHalfedges)
+				return false;
+		} while (current != start);
+	}
+
+	for (VIndex iV = 0; iV < numVertices; ++iV) {
+		const HIndex start = live.vHalfedges[iV];
+		if (start >= numHalfedges || live.heVertices[start] != iV || outgoingCount[iV] == 0)
+			return false;
+		if (live.alwaysEven && (start & 1u))
+			return false;
+		if (boundaryVertices[iV] && (live.heFaces[start] == NO_ID || live.heFaces[live.HeTwin(start)] != NO_ID))
+			return false;
+		HIndex current = start;
+		HIndex reached = 0;
+		do {
+			if (current >= numHalfedges || live.heVertices[current] != iV)
+				return false;
+			current = live.HeNextOutgoingHalfedge(current);
+			if (++reached > outgoingCount[iV])
+				return false;
+		} while (current != start);
+		if (reached != outgoingCount[iV])
+			return false;
+	}
+
+	std::vector<Face> harvestedFaces;
+	live.FFaces(harvestedFaces);
+	if (!faces.empty()) {
+		if (faces.size() != harvestedFaces.size())
+			return false;
+		for (std::size_t i = 0; i < faces.size(); ++i)
+			for (Eigen::Index v = 0; v < faces[i].rows(); ++v)
+				if (faces[i][v] != harvestedFaces[i][v])
+					return false;
+	}
+
+	HalfMesh rebuilt;
+	if (!rebuilt.Build(numVertices, harvestedFaces) || rebuilt.VSize() != numVertices || rebuilt.FSize() != numFaces || rebuilt.ESize() != live.ESize())
+		return false;
+
+	const auto SortedAdjacentVertices = [](const HalfMesh& mesh, VIndex vertex) {
+		std::vector<VIndex> adjacent;
+		for (VIndex neighbor : mesh.VAdjacentVertices(vertex))
+			adjacent.emplace_back(neighbor);
+		std::sort(adjacent.begin(), adjacent.end());
+		return adjacent;
+	};
+	const auto SortedAdjacentFaces = [](const HalfMesh& mesh, VIndex vertex) {
+		std::vector<FIndex> adjacent;
+		for (FIndex face : mesh.VAdjacentFaces(vertex))
+			adjacent.emplace_back(face);
+		std::sort(adjacent.begin(), adjacent.end());
+		return adjacent;
+	};
+	for (VIndex iV = 0; iV < numVertices; ++iV) {
+		if (SortedAdjacentVertices(live, iV) != SortedAdjacentVertices(rebuilt, iV) || SortedAdjacentFaces(live, iV) != SortedAdjacentFaces(rebuilt, iV))
+			return false;
+	}
+
+	std::vector<std::vector<VIndex>> liveHoles, rebuiltHoles;
+	live.EnumerateHoles(liveHoles);
+	rebuilt.EnumerateHoles(rebuiltHoles);
+	const auto CanonicalizeHoles = [](std::vector<std::vector<VIndex>>& holes) {
+		for (std::vector<VIndex>& hole : holes)
+			std::sort(hole.begin(), hole.end());
+		std::sort(holes.begin(), holes.end());
+	};
+	CanonicalizeHoles(liveHoles);
+	CanonicalizeHoles(rebuiltHoles);
+	return liveHoles == rebuiltHoles;
 }
 
 void Mesh::ComputeFaceNormals()

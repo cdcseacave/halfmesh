@@ -21,6 +21,15 @@ Simplify/Remesh need `SyncFaces` on **entry** even in pipelines that skip
 exit-syncs (§2.1/§4.8); public `Mesh::InvalidateHalfMesh()` for hand-edited
 `faces` (§2.1); optional `Build`-speed backlog (M6).
 
+Correction pass 3 (2026-08-24, implementation-verified): a scratch `Build`
+cannot reproduce all five positional arrays after an in-place mutation.
+`EFlip`/`ESplit`/`ERemove` preserve topology while changing edge numbering,
+face anchors, and legal odd interior vertex representatives; a fresh `Build`
+renumbers in face-walk order and makes every representative even. Therefore
+`ValidateHalfMesh()` compares structural invariants and semantic topology
+(faces, adjacency, boundaries, and counts) against a rebuild, never raw array
+identity. Exact array equality remains valid only for an unmutated Build.
+
 ## 1. Problem
 
 `Mesh` carries two topology representations: the `faces` array and `halfMesh`
@@ -164,9 +173,11 @@ stop treating `faces.empty()` as “the mesh has no triangles” in public metho
 Option (a) was rejected because a `bool facesValid` member would have to be
 touched in exactly the same set of functions while adding a second source of
 truth that can contradict the arrays; (b) encodes the state in data that cannot
-lie. Debug builds additionally get `ValidateHalfMesh()`: if `faces` is empty,
-`FFaces` into a scratch vector first, `Build` into a scratch `HalfMesh`,
-compare. Wire into the test corpus after each native op.
+lie. Debug builds additionally get `ValidateHalfMesh()`: harvest with `FFaces`,
+`Build` a scratch `HalfMesh`, validate the live arrays structurally, and compare
+semantic topology (face triples, adjacency, boundaries, and counts). Positional
+array identity is deliberately not compared after in-place mutation (correction
+pass 3 above). Wire into the test corpus after each native op.
 
 Note the OpenMVS `Clean` bridge (`MeshHalfMesh.cpp`, **OpenMVS-side**, not in
 this repo — `include/halfmesh/InteropOpenMVS.h` is convert-only) then does
@@ -563,8 +574,8 @@ gate.
 - **M0 — contract.** `InvalidateFaces()` (incl. `texturesDiffuse` + §2.2
   warn-on-drop) + `SyncFaces()` + public `InvalidateHalfMesh()` + exact
   `ListHalfEdges()` gate + class invariant asserts (faces **and**
-  `vertices.size()==VSize()`) + debug `ValidateHalfMesh()` (harvest then
-  rebuild). **`halfMesh.Clear()` on every array mutator** that currently
+  `vertices.size()==VSize()`) + debug `ValidateHalfMesh()` (harvest, rebuild,
+  then structural/semantic comparison). **`halfMesh.Clear()` on every array mutator** that currently
   forgets it. Rewrite `faces.empty()` early-outs. `SyncFaces()` at every
   public method exit and in Save/IO/Python. Wire `SyncFaces()` into remaining
   array consumers (grep for `faces` iteration). **Do not** drop
@@ -577,7 +588,8 @@ gate.
   `removedVerts`, boundary-canonical repointing via `SetVHalfedge`) +
   `Mesh::RemoveFacesHalfEdge` + `VRemoveUnreferenced` + `FAdd`
   isolated-vertex **and two-new-edges**. Reuse `TriangulateHole` retry for
-  disk attach. Unit tests vs from-scratch rebuild (`ValidateHalfMesh`).
+  disk attach. Unit tests vs a semantic from-scratch rebuild oracle
+  (`ValidateHalfMesh`; correction pass 3).
 - **M2 — repair family.** §4.1 spurious + §4.1b **small components** + §4.2
   spikes native + §4.9 dispatch wrappers (spikes keeps its array arm public).
 - **M3 — holes family.** §4.3 native harvest; delete the defensive entry

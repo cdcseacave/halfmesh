@@ -36,7 +36,10 @@ Land each task with the full suite green before starting the next.
 - `GuaranteeAlwaysEven` is a full in-place rebuild — it is NEVER an
   acceptable fix for a parity problem in these tasks.
 - Every new native mutator is exercised on the test corpus followed by
-  `ValidateHalfMesh()` (T0 adds it): harvest faces, rebuild scratch, compare.
+  `ValidateHalfMesh()` (T0 adds it): harvest faces, rebuild scratch, validate
+  structural invariants and compare semantic topology. Never compare raw
+  half-edge arrays after an in-place mutation: numbering and representatives
+  are intentionally not canonical outside a fresh `Build`.
 - Commits: no Co-Authored-By trailer (repo convention).
 
 ## Task index

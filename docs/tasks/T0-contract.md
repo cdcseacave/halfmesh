@@ -77,8 +77,12 @@ on return). Perf-neutral or better; no algorithm conversion happens here.
    `faces.empty() || halfMesh.Empty() || faces.size() == halfMesh.FSize()`
    and `halfMesh.Empty() || vertices.size() == halfMesh.VSize()`.
 9. **`ValidateHalfMesh()`** (debug/test helper): FFaces into a scratch
-   vector, `Build` a scratch `HalfMesh` from it, compare all five arrays
-   against the live one. Expose to the test infra (used by T1-T6).
+  vector, `Build` a scratch `HalfMesh`, validate the live five-array structure,
+  and compare semantic topology (face triples, vertex adjacency/incidence,
+  boundaries, and V/E/F counts). Do NOT compare raw arrays after a native
+  mutation: swap-compaction, face anchors, and legal odd representatives make
+  positional identity with a fresh all-even Build impossible. Expose to the
+  test infra (used by T1-T6).
 10. **Do NOT** touch Simplify/Remesh `FFaces` epilogues (plan §4.8).
 
 ## Pitfalls

@@ -68,8 +68,8 @@ is the prerequisite that makes deleting the defensive rebuilds (T5) sound.
 - Full suite green; goldens unchanged.
 - New tests (extend `tests/HalfMeshTest.cpp` / `HalfMeshInvariantsTest.cpp`):
   - `FAdd` on a HE mutated by `ESplit`+`EFlip` until `alwaysEven == false`
-    (never rebuilt), then `ValidateHalfMesh` + compare against from-scratch
-    rebuild.
+    (never rebuilt), then `ValidateHalfMesh` + semantic comparison against a
+    from-scratch rebuild (raw arrays cannot match after in-place mutation).
   - `FAdd` on a HE mutated by `ERemove` (decimation-style), same validation.
   - `EnumerateHoles` correct after the above mutations.
   - A rejected `FAdd` leaves the structure bit-identical to before the call.

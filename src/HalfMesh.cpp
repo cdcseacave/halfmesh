@@ -169,7 +169,7 @@ bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 	// not the MSVC-only _DEBUG, so the validation runs on every platform.
 	{
 		// 1. every vertex is referenced by some half-edge: ConnectBorders() rejects
-		//    a NO_ID anchor (odd-parity test), so reaching here implies all are set.
+		//    a NO_ID anchor explicitly, so reaching here implies all are set.
 		for (const HIndex iHe : vHalfedges) {
 			ASSERT(iHe != NO_ID); // unreferenced vertex
 		}
@@ -212,48 +212,70 @@ void HalfMesh::GuaranteeAlwaysEven()
 	Build(nv, faces);
 }
 
+namespace {
+
+template <typename BeforeNextWrite>
+bool ConnectBordersImpl(HalfMesh& mesh, HalfMesh::HIndex& iHeStart, BeforeNextWrite&& beforeNextWrite)
+{
+	using HIndex = HalfMesh::HIndex;
+	using VIndex = HalfMesh::VIndex;
+	if (iHeStart == NO_ID || iHeStart >= mesh.heNexts.size())
+		return false;
+
+	// Find the face-bearing outgoing side of a boundary edge. Representatives on
+	// interior vertices may be odd after in-place mutations, so face occupancy,
+	// not pair parity, decides when the boundary has been reached.
+	const HIndex original = iHeStart;
+	const VIndex vertex = mesh.HeVertex(original);
+	const std::size_t guardLimit = mesh.heNexts.size() + 1;
+	std::size_t guard = 0;
+	HIndex boundaryOut = original;
+	while (mesh.heFaces[boundaryOut] == NO_ID || mesh.heFaces[mesh.HeTwin(boundaryOut)] != NO_ID) {
+		const HIndex twin = mesh.HeTwin(boundaryOut);
+		if (mesh.heNexts[twin] == NO_ID)
+			return false;
+		boundaryOut = mesh.HeNextOutgoingHalfedge(boundaryOut);
+		if (boundaryOut == original)
+			return true; // interior vertex
+		if (++guard > guardLimit)
+			return false;
+	}
+
+	// Find the outgoing boundary half-edge on the other side of this vertex's
+	// fan. Defer both writes until this walk succeeds so failure is non-mutating.
+	guard = 0;
+	HIndex boundaryNext = boundaryOut;
+	do {
+		boundaryNext = mesh.HeTwin(mesh.HePrev(boundaryNext));
+		if (++guard > guardLimit)
+			return false;
+	} while (mesh.heFaces[boundaryNext] != NO_ID);
+
+	ASSERT(mesh.HeVertex(boundaryNext) == vertex);
+	const HIndex boundaryIn = mesh.HeTwin(boundaryOut);
+	ASSERT(mesh.heFaces[boundaryOut] != NO_ID && mesh.heFaces[boundaryIn] == NO_ID);
+	mesh.SetVHalfedge(vertex, boundaryOut);
+	// All in-tree callers pass the representative itself by reference. Preserve
+	// the public by-reference behavior for any caller that passes a local copy.
+	if (iHeStart != boundaryOut)
+		iHeStart = boundaryOut;
+	beforeNextWrite(boundaryIn);
+	mesh.heNexts[boundaryIn] = boundaryNext;
+	return true;
+}
+
+} // anonymous namespace
+
 bool HalfMesh::ConnectBorders(HIndex& iHeStart)
 {
-	// A corrupt (non-manifold) adjacency can make the walks below never reach a
-	// boundary; bound every loop by the half-edge count so we fail instead of
-	// hanging.  On a manifold mesh the guard never trips (one extra compare per
-	// step of two short, boundary-local loops).
-	const std::size_t guardLimit = heNexts.size() + 1;
-	std::size_t guard = 0;
-	// assign vertex half-edge on the border if it's the case
-	HIndex iHe = iHeStart;
-	while (heNexts[HeBack(iHeStart)] != NO_ID) {
-		iHeStart = HeNextOutgoingHalfedge(iHeStart);
-		if (iHeStart == iHe)
-			return true;
-		if (++guard > guardLimit)
-			return false; // would loop forever => non-manifold
-	}
-	if ((iHeStart & 1) != 0)
-		return false;
-	// close adjacency loop by assigning the half-edge on
-	// the other side of the border
-	guard = 0;
-	do {
-		iHe = HeTwin(HePrev(iHe));
-		if (++guard > guardLimit)
-			return false; // no boundary reachable => non-manifold
-	} while (!EHeIsBoundary(iHe));
-	ASSERT(heVertices[iHe] == heVertices[iHeStart] && heFaces[iHe] == NO_ID);
-	ASSERT(heFaces[HeBack(iHeStart)] == NO_ID);
-	ASSERT(heNexts[HeBack(iHeStart)] == NO_ID);
-	heNexts[HeBack(iHeStart)] = iHe;
-	return true;
+	return ConnectBordersImpl(*this, iHeStart, [](HIndex) {});
 }
 
 bool HalfMesh::ConnectBorders()
 {
 	for (HIndex& iHeStart : vHalfedges) {
-		if ((iHeStart & 1) != 0)
+		if (!ConnectBorders(iHeStart))
 			return false;
-		if (!EHeIsBoundary(iHeStart) || heNexts[HeBack(iHeStart)] == NO_ID)
-			if (!ConnectBorders(iHeStart))
-				return false;
 		ASSERT([&]() {
 			HIndex iHe = iHeStart;
 			do {
@@ -540,6 +562,45 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 		if (numNewEdges[v] > 1)
 			return NO_ID; // non-manifold vertex
 	}
+	const std::size_t oldHeSize = heNexts.size();
+	const std::size_t oldFaceSize = fHalfedges.size();
+	const bool oldAlwaysEven = alwaysEven;
+	std::vector<std::pair<VIndex, HIndex>> oldRepresentatives;
+	oldRepresentatives.reserve(numVertices);
+	for (unsigned v = 0; v < numVertices; ++v) {
+		const VIndex vertex = face[v];
+		if (std::find_if(oldRepresentatives.begin(), oldRepresentatives.end(), [vertex](const auto& entry) { return entry.first == vertex; }) == oldRepresentatives.end())
+			oldRepresentatives.emplace_back(vertex, vHalfedges[vertex]);
+	}
+	std::vector<std::pair<HIndex, HIndex>> oldNexts;
+	std::vector<std::pair<HIndex, FIndex>> oldHeFaces;
+	oldNexts.reserve(numVertices * 3);
+	oldHeFaces.reserve(numVertices);
+	const auto RememberNext = [&](HIndex iHe) {
+		if (iHe >= oldHeSize)
+			return;
+		if (std::find_if(oldNexts.begin(), oldNexts.end(), [iHe](const auto& entry) { return entry.first == iHe; }) == oldNexts.end())
+			oldNexts.emplace_back(iHe, heNexts[iHe]);
+	};
+	const auto RememberFace = [&](HIndex iHe) {
+		if (iHe >= oldHeSize)
+			return;
+		if (std::find_if(oldHeFaces.begin(), oldHeFaces.end(), [iHe](const auto& entry) { return entry.first == iHe; }) == oldHeFaces.end())
+			oldHeFaces.emplace_back(iHe, heFaces[iHe]);
+	};
+	const auto Rollback = [&]() {
+		for (const auto& [iHe, next] : oldNexts)
+			heNexts[iHe] = next;
+		for (const auto& [iHe, iF] : oldHeFaces)
+			heFaces[iHe] = iF;
+		heNexts.resize(oldHeSize);
+		heVertices.resize(oldHeSize);
+		heFaces.resize(oldHeSize);
+		fHalfedges.resize(oldFaceSize);
+		for (const auto& [vertex, representative] : oldRepresentatives)
+			SetVHalfedge(vertex, representative);
+		alwaysEven = oldAlwaysEven;
+	};
 	// add the new face
 	const FIndex iF = static_cast<FIndex>(fHalfedges.size());
 	fHalfedges.emplace_back(NO_ID);
@@ -554,7 +615,7 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 			const VIndex idxTail = face[v];
 			const VIndex idxHead = face[(v + 1) % numVertices];
 			iHe = static_cast<HIndex>(heNexts.size());
-			vHalfedges[idxTail] = iHe;
+			SetVHalfedge(idxTail, iHe);
 			heNexts.emplace_back(NO_ID);
 			heNexts.emplace_back(NO_ID);
 			heVertices.emplace_back(idxTail);
@@ -563,23 +624,27 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 			heFaces.emplace_back(NO_ID);
 		}
 		// update data-structures
+		RememberFace(iHe);
 		heFaces[iHe] = iF;
 		if (v == 0) {
 			fHalfedges[iF] = iHe;
 			firstIHe = iHe;
 		} else {
+			RememberNext(prevIHe);
 			heNexts[prevIHe] = iHe;
 		}
 		prevIHe = iHe;
 	}
 	// initialize first half-edge next index, skipped above
+	RememberNext(prevIHe);
 	heNexts[prevIHe] = firstIHe;
 	// define the border edges
 	for (unsigned v = 0; v < numVertices; ++v) {
 		HIndex& iHe = vHalfedges[face[v]];
-		if (EHeIsBoundary(iHe))
-			heNexts[HeTwin(iHe)] = NO_ID;
-		ConnectBorders(iHe);
+		if (!ConnectBordersImpl(*this, iHe, RememberNext)) {
+			Rollback();
+			return NO_ID;
+		}
 	}
 	return iF;
 }
