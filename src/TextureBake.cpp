@@ -298,7 +298,7 @@ RaycastResolver::RaycastResolver(const Mesh& source, Correspondence mode,
     source(source), mode(mode), rayDist(raySearchDist),
     srcNormalized()
 {
-	const_cast<Mesh&>(source).SyncFaces();
+	source.SyncFacesConst();
 	srcNormalized = UVBlobsAreNormalized(source.faceTexcoords, source.faceTexblobs, BlobDims(source));
 	if (accel == Accelerator::KdTree)
 		kdtree = std::make_unique<TriangleKdTree>(source);
@@ -805,7 +805,7 @@ void ApplyPackedLayout(Mesh& mesh, const AtlasResult& atlas)
 // -------------------------------------------------------------------------
 BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams& params)
 {
-	const_cast<Mesh&>(source).SyncFaces();
+	source.SyncFacesConst();
 	target.SyncFaces();
 	// Fail fast on violated preconditions (documented in TextureBake.h): the
 	// size invariants downstream are Debug-only ASSERTs, so without this an
@@ -926,7 +926,7 @@ BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 
 unsigned AutoAtlasResolution(const Mesh& source, unsigned maxResolution)
 {
-	const_cast<Mesh&>(source).SyncFaces();
+	source.SyncFacesConst();
 	return NextPow2Clamp(IdealSinglePageSide(source), std::min(256u, maxResolution),
 	                     maxResolution);
 }

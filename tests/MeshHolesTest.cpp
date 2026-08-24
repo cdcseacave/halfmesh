@@ -215,6 +215,31 @@ TEST(MeshHolesTest, RemoveVerticesAndFillLeavesPreExistingHoles)
 		    << "selected-vertex fill closed the unrelated smaller hole";
 }
 
+// Classification and removal both read the half-edge only, so the call needs no
+// face snapshot on entry and produces none inside a pipeline scope.
+TEST(MeshHolesTest, RemoveVerticesAndFillNeedsNoFaceSnapshot)
+{
+	Mesh m;
+	// Closed octahedron: removing vertex 0 exposes a four-edge loop.
+	m.vertices = {
+	    {0.f, 0.f, 1.f}, {0.f, 0.f, -1.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {-1.f, 0.f, 0.f}, {0.f, -1.f, 0.f}};
+	m.faces = {
+	    {0, 2, 3}, {0, 3, 4}, {0, 4, 5}, {0, 5, 2}, {1, 3, 2}, {1, 4, 3}, {1, 5, 4}, {1, 2, 5}};
+	m.BeginHalfEdgePipeline();
+	ASSERT_TRUE(m.faces.empty());
+
+	HalfMesh::ResetBuildCount();
+	HalfMesh::ResetFFacesCount();
+	EXPECT_EQ(m.RemoveVerticesAndFill({0}), 1u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(HalfMesh::FFacesCount(), 0u);
+	EXPECT_TRUE(m.faces.empty());
+
+	m.EndHalfEdgePipeline();
+	EXPECT_TRUE(m.ValidateHalfMesh());
+	EXPECT_EQ(CountBoundaryLoops(m), 0u);
+}
+
 TEST(MeshHolesTest, RemoveVerticesAndFillLeavesTrimmedBoundaryOpen)
 {
 	constexpr unsigned radialSegments = 8;

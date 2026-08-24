@@ -22,10 +22,11 @@ Quick index:
 | [QEM decimation](#qem-decimation) | `Mesh::Simplify` | `Mesh.h` | `Decimate.cpp` |
 | [Isotropic remeshing](#isotropic-remeshing) | `Mesh::RemeshIsotropic` | `Mesh.h` | `Remesh.cpp` |
 | [Smoothing](#smoothing) | `Mesh::Smooth`, `SmoothTaubin`, `SmoothHCLaplacian` | `Mesh.h` | `Smooth.cpp` |
-| [Hole filling](#hole-filling) | `Mesh::CloseHoles` | `Mesh.h` | — |
+| [Hole filling](#hole-filling) | `Mesh::CloseHoles`, `Mesh::RemoveVerticesAndFill` | `Mesh.h` | — |
 | [Spatial indices](#spatial-indices) | `TriangleBVH`, `TriangleKdTree` | `TriangleBVH.h`, `TriangleKDTree.h` | `TextureBakeTool.cpp` |
 | [UV parametrization](#uv-parametrization) | `Parametrize`, `SegmentCharts`, `ParametrizeCharts` | `Parametrize.h` | `Unwrap.cpp` |
 | [Atlas packing](#atlas-packing) | `GenerateAtlas`, `PackAtlas`, `NormalizeChartDensity` | `AtlasCharting.h`, `AtlasPacking.h` | `Unwrap.cpp` |
+| [Rectangle packing](#rectangle-packing-mesh-independent) | `PackRectangles`, `EstimateSquareTextureSize` | `RectPacking.h` | — |
 | [Texture bake / rebake / defrag](#texture-bake--rebake--defrag) | `BakeAtlas`, `RebakeTexture`, `DefragmentTexture` | `TextureBake.h` | `TextureBakeTool.cpp` |
 | [openMVS interop](#openmvs-interop) | `ConvertMesh` | `InteropOpenMVS.h` | — |
 | [Utilities](#utilities) | `OBB`, raster/sampler/geometry helpers | `OrientedBoundingBox.h`, `Util/` | — |
@@ -56,9 +57,20 @@ lookups cost no memory; a boundary is `heFaces[h|1] == NO_ID`.
   collapse (`EIsCollapseValidTopologically` — Hoppe'93 link condition —
   `EIsCollapseValidGeometrically`, `ERemove`), edge flip (`EIsFlipValid`,
   `EFlip`), and in-place edge split (`ESplit`).
+- **In-place face editing**: `FAdd` (one face, isolated corners allowed, and a
+  rejected add leaves every array byte-identical), `FAddDisk` (a whole
+  pre-triangulated patch, attached in dependency order), and `FRemoveBulk` (an
+  arbitrary face set in one pass, splitting pinch vertices and reporting the
+  vertex swap-pops so positions can follow in lockstep). None of them rebuilds.
 - **Holes and components**: `EnumerateHoles`, `TriangulateHole`,
   `ConnectedComponents` (optionally with a custom edge validator),
   `ConnectBorders`.
+
+`Build` is the one cost the architecture cannot delete, so it pairs twin
+half-edges through a flat open-addressing table keyed by a packed
+`(min,max)` vertex pair rather than a node-based hash map: measured 0.608 s
+vs. 1.969 s (**3.24×**) on a 5,003,552-face mesh, at 495.8 MiB vs. 904.2 MiB
+peak working set. `tests/perf` pins the ≥5 M-face workload.
 
 Header: [`HalfMesh.h`](../include/halfmesh/HalfMesh.h) ·
 implementation: `src/HalfMesh.cpp`.
@@ -142,13 +154,30 @@ half-edge core accepts:
 - `RemoveDegenerateFaces(thArea)` (+ iterated overload) — drop faces with
   repeated or near-coincident vertices.
 - `RemoveDuplicateFaces()`, `RemoveUnreferencedVertices()`, `RemoveVertices()`,
-  `RemoveFaces()`, `RemoveFacesOutside(const OBB&)`.
+  `RemoveFaces()`, `RemoveFacesHalfEdge()`, `RemoveFacesOutside(const OBB&)`.
 - `FixNonManifold(thMoveDuplicate)` — finds non-manifold edges/vertices and
   restores manifoldness by duplicating the offending vertices (optionally
-  displaced toward the incident-face barycenter).
-- `RemoveSmallComponents(minComponentSize)` — floater removal.
-- `ListHalfEdgesSafe()` — the whole pipeline in one call, followed by the
+  displaced toward the incident-face barycenter). A no-op once `halfMesh`
+  exists: the structure cannot represent what it fixes.
+- `RemoveSmallComponents(minComponentSize)` — floater removal by face count.
+- `RemoveSpuriousComponents(factor)` — reconstruction-debris removal relative
+  to the mesh's own edge-length distribution: drop faces with an edge longer
+  than `percentile95(edgeLength) * factor`, then components whose bounding-box
+  diagonal is shorter than `percentile55(edgeLength) * factor`.
+- `RemoveSpikes(maxIterations)` — drop vertices incident to at most one face
+  (an isolated vertex or a dangling triangle's tip) together with that face,
+  repeating until stable.
+- `ListHalfEdgesSafe()` — the whole ingest pipeline in one call, followed by the
   half-edge build.
+
+`RemoveUnreferencedVertices`, `RemoveDegenerateFaces` and `RemoveSpikes`
+**dispatch by representation** and never force a transition in either
+direction: on an arrays-only mesh they run the array arm (works on
+non-manifold soup, no build, attributes preserved as a bonus); with a live
+`halfMesh` they run the half-edge arm (keeps connectivity valid, no rebuild for
+the next stage). Both arms are public as `…Arrays` / `…HalfEdge` when a caller
+needs to force one. Removed counts can differ for degenerate faces — the
+half-edge arm applies only validity-preserving collapses and cap flips.
 
 Note that every half-edge consumer (`Simplify`, `RemeshIsotropic`,
 `CloseHoles`, `SegmentCharts`, the smoothers) builds connectivity via
@@ -260,8 +289,9 @@ at a glance).
 ## Hole filling
 
 ```cpp
-unsigned Mesh::CloseHoles(unsigned nCloseHoles = 200,
+unsigned Mesh::CloseHoles(unsigned maxHoleEdges = 30,
                           std::vector<std::vector<FIndex>>* holesFaces = NULL);
+unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves);
 ```
 
 The Liepa 2003 pipeline (structure follows the pmp-library implementation):
@@ -273,13 +303,28 @@ The Liepa 2003 pipeline (structure follows the pmp-library implementation):
 3. **Fair** — bi-Laplacian (k=2) cotangent fairing solved with Eigen
    `SimplicialLDLT`, falling back to a k=1 graph Laplacian.
 
-Holes are processed **smallest-first by boundary vertex count**; `nCloseHoles`
-caps *how many* are filled (there is no size threshold — leave the cap below
-the hole count to skip the largest loops, e.g. a scan's open outer boundary).
-An internal patch budget (`max(16384, 8·n)` triangles) keeps degenerate giant
-boundaries from exploding the fill. Returns the number of holes closed;
-optionally reports the new faces per hole. Lower-level building blocks are
-also public: `HalfMesh::EnumerateHoles()` + `HalfMesh::TriangulateHole()`.
+`maxHoleEdges` is a **size** threshold, not a count: every boundary loop
+spanned by at most that many edges is filled, so a scan's large open outer
+boundary stays open while its small gaps are patched (`0` is a no-op; pass a
+large cap to fill everything). Loops that repeat a vertex are not triangulable
+and are skipped. An internal patch budget (`max(16384, 8·n)` triangles) keeps
+degenerate giant boundaries from exploding the fill. Returns the number of
+holes closed; `holesFaces` optionally receives the new face indices per filled
+hole (each list is the contiguous append range and stays valid across the
+public-exit face sync). Patches are attached straight into the live half-edge
+via `HalfMesh::FAddDisk`, so filling costs no rebuild.
+
+`RemoveVerticesAndFill` is the decimating counterpart: it drops the selected
+vertices with their incident faces and spans **only the boundary loops that
+removal created**, without refining, so the vertex count is guaranteed to
+shrink and pre-existing holes are never filled. A removed region that already
+touches an existing boundary widens that boundary rather than opening a hole,
+so what it leaves behind is left open. Which loops qualify is decided on the
+connectivity before the removal — no face snapshot is read or produced, so the
+whole call is free of both a rebuild and a harvest.
+
+Lower-level building blocks are also public: `HalfMesh::EnumerateHoles()`,
+`HalfMesh::TriangulateHole()`, and `HalfMesh::FAddDisk()`.
 
 Implementation: `src/MeshHoles.cpp`.
 
@@ -358,12 +403,37 @@ float NormalizeChartDensity(Mesh&, const std::vector<unsigned>& faceChart,
   survives), gutter `padding`, and multi-page overflow. For multi-page
   results, per-face pages come from `AtlasResult::chartPage[faceChart[f]]`.
 
+Packing is **two-tier**: rects whose padded long side reaches `pageW/32` go
+through the full min-waste skyline scan, everything smaller lands on
+height-sorted shelves allocated through that same skyline. The skyline probe
+is `O(#segments)` per rect, so the shelf tier is what removes the quadratic
+regime at 100 k+ charts. Every page stays open, so a later small chart can
+fill space an earlier large one left behind.
+
 Benchmarks against xatlas / libigl / pmp / CGAL / BFF (methodology + numbers):
 [`BENCHMARKS.md`](BENCHMARKS.md). Headline: end-to-end atlas 30–130× faster
 than xatlas at comparable pack occupancy, always flip-free, lowest
 symmetric-Dirichlet distortion of the seven flatteners tested.
 
-Implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp` ·
+### Rectangle packing (mesh-independent)
+
+```cpp
+RectPackResult PackRectangles(const std::vector<cv::Rect>&, const RectPackParams&,
+                              std::vector<RectPlacement>& placements);
+int EstimateSquareTextureSize(const std::vector<cv::Rect>&, int multiple = 0,
+                              float targetOccupancy = 0.9f);
+```
+
+The same two-tier packer over **integer pixel** rectangles, for callers that
+already have rectangles — texture repacking, lightmap layout, sprite sheets —
+and no mesh. `RectPackMode` selects `GrowSinglePage` (double the page until
+everything fits, up to `maxPageSize`), `FixedSinglePage`, or
+`FixedMultiPage`; `placements` is indexed in lockstep with the input and
+degenerate, oversized, and cap-limited entries come back with
+`packed = false` instead of silently enlarging the atlas.
+
+Header: [`RectPacking.h`](../include/halfmesh/RectPacking.h) ·
+implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp` ·
 example: `examples/Unwrap.cpp`.
 
 ## Texture bake / rebake / defrag

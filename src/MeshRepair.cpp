@@ -68,7 +68,7 @@ void Mesh::ListHalfEdgesSafe()
 // ---------------------------------------------------------------------------
 bool Mesh::IsManifold() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	// Edge-non-manifold iff: a self-edge face (a==b), a directed edge used by >1
 	// face (edge shared by >2 faces or a duplicate face). Necessary but NOT
 	// sufficient for HalfMesh::Build: Build additionally rejects non-manifold
@@ -394,9 +394,14 @@ Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
 	FIndex numCollapses = 0;
 	FIndex numFlips = 0;
 	bool topologyChanged = false;
+	// Terminates: a collapse strictly shrinks the face count, and a flip is only
+	// applied when BOTH resulting triangles clear the area threshold, so it makes
+	// two degenerate faces healthy without moving a vertex (no face outside the
+	// pair changes shape) and strictly shrinks the degenerate count. A round that
+	// repairs nothing ends the sweep.
 	for (;;) {
 		bool repaired = false;
-		for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace) {
+		for (FIndex idxFace = 0; idxFace < halfMesh.FSize();) {
 			const HIndex firstHalfedge = halfMesh.FHalfedge(idxFace);
 			HIndex halfedges[3];
 			Type lengthsSq[3];
@@ -409,8 +414,10 @@ Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
 			}
 			const Face face = halfMesh.F(idxFace);
 			const Type doubleAreaSq = (vertices[face[1]] - vertices[face[0]]).cross(vertices[face[2]] - vertices[face[0]]).squaredNorm();
-			if (doubleAreaSq > thDoubleAreaSq)
+			if (doubleAreaSq > thDoubleAreaSq) {
+				++idxFace;
 				continue;
+			}
 
 			int shortest = 0;
 			int longest = 0;
@@ -421,9 +428,13 @@ Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
 					longest = i;
 			}
 
-			// A cap has no threshold-short edge: try replacing its long diagonal
-			// before falling back to the same shortest-edge collapse as a needle.
-			if (lengthsSq[shortest] > thArea) {
+			// A near-zero-area triangle is either a NEEDLE (one edge collapses to
+			// nothing) or a CAP (three comparable edges around a ~180 degrees
+			// corner). Classify by edge-length RATIO so the split does not depend on
+			// the mesh's absolute scale, and try to replace a cap's long diagonal
+			// before falling back to the needle's shortest-edge collapse.
+			constexpr Type capAspectSq = Type(1) / Type(64); // shortest >= longest/8
+			if (lengthsSq[shortest] >= lengthsSq[longest] * capAspectSq) {
 				const EIndex longEdge = halfMesh.HeEdge(halfedges[longest]);
 				if (halfMesh.EIsFlipValid(longEdge, vertices)) {
 					const HIndex hA0 = halfMesh.EHalfedge(longEdge);
@@ -435,21 +446,27 @@ Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
 					const Type newAreaSq0 = (vertices[v3] - vertices[v0]).cross(vertices[v1] - vertices[v0]).squaredNorm();
 					const Type newAreaSq1 = (vertices[v1] - vertices[v2]).cross(vertices[v3] - vertices[v2]).squaredNorm();
 					if (newAreaSq0 > thDoubleAreaSq && newAreaSq1 > thDoubleAreaSq) {
+						// a flip keeps every face index, so the scan simply advances
 						halfMesh.EFlip(longEdge);
 						++numFlips;
 						topologyChanged = repaired = true;
-						break;
+						++idxFace;
+						continue;
 					}
 				}
 			}
 
 			const EIndex shortEdge = halfMesh.HeEdge(halfedges[shortest]);
-			if (!halfMesh.EIsCollapseValidTopologically(shortEdge))
+			if (!halfMesh.EIsCollapseValidTopologically(shortEdge)) {
+				++idxFace;
 				continue;
+			}
 			const auto edgeVertices = halfMesh.EVertices(shortEdge);
 			const Vertex midpoint = (vertices[edgeVertices.first] + vertices[edgeVertices.second]) * Type(0.5);
-			if (!halfMesh.EIsCollapseValidGeometrically(shortEdge, midpoint, vertices))
+			if (!halfMesh.EIsCollapseValidGeometrically(shortEdge, midpoint, vertices)) {
+				++idxFace;
 				continue;
+			}
 
 			HalfMesh::RemovedData removedData;
 			const VIndex vertexMoved = halfMesh.ERemove(shortEdge, removedData);
@@ -463,7 +480,9 @@ Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
 			vertices[vertexMoved] = midpoint;
 			++numCollapses;
 			topologyChanged = repaired = true;
-			break;
+			// the collapse swap-popped faces from the end into the freed slots, so
+			// idxFace may now hold a different face: re-test it instead of advancing
+			// (faces relocated BEFORE the cursor are caught by the next round)
 		}
 		if (!repaired)
 			break;
@@ -473,7 +492,9 @@ Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
 	if (topologyChanged)
 		InvalidateFaces();
 	SyncFacesOnPublicExit();
-	ASSERT(ValidateHalfMesh());
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
 	if (numRemovedFaces > 0 || numFlips > 0)
 		REPORT_STATUS_NOW("Repaired degenerate topology ({} faces removed by {} collapses, {} cap flips)", numRemovedFaces, numCollapses, numFlips);
 	return numRemovedFaces;
@@ -679,7 +700,9 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 	std::vector<VIndex> splitSrcVerts;
 	RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts);
 	SyncFacesOnPublicExit();
-	ASSERT(ValidateHalfMesh());
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
 	REPORT_STATUS_NOW("Removed {} small components from {} total ({})",
 	                  numSmallComponents, numComponents, TIMER_STR());
 	return numSmallComponents;
@@ -719,7 +742,9 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 	const size_t idx55 = percentiles.size() * 55 / 100;
 	std::nth_element(percentiles.begin(), percentiles.begin() + idx95, percentiles.end());
 	const float maxEdgeLength = percentiles[idx95] * factor;
-	std::nth_element(percentiles.begin(), percentiles.begin() + idx55, percentiles.end());
+	// the prefix left by the pass above already holds the idx95 smallest lengths,
+	// so the lower percentile only has to be selected within it
+	std::nth_element(percentiles.begin(), percentiles.begin() + idx55, percentiles.begin() + idx95);
 	const float minComponentDiameter = percentiles[idx55] * factor;
 
 	std::vector<FIndex> removeFaces;
@@ -765,7 +790,9 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 
 	const FIndex removed = initialFaces - halfMesh.FSize();
 	SyncFacesOnPublicExit();
-	ASSERT(ValidateHalfMesh());
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
 	if (removed > 0)
 		REPORT_STATUS_NOW("Removed {} spurious faces ({})", removed, TIMER_STR());
 	return removed;
@@ -819,93 +846,39 @@ unsigned Mesh::RemoveSpikesHalfEdge(unsigned maxIterations)
 		return 0;
 	}
 	TIMER_START("RemoveSpikesHalfEdge");
-
-	std::vector<VIndex> candidates;
-	candidates.reserve(vertices.size() / 16 + 1);
-	for (VIndex vertex = 0; vertex < halfMesh.VSize(); ++vertex)
-		if (halfMesh.VFaceDegree(vertex) == 1)
-			candidates.emplace_back(vertex);
-
 	unsigned numSpikes = 0;
-	for (unsigned iteration = 0; iteration < maxIterations && !candidates.empty(); ++iteration) {
-		std::sort(candidates.begin(), candidates.end());
-		candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-		std::vector<VIndex> spikes;
+	for (unsigned iteration = 0; iteration < maxIterations; ++iteration) {
+		// A spike is a vertex left with a single incident face -- isolated slots
+		// cannot occur in a valid half-edge, so the array arm's zero-face case has
+		// no counterpart here. Dropping the face can starve a neighbour, so the
+		// sweep repeats; restricting the re-scan to the neighbours of the faces
+		// just removed would not pay, because the bulk removal below already
+		// touches O(V+F) per round.
 		std::vector<FIndex> faceRemoves;
-		for (VIndex vertex : candidates) {
-			if (vertex >= halfMesh.VSize() || halfMesh.VFaceDegree(vertex) != 1)
+		unsigned numRoundSpikes = 0;
+		for (VIndex vertex = 0; vertex < halfMesh.VSize(); ++vertex) {
+			if (halfMesh.VFaceDegree(vertex) != 1)
 				continue;
-			spikes.emplace_back(vertex);
+			++numRoundSpikes;
+			// a valence-1 vertex is on the boundary, so its representative is the
+			// face-bearing side by the boundary-canonical invariant
 			faceRemoves.emplace_back(halfMesh.HeFace(halfMesh.VHalfedge(vertex)));
 		}
 		if (faceRemoves.empty())
 			break;
-		std::sort(faceRemoves.begin(), faceRemoves.end());
-		faceRemoves.erase(std::unique(faceRemoves.begin(), faceRemoves.end()), faceRemoves.end());
-		numSpikes += static_cast<unsigned>(spikes.size());
-
-		std::vector<VIndex> tracked;
-		tracked.reserve(faceRemoves.size() * 3);
-		for (FIndex face : faceRemoves) {
-			const Face f = halfMesh.F(face);
-			for (int corner = 0; corner < 3; ++corner)
-				tracked.emplace_back(f[corner]);
-		}
-		std::sort(tracked.begin(), tracked.end());
-		tracked.erase(std::unique(tracked.begin(), tracked.end()), tracked.end());
-		std::vector<VIndex> trackedPosition(halfMesh.VSize(), NO_ID);
-		for (VIndex position = 0; position < tracked.size(); ++position)
-			trackedPosition[tracked[position]] = position;
-
 		std::vector<VIndex> removedVerts;
 		std::vector<VIndex> splitSrcVerts;
-		const bool changed = RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts);
-		ASSERT(changed);
-		if (!changed)
+		if (!RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts)) {
+			ASSERT(false && "RemoveSpikes: a spike face was not removable");
 			break;
-
-		for (VIndex source : splitSrcVerts) {
-			const VIndex duplicate = static_cast<VIndex>(trackedPosition.size());
-			trackedPosition.emplace_back(NO_ID);
-			if (source < trackedPosition.size() && trackedPosition[source] != NO_ID) {
-				trackedPosition[duplicate] = static_cast<VIndex>(tracked.size());
-				tracked.emplace_back(duplicate);
-			}
 		}
-		const auto EraseTracked = [&](VIndex vertex) {
-			const VIndex position = trackedPosition[vertex];
-			if (position == NO_ID)
-				return;
-			const VIndex moved = tracked.back();
-			tracked[position] = moved;
-			trackedPosition[moved] = position;
-			tracked.pop_back();
-			trackedPosition[vertex] = NO_ID;
-		};
-		VIndex currentSize = static_cast<VIndex>(trackedPosition.size());
-		for (VIndex removed : removedVerts) {
-			const VIndex last = currentSize - 1;
-			EraseTracked(removed);
-			if (removed != last && trackedPosition[last] != NO_ID) {
-				const VIndex position = trackedPosition[last];
-				tracked[position] = removed;
-				trackedPosition[removed] = position;
-				trackedPosition[last] = NO_ID;
-			} else if (removed != last) {
-				trackedPosition[removed] = NO_ID;
-			}
-			trackedPosition.pop_back();
-			--currentSize;
-		}
-
-		candidates.clear();
-		for (VIndex vertex : tracked)
-			if (vertex < halfMesh.VSize() && halfMesh.VFaceDegree(vertex) == 1)
-				candidates.emplace_back(vertex);
+		numSpikes += numRoundSpikes;
 	}
 
 	SyncFacesOnPublicExit();
-	ASSERT(ValidateHalfMesh());
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
 	if (numSpikes > 0)
 		REPORT_STATUS_NOW("Removed {} spike vertices ({})", numSpikes, TIMER_STR());
 	return numSpikes;

@@ -67,8 +67,15 @@ void HalfMesh::Clear()
 
 bool HalfMesh::Build(const Mesh& mesh)
 {
-	const_cast<Mesh&>(mesh).SyncFaces();
-	return BuildImpl(static_cast<VIndex>(mesh.vertices.size()), mesh.faces, true);
+	const VIndex numVertices = static_cast<VIndex>(mesh.vertices.size());
+	if (!mesh.faces.empty() || mesh.halfMesh.Empty())
+		return BuildImpl(numVertices, mesh.faces, true);
+	// half-edge-only source: harvest into a scratch snapshot rather than forcing
+	// the caller's derived array to materialize (works for an in-place rebuild
+	// too -- the copy is taken before BuildImpl's Clear())
+	std::vector<Face> harvested;
+	mesh.halfMesh.FFaces(harvested);
+	return BuildImpl(numVertices, harvested, true);
 }
 bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 {
@@ -101,7 +108,15 @@ bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces, boo
 			std::swap(a, b);
 		return (static_cast<uint64_t>(a) << 32) | b;
 	};
-	const size_t maxEdges = faces.size() * Face::RowsAtCompileTime;
+#if HALFMESH_TRIS
+	const size_t maxEdges = faces.size() * 3;
+#else
+	size_t maxEdges = 0;
+	for (const Face& face : faces)
+		maxEdges += static_cast<size_t>(face.rows());
+#endif
+	// strictly greater than maxEdges, so the table always keeps a free slot and
+	// the probe loop below terminates
 	size_t edgeTableCapacity = 1;
 	while (edgeTableCapacity <= maxEdges)
 		edgeTableCapacity <<= 1;
@@ -596,9 +611,52 @@ void HalfMesh::VRemoveUnreferenced(std::vector<VIndex>& removedVerts)
 		VRemoveOnly(removedVerts.data() + firstRemoved, static_cast<unsigned>(removedVerts.size() - firstRemoved));
 }
 
+HalfMesh::AddMark HalfMesh::AddUndoMark(const AddUndo& undo) const
+{
+	AddMark mark;
+	mark.nexts = undo.nexts.size();
+	mark.faces = undo.faces.size();
+	mark.representatives = undo.representatives.size();
+	mark.numHalfedges = heNexts.size();
+	mark.numFaces = fHalfedges.size();
+	mark.alwaysEven = alwaysEven;
+	return mark;
+}
+
+void HalfMesh::AddUndoRollback(AddUndo& undo, const AddMark& mark)
+{
+	// reverse order, so a slot written more than once is restored to its OLDEST
+	// recorded value; the writes come first because a shared log may hold slots
+	// that only the truncation below removes
+	while (undo.nexts.size() > mark.nexts) {
+		heNexts[undo.nexts.back().first] = undo.nexts.back().second;
+		undo.nexts.pop_back();
+	}
+	while (undo.faces.size() > mark.faces) {
+		heFaces[undo.faces.back().first] = undo.faces.back().second;
+		undo.faces.pop_back();
+	}
+	heNexts.resize(mark.numHalfedges);
+	heVertices.resize(mark.numHalfedges);
+	heFaces.resize(mark.numHalfedges);
+	fHalfedges.resize(mark.numFaces);
+	while (undo.representatives.size() > mark.representatives) {
+		vHalfedges[undo.representatives.back().first] = undo.representatives.back().second;
+		undo.representatives.pop_back();
+	}
+	alwaysEven = mark.alwaysEven; // restored last: the writes above bypass SetVHalfedge
+}
+
 HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 {
-// check if adding the face maintains a manifold mesh
+	AddUndo undo;
+	return FAddImpl(face, undo);
+}
+
+HalfMesh::FIndex HalfMesh::FAddImpl(const Face& face, AddUndo& undo)
+{
+// check if adding the face maintains a manifold mesh; nothing below this block
+// mutates, so every rejection here needs no rollback
 #if HALFMESH_TRIS
 	const unsigned numVertices = 3;
 	HIndex hedges[3];
@@ -619,7 +677,8 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 		const unsigned v1 = (v + 1) % numVertices;
 		if (face[v] == face[v1])
 			return NO_ID;
-		const EIndex iE = isolated[v] || VHalfedge(face[v1]) == NO_ID ? NO_ID : EEdge(face[v], face[v1]);
+		// an isolated endpoint cannot already share an edge with this corner
+		const EIndex iE = (isolated[v] || VHalfedge(face[v1]) == NO_ID) ? NO_ID : EEdge(face[v], face[v1]);
 		if (iE == NO_ID) {
 			hedges[v] = NO_ID;
 			++numNewEdges[v];
@@ -633,48 +692,27 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 		}
 	}
 	for (unsigned v = 0; v < numVertices; ++v) {
+		// an existing boundary vertex may gain at most one new edge (more would
+		// fan it into two disks); an isolated one is a fresh corner, so the two
+		// edges of the face that meet there are both legal
 		if (numNewEdges[v] > (isolated[v] ? 2u : 1u))
 			return NO_ID; // non-manifold vertex
 	}
-	const std::size_t oldHeSize = heNexts.size();
-	const std::size_t oldFaceSize = fHalfedges.size();
-	const bool oldAlwaysEven = alwaysEven;
-	std::vector<std::pair<VIndex, HIndex>> oldRepresentatives;
-	oldRepresentatives.reserve(numVertices);
-	for (unsigned v = 0; v < numVertices; ++v) {
-		const VIndex vertex = face[v];
-		if (std::find_if(oldRepresentatives.begin(), oldRepresentatives.end(), [vertex](const auto& entry) { return entry.first == vertex; }) == oldRepresentatives.end())
-			oldRepresentatives.emplace_back(vertex, vHalfedges[vertex]);
-	}
-	std::vector<std::pair<HIndex, HIndex>> oldNexts;
-	std::vector<std::pair<HIndex, FIndex>> oldHeFaces;
-	oldNexts.reserve(numVertices * 3);
-	oldHeFaces.reserve(numVertices);
+
+	const AddMark mark = AddUndoMark(undo);
 	const auto RememberNext = [&](HIndex iHe) {
-		if (iHe >= oldHeSize)
-			return;
-		if (std::find_if(oldNexts.begin(), oldNexts.end(), [iHe](const auto& entry) { return entry.first == iHe; }) == oldNexts.end())
-			oldNexts.emplace_back(iHe, heNexts[iHe]);
+		if (iHe < mark.numHalfedges)
+			undo.nexts.emplace_back(iHe, heNexts[iHe]);
 	};
 	const auto RememberFace = [&](HIndex iHe) {
-		if (iHe >= oldHeSize)
-			return;
-		if (std::find_if(oldHeFaces.begin(), oldHeFaces.end(), [iHe](const auto& entry) { return entry.first == iHe; }) == oldHeFaces.end())
-			oldHeFaces.emplace_back(iHe, heFaces[iHe]);
+		if (iHe < mark.numHalfedges)
+			undo.faces.emplace_back(iHe, heFaces[iHe]);
 	};
-	const auto Rollback = [&]() {
-		for (const auto& [iHe, next] : oldNexts)
-			heNexts[iHe] = next;
-		for (const auto& [iHe, iF] : oldHeFaces)
-			heFaces[iHe] = iF;
-		heNexts.resize(oldHeSize);
-		heVertices.resize(oldHeSize);
-		heFaces.resize(oldHeSize);
-		fHalfedges.resize(oldFaceSize);
-		for (const auto& [vertex, representative] : oldRepresentatives)
-			SetVHalfedge(vertex, representative);
-		alwaysEven = oldAlwaysEven;
-	};
+	// this face's corners are the only representatives FAdd and the border relink
+	// below can touch, so recording them up front covers both
+	for (unsigned v = 0; v < numVertices; ++v)
+		undo.representatives.emplace_back(face[v], vHalfedges[face[v]]);
+
 	// add the new face
 	const FIndex iF = static_cast<FIndex>(fHalfedges.size());
 	fHalfedges.emplace_back(NO_ID);
@@ -716,7 +754,7 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 	for (unsigned v = 0; v < numVertices; ++v) {
 		HIndex& iHe = vHalfedges[face[v]];
 		if (!ConnectBordersImpl(*this, iHe, RememberNext)) {
-			Rollback();
+			AddUndoRollback(undo, mark);
 			return NO_ID;
 		}
 	}
@@ -727,47 +765,37 @@ bool HalfMesh::FAddDisk(const std::vector<Face>& faces)
 {
 	if (faces.empty())
 		return true;
-	HalfMesh original(*this);
-	std::vector<Face> pending(faces);
-	std::vector<FIndex> addedFaces;
-	addedFaces.reserve(faces.size());
-	while (!pending.empty()) {
-		std::vector<Face> retry;
-		retry.reserve(pending.size());
-		for (const Face& face : pending) {
-			bool sharesFrontierEdge = false;
-			for (Eigen::Index corner = 0; corner < face.rows(); ++corner) {
-				const VIndex a = face[corner];
-				const VIndex b = face[(corner + 1) % face.rows()];
-				if (a < VSize() && b < VSize() && VHalfedge(a) != NO_ID && VHalfedge(b) != NO_ID && EEdge(a, b) != NO_ID) {
-					sharesFrontierEdge = true;
-					break;
-				}
-			}
-			if (!sharesFrontierEdge) {
-				retry.emplace_back(face);
-				continue;
-			}
-			const FIndex added = FAdd(face);
-			if (added == NO_ID)
-				retry.emplace_back(face);
-			else
-				addedFaces.emplace_back(added);
+	// A patch face is attachable only once one of its edges exists in the mesh;
+	// FAdd would reject it otherwise (all-new edges exceed the one-new-edge budget
+	// of an existing boundary vertex), so defer it instead of paying a rejection.
+	const auto SharesExistingEdge = [this](const Face& face) {
+		for (Eigen::Index corner = 0; corner < face.rows(); ++corner) {
+			const VIndex a = face[corner];
+			const VIndex b = face[(corner + 1) % face.rows()];
+			if (a < VSize() && b < VSize() && VHalfedge(a) != NO_ID && VHalfedge(b) != NO_ID && EEdge(a, b) != NO_ID)
+				return true;
 		}
+		return false;
+	};
+	// one log for the whole patch: a rejected patch unwinds in O(patch)
+	AddUndo undo;
+	const AddMark mark = AddUndoMark(undo);
+	std::vector<Face> pending(faces), retry;
+	retry.reserve(faces.size());
+	while (true) {
+		retry.clear();
+		for (const Face& face : pending)
+			if (!SharesExistingEdge(face) || FAddImpl(face, undo) == NO_ID)
+				retry.emplace_back(face);
 		if (retry.empty())
 			return true;
 		if (retry.size() == pending.size()) {
-			if (!addedFaces.empty()) {
-				std::vector<VIndex> removedVerts;
-				std::vector<VIndex> splitSrcVerts;
-				FRemoveBulk(addedFaces, removedVerts, splitSrcVerts);
-			}
-			*this = std::move(original);
+			// a whole sweep attached nothing: the remainder never will
+			AddUndoRollback(undo, mark);
 			return false;
 		}
 		pending.swap(retry);
 	}
-	return true;
 }
 
 #if HALFMESH_TRIS
@@ -971,8 +999,11 @@ void HalfMesh::FRemoveBulk(std::vector<FIndex>& faceRemoves,
 		if (vertex < removedVertex.size() && removedVertex[vertex])
 			continue;
 		if (!ConnectBorders(vHalfedges[vertex])) {
+			// unreachable: the fan split above leaves every survivor single-fan.
+			// Still fall through to the compaction, so the reported swap-pops stay
+			// consistent with the array sizes the Mesh wrapper is about to apply.
 			ASSERT(false && "FRemoveBulk produced an invalid surviving fan");
-			return;
+			break;
 		}
 	}
 

@@ -5,6 +5,103 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0]
+
+### Half-edge–primary mesh processing
+
+The half-edge is now the working representation and `faces` is a derived
+snapshot, so a multi-stage pipeline pays **one** `HalfMesh::Build` instead of
+one per family transition. Measured on a 5 M-face mesh, a native clean
+(spurious → spikes → holes → unref) performs exactly one build and one face
+harvest; `tests/perf` asserts both counts.
+
+- **Representation contract.** `Mesh` has exactly three valid states —
+  arrays-only, half-edge-only, both-and-consistent. New:
+  `Mesh::InvalidateFaces()`, `Mesh::SyncFaces()`, `Mesh::SyncFacesConst()`,
+  `Mesh::InvalidateHalfMesh()`, `Mesh::ValidateInvariants()`,
+  `Mesh::ValidateHalfMesh()`, and the `BeginHalfEdgePipeline()` /
+  `EndHalfEdgePipeline()` scope that defers per-stage snapshots to a single
+  final harvest. Public methods still return with `faces` populated.
+- **New `HalfMesh` primitives.** `FRemoveBulk` removes an arbitrary face set in
+  one pass, splitting pinch vertices and reporting the vertex swap-pops and
+  split sources so `Mesh::vertices`/`vertexColors` follow in lockstep;
+  `FAddDisk` attaches a pre-triangulated patch in dependency order;
+  `VRemoveUnreferenced` sweeps unreferenced vertices natively. `FAdd` now
+  accepts isolated corners (two new edges), propagates a border-relink failure
+  as `NO_ID`, and unwinds through an undo log so a rejected add — or a rejected
+  whole patch — leaves every array byte-identical.
+- **Border relinking is parity-agnostic.** `ConnectBorders` identifies the
+  boundary representative through `heFaces` instead of half-edge parity, so it
+  works on a structure mutated in place by `EFlip`/`ESplit`/`ERemove`, not only
+  on a freshly built one.
+- **Native repair/hole stages.** `RemoveSpuriousComponents`,
+  `RemoveSmallComponents`, `RemoveSpikes`, `RemoveDegenerateFaces`,
+  `RemoveUnreferencedVertices`, `CloseHoles` and `RemoveVerticesAndFill` mutate
+  the live half-edge and no longer clear it. `CloseHoles` also dropped its
+  defensive entry rebuild, so a call that fills nothing now costs ~0, and
+  `RemoveVerticesAndFill` classifies loops straight off the connectivity, so it
+  neither reads nor produces a face snapshot.
+  `FixNonManifold` short-circuits to a no-op once `halfMesh` exists — the
+  structure cannot represent what it fixes.
+- **Representation dispatch.** `RemoveUnreferencedVertices`,
+  `RemoveDegenerateFaces` and `RemoveSpikes` pick an arm by current state and
+  never force a transition; both arms are public as `…Arrays` / `…HalfEdge`.
+  The array arms keep working on non-manifold soup (no silent manifoldization)
+  and keep preserving attributes.
+- **`Simplify` and `RemeshIsotropic` read topology from `halfMesh` only**, so
+  neither needs a face snapshot on entry and neither maintains one mid-pass.
+
+### Performance
+
+- `HalfMesh::Build` pairs twin half-edges through a flat open-addressing table
+  keyed by a packed `(min,max)` vertex pair instead of
+  `std::unordered_map`: **3.24×** faster (0.608 s vs. 1.969 s) at 495.8 MiB vs.
+  904.2 MiB peak working set on a 5,003,552-face mesh (Release, MSVC 14.51,
+  x64, i7-13700KF). Half-edge numbering, rejection behavior and goldens are
+  unchanged.
+
+### New
+
+- `Mesh::RemoveSpuriousComponents(factor)` — reconstruction-debris removal
+  relative to the mesh's own edge-length distribution (long-edge faces, then
+  components with a small bounding-box diagonal).
+- `Mesh::RemoveSpikes(maxIterations)` — cascade removal of vertices incident to
+  at most one face.
+- `Mesh::RemoveVerticesAndFill(vertexRemoves)` — remove vertices and span only
+  the boundary loops that removal created, without refining, so the vertex
+  count is guaranteed to shrink.
+- `Mesh::RemoveFacesHalfEdge`, `Mesh::ComputeMeanEdgeLength`.
+- [`RectPacking.h`](docs/FEATURES.md#rectangle-packing-mesh-independent) —
+  `PackRectangles` / `EstimateSquareTextureSize`: the atlas packer's two-tier
+  skyline+shelf core exposed over integer pixel rectangles, for lightmaps,
+  sprite sheets and texture repacking with no mesh involved. `PackAtlas` and
+  `PackRectangles` are now two thin wrappers over one implementation.
+- `HalfMesh::BuildCount()` / `FFacesCount()` (+ `Reset…`) — process-wide
+  counters that let a pipeline assert it rebuilds connectivity once.
+
+### Changed
+
+- **`Mesh::CloseHoles` changed meaning.** The first parameter is now
+  `maxHoleEdges` (default **30**), a *size* threshold: every boundary loop
+  spanned by at most that many edges is filled, in place of the old
+  `nCloseHoles = 200` *count* of smallest-first loops. A scanned surface's
+  large open boundary now stays open by default instead of being patched.
+  Python: `close_holes(v, f, max_hole_edges=30)`.
+- **Processing targets untextured meshes.** Half-edge mutators drop face-keyed
+  attributes through `InvalidateFaces()` (one-time warning when texture data is
+  actually discarded). `docs/FEATURES.md` marks every public processing method
+  `untextured-only` or `attribute-preserving (bonus)`.
+- `Mesh::ListHalfEdges()`'s freshness gate is now exact (`halfMesh` non-empty ⇒
+  valid, by contract) instead of a vertex/face count heuristic. **A caller that
+  hand-edits the public `faces` array must call `Mesh::InvalidateHalfMesh()`**;
+  the old heuristic happened to catch count-changing edits.
+- `Mesh::ECollapse` keeps `vertexColors` in lockstep and refreshes the face
+  snapshot; scope a collapse loop in `BeginHalfEdgePipeline` to avoid the
+  per-call harvest.
+- Atlas packing: `PackAtlas` and the fit-to-resolution probe run through the
+  shared packer; behavior matches 0.2.0.
+- **Not ABI-compatible with 0.2.0** — recompile against the new headers.
+
 ## [0.2.0]
 
 ### Python bindings

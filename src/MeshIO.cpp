@@ -151,7 +151,7 @@ uint8_t PlyChannelU8(const tinyply::PlyData& d, size_t i, bool& narrowed)
 // ---------------------------------------------------------------------------
 Mesh Mesh::ToTexCoordPerVertex() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(HasTexture());
 	const size_t newNumVertices = vertices.size() * 4 / 3;
 	Mesh mesh;
@@ -213,7 +213,7 @@ Mesh Mesh::ToTexCoordPerVertex() const
 // ---------------------------------------------------------------------------
 std::vector<Mesh> Mesh::ToOneMeshPerTexblob() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(HasTexture());
 	ASSERT(vertices.size() == faceTexcoords.size());
 	ASSERT(faceTexblobs.empty() || vertices.size() == faceTexblobs.size());
@@ -516,7 +516,7 @@ bool Mesh::LoadPLY(const std::string& fileName)
 // ---------------------------------------------------------------------------
 bool Mesh::SavePLY(const std::string& fileName, bool binary) const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	tinyply::PlyFile file;
 	file.add_properties_to_element("vertex", {"x", "y", "z"},
 	                               tinyply::Type::FLOAT32, vertices.size(),
@@ -1040,7 +1040,7 @@ void ExtendBufferGLTF(const std::vector<T>& src, tinygltf::Buffer& dst,
 // ---------------------------------------------------------------------------
 Mesh Mesh::ToTexCoordPerVertexUVOnly() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	ASSERT(faceTexcoords.size() == faces.size() * 3);
 	const size_t newNumVertices = vertices.size() * 4 / 3;
@@ -1086,7 +1086,7 @@ Mesh Mesh::ToTexCoordPerVertexUVOnly() const
 // ---------------------------------------------------------------------------
 bool Mesh::SaveGLTF(const std::string& fileName, bool binary) const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	std::vector<Mesh> meshes;
 	if (HasTexture())
 		meshes = ToTexCoordPerVertex().ToOneMeshPerTexblob();
@@ -1287,7 +1287,7 @@ bool Mesh::SaveGLTF(const std::string& fileName, bool binary) const
 // ---------------------------------------------------------------------------
 bool Mesh::Save(const std::string& fileName, bool binary) const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	const std::string::size_type extPos = fileName.rfind('.');
 	const std::string ext(extPos != fileName.npos ? fileName.substr(extPos) : "");
 	if (ext == ".ply") {
@@ -1365,7 +1365,7 @@ bool Mesh::ExportSeamEdges(std::vector<std::pair<VIndex, VIndex>> seamEdges,
 // ---------------------------------------------------------------------------
 bool Mesh::ExportSeamEdges(const std::string& fileName, bool binary) const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(halfMesh.vHalfedges.size() == vertices.size());
 	std::vector<uint32_t> facePatchIds;
 	ListTexPatchFaces(facePatchIds);
@@ -1394,7 +1394,7 @@ bool Mesh::ExportSeamEdges(const std::string& fileName, bool binary) const
 // ---------------------------------------------------------------------------
 uint32_t Mesh::ListTexPatchFaces(std::vector<uint32_t>& facePatchIds) const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(faceTexcoords.size() == faces.size() * 3);
 	ASSERT(halfMesh.vHalfedges.size() == vertices.size());
 	facePatchIds = std::vector<uint32_t>(faces.size(), math::NO_ID);
@@ -1433,7 +1433,7 @@ uint32_t Mesh::ListTexPatchFaces(std::vector<uint32_t>& facePatchIds) const
 // ---------------------------------------------------------------------------
 std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalize() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	if (faceTexcoords.size() == faces.size() * 3) {
@@ -1467,7 +1467,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalize() const
 // ---------------------------------------------------------------------------
 std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalizeFlipY() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	// Untextured UV-atlas meshes (GenerateAtlas output) already carry normalized
@@ -1515,7 +1515,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalizeFlipY() const
 // ---------------------------------------------------------------------------
 std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalize() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	if (faceTexcoords.size() == faces.size() * 3) {
@@ -1549,7 +1549,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalize() const
 // ---------------------------------------------------------------------------
 std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalizeFlipY() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	// Exact inverse of FTexcoordsNormalizeFlipY's no-texture path: an untextured

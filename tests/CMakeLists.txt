@@ -439,6 +439,10 @@ if(HALFMESH_BUILD_PERF)
     set_tests_properties(perf_harness PROPERTIES
         LABELS "perf"
         TIMEOUT 3600   # generous: 1 hour for slow machines
+        # The harness times wall-clock, so co-scheduled tests read as a slowdown:
+        # under `ctest -j` the Build scaling ratio drifts past its bound purely
+        # from contention. RUN_SERIAL keeps the machine to itself.
+        RUN_SERIAL TRUE
     )
     message(STATUS "halfmesh: perf harness enabled (ctest -L perf)")
 endif()

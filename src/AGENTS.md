@@ -11,20 +11,26 @@ quality/invariant bounds in `tests/` (see `tests/AGENTS.md`).
 
 ## TU map
 The `Mesh` class is split across several TUs by concern:
-- `HalfMesh.cpp` — half-edge build/connectivity, adjacency, `ConnectBorders`,
-  `EnumerateHoles`, `ConnectedComponents`, edge collapse (`ERemove`) + validity predicates.
-- `Mesh.cpp` — `Mesh` core: normals, area, AABB, vertex/face adjacency, `ListHalfEdges`,
-  edit primitives (RemoveFaces/RemoveUnreferencedVertices…).
+- `HalfMesh.cpp` — half-edge build/connectivity (flat open-addressing edge pairing),
+  parity-agnostic `ConnectBorders`, `EnumerateHoles`, `ConnectedComponents`, edge
+  collapse (`ERemove`) + validity predicates, and the in-place face ops `FAdd` /
+  `FAddDisk` / `FRemoveBulk` (undo-log rollback, pinch splitting).
+- `Mesh.cpp` — `Mesh` core: the representation contract (`InvalidateFaces`/`SyncFaces`/
+  `Validate*`/pipeline scope), normals, area, AABB, vertex/face adjacency,
+  `ListHalfEdges`, edit primitives (RemoveFaces/RemoveUnreferencedVertices…).
 - `MeshIO.cpp` — PLY/glTF load/save, texture & texcoord handling, seam export.
-- `MeshRepair.cpp` — RemoveDuplicate/Degenerate faces, FixNonManifold, RemoveSmallComponents.
+- `MeshRepair.cpp` — RemoveDuplicate/Degenerate faces, FixNonManifold,
+  RemoveSmallComponents, RemoveSpuriousComponents, RemoveSpikes. Repair entry points
+  that work on both representations dispatch to an `*Arrays` / `*HalfEdge` arm.
 - `MeshSimplify.cpp` — `Mesh::Simplify`: QEM edge-collapse decimation (priority/exact mode
   and the fast threshold-sweep mode; setup is parallelized); the file has explanatory comments
   on the QEM math, the boundary discontinuity quadric, and the swap-with-last compaction.
 - `MeshRemesh.cpp` — `RemeshIsotropic` (flip/collapse/relocate/refine + fairing); parallel
   tangential smoothing, surface queries run on the BVH. Shared helpers in `MeshRemeshShared.{h,cpp}`.
 - `MeshHoles.cpp` — `CloseHoles` via Liepa min-weight triangulation (O(n^3) DP) + refine +
-  fairing; holes are filled in parallel. **Keep** the Liepa / pmp-library algorithm
-  attribution comment block at the top of the file.
+  fairing, and `RemoveVerticesAndFill` (decimating variant, no refine); holes are filled
+  in parallel and attached with `HalfMesh::FAddDisk`. **Keep** the Liepa / pmp-library
+  algorithm attribution comment block at the top of the file.
 - `MeshSmooth.cpp` — `Mesh::SmoothHCLaplacian`: HC (anti-shrink) Laplacian smoothing
   (Vollmer'99). `Mesh::SmoothTaubin`: Taubin'95 lambda|mu band-pass — smooths
   aggressively at ~zero shrinkage (needs more iterations).
@@ -34,8 +40,9 @@ The `Mesh` class is split across several TUs by concern:
   parallelized in dependency-free waves.
 - `AtlasCharting.cpp` — developable D-Charts chart segmentation (`SegmentCharts`) —
   cone-Lloyd relaxation + developable merge + flatten-and-bisect flip repair.
-- `AtlasPacking.cpp` — uniform texel-density normalization + skyline (min-waste)
-  first-fit multi-page atlas packing.
+- `AtlasPacking.cpp` — uniform texel-density normalization + the two-tier (skyline
+  min-waste head / shelf tail) first-fit multi-page packer, shared by `PackAtlas` and
+  the mesh-independent `PackRectangles` in `RectPacking.h`.
 - `TriangleKDTree.cpp` — median-split KD-tree (build + nearest-point/ray queries with
   branch-and-bound pruning); commented.
 - `TriangleBVH.cpp` — binned-SAH BVH build with a bounded traversal stack; nearest-point/ray

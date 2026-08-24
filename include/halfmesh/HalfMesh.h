@@ -126,6 +126,10 @@ class HalfMesh
 		return vHalfedges.empty();
 	}
 	void Clear();
+	// Instrumentation for the "one Build per pipeline" budget: process-wide
+	// counters of the Build / FFaces calls made through the public entry points
+	// (internal validation rebuilds are not counted). Atomic but not scoped, so
+	// Reset + read is only meaningful while one pipeline is running.
 	static uint64_t BuildCount();
 	static void ResetBuildCount();
 	static uint64_t FFacesCount();
@@ -141,6 +145,30 @@ class HalfMesh
 	bool BuildImpl(VIndex numVertices, const std::vector<Face>& faces, bool countBuild);
 	void FFacesForValidation(std::vector<Face>& faces) const { FFacesImpl(faces, false); }
 	void FFacesImpl(std::vector<Face>& faces, bool countHarvest) const;
+
+	// Undo log for FAdd: the previous value of every PRE-EXISTING slot an
+	// insertion overwrites. Slots the insertion appended need no record — the
+	// rollback truncates them. Entries are appended without de-duplication and
+	// replayed in reverse, so the oldest value always wins, which is what lets
+	// one log span a whole FAddDisk while each FAdd can still unwind just its
+	// own tail. That is the difference between an O(patch) rejected patch and
+	// copying the entire connectivity up front.
+	struct AddUndo
+	{
+		std::vector<std::pair<HIndex, HIndex>> nexts; // heNexts[iHe]
+		std::vector<std::pair<HIndex, FIndex>> faces; // heFaces[iHe]
+		std::vector<std::pair<VIndex, HIndex>> representatives; // vHalfedges[iV]
+	};
+	// where an insertion started, i.e. the state a rollback restores
+	struct AddMark
+	{
+		std::size_t nexts{0}, faces{0}, representatives{0};
+		std::size_t numHalfedges{0}, numFaces{0};
+		bool alwaysEven{true};
+	};
+	AddMark AddUndoMark(const AddUndo&) const;
+	void AddUndoRollback(AddUndo&, const AddMark&);
+	FIndex FAddImpl(const Face&, AddUndo&);
 
 	public:
 	// restore the canonical all-even vHalfedges form (see alwaysEven). No-op
@@ -613,9 +641,11 @@ class HalfMesh
 	{
 		FFacesImpl(faces, true);
 	}
-	// create a new face between the existing vertices defined by the given face;
-	// returns NO_ID if the face can not be added, as is the case if the face
-	// does not form a manifold connection with the mesh
+	// create a new face between the vertices defined by the given face; a corner
+	// may be an isolated vertex (NO_ID representative) the caller pre-appended.
+	// Returns NO_ID if the face can not be added, as is the case if the face does
+	// not form a manifold connection with the mesh; a rejected add leaves every
+	// array byte-identical.
 	FIndex FAdd(const Face&);
 	// attach a pre-triangulated disk in dependency order; retries faces that are
 	// not yet attachable and restores the exact input structure on failure;
@@ -629,7 +659,8 @@ class HalfMesh
 	//  - after, call ConnectBorders to restore border connectivity
 	//  - call ConnectBorders before removing a face with a border-edge
 	//    on the same border as a face previously removed
-	//TODO(Dan): re-factor to keep connectivity and remove ConnectBorders requirement
+	// Prefer FRemoveBulk below: it has none of these restrictions, keeps the
+	// connectivity valid on its own, and is faster for more than one face.
 	void FRemove(FIndex);
 	// remove arbitrary faces while preserving valid manifold connectivity;
 	// reports vertex swap-pops and the source of every pinch-split duplicate

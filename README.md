@@ -11,8 +11,11 @@ parametrization and texture atlas pipeline.
 
 ## Features
 
-- **Half-edge core** — manifold triangle mesh connectivity with fast adjacency queries
-- **Mesh repair** — fix non-manifold edges/vertices, remove duplicates and degenerate faces
+- **Half-edge core** — manifold triangle mesh connectivity with fast adjacency queries,
+  edited in place: every processing stage mutates the live structure, so a multi-stage
+  pipeline builds connectivity once
+- **Mesh repair** — fix non-manifold edges/vertices, remove duplicates, degenerate faces,
+  spikes, floaters and reconstruction debris
 - **QEM decimation** — edge-collapse simplification with quadric error metric (fast iterative variant)
 - **Isotropic remeshing** — regularise edge lengths and triangle aspect ratios via flip/collapse/relocate
 - **Smoothing** — HC Laplacian (anti-shrink) and Taubin lambda|mu band-pass
@@ -20,7 +23,8 @@ parametrization and texture atlas pipeline.
 - **Triangle KD-tree** — spatial index for ray-triangle intersection and closest-point queries
 - **PLY / glTF I/O** — load and save binary/ASCII PLY and glTF/GLB files
 - **UV parametrization** — developable (D-Charts) chart segmentation + per-chart SLIM/ARAP flattening
-- **Texture atlas** — uniform-density normalisation + skyline (min-waste) packing into one or more atlas pages
+- **Texture atlas** — uniform-density normalisation + two-tier (skyline min-waste + shelf)
+  packing into one or more atlas pages, also usable standalone on integer rectangles
 
 Each feature is described in depth — entry points, key parameters, gotchas,
 and pointers to the examples — in [`docs/FEATURES.md`](docs/FEATURES.md).
@@ -174,7 +178,7 @@ simplify, close holes, remove small components, remesh) plus a `Mesh` facade
 and UV-atlas `unwrap`, all numpy in/out:
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.2.0/halfmesh-0.2.0-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.3.0/halfmesh-0.3.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 (replace `cp312-cp312` with your interpreter's tag — wheels are published for

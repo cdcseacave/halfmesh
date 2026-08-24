@@ -72,6 +72,5 @@ SortIncludes: false
 IncludeBlocks: Preserve
 SortUsingDeclarations: false
 
-# Macros
 # halfmesh index/pointer loop helper macros
 ForEachMacros: ['FOREACH', 'RFOREACH', 'FOREACHIDX', 'RFOREACHIDX', 'FOREACHPTR', 'RFOREACHPTR', 'FOREACHRAWIDX', 'RFOREACHRAWIDX']

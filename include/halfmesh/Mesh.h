@@ -61,9 +61,22 @@ class Mesh
 	std::vector<VertexFaces> vertexFaces; // list of incident faces for each vertex (in increasing order)
 	HalfMesh halfMesh; // represent mesh connectivity in half-edge format for fast adjacency queries
 
+	private:
+	// suppresses SyncFacesOnPublicExit between Begin/EndHalfEdgePipeline
+	bool deferFaceSync{false};
+
 	public:
+	// SyncFaces() from a const array consumer: `faces` is a snapshot derived from
+	// `halfMesh`, so refreshing it does not change the mesh's logical value. The
+	// single place that const_casts for it, and NOT thread-safe -- a `const Mesh&`
+	// shared across threads must already be face-synced (every public method syncs
+	// on exit, so this only bites inside a BeginHalfEdgePipeline scope).
+	void SyncFacesConst() const { const_cast<Mesh*>(this)->SyncFaces(); }
 	void ReleaseOptional();
+	// drop the derived face snapshot together with every face-keyed attribute;
+	// called by half-edge mutators once they stop reading `faces`
 	void InvalidateFaces();
+	// regenerate the face snapshot from the half-edge when it is missing
 	void SyncFaces();
 	// Internal multi-stage processing scope: build connectivity once, defer
 	// native-stage face snapshots, then harvest exactly once at End.
@@ -75,7 +88,6 @@ class Mesh
 	// Public native methods use this at exit; it is suppressed only between
 	// BeginHalfEdgePipeline and EndHalfEdgePipeline.
 	void SyncFacesOnPublicExit();
-	bool deferFaceSync{false};
 	bool Empty() const
 	{
 		ASSERT(vertices.empty() == faces.empty() || vertices.empty() == halfMesh.Empty());
@@ -83,8 +95,10 @@ class Mesh
 	}
 	bool HasTextureCoordinates() const
 	{
-		const_cast<Mesh*>(this)->SyncFaces();
-		return !faceTexcoords.empty() && (faceTexcoords.size() == faces.size() * 3 || faceTexcoords.size() == vertices.size());
+		if (faceTexcoords.empty())
+			return false; // the untextured fast path costs no face harvest
+		SyncFacesConst();
+		return faceTexcoords.size() == faces.size() * 3 || faceTexcoords.size() == vertices.size();
 	}
 	bool HasTexture() const { return HasTextureCoordinates() && !texturesDiffuse.empty(); }
 
@@ -120,7 +134,7 @@ class Mesh
 	}
 	Normal ComputeFaceNormal(FIndex idxFace) const
 	{
-		const_cast<Mesh*>(this)->SyncFaces();
+		SyncFacesConst();
 		return ComputeFaceNormal(faces[idxFace]);
 	}
 	// compute normal for all faces
@@ -150,7 +164,7 @@ class Mesh
 	}
 	Type ComputeFaceDoubleArea(FIndex idxFace) const
 	{
-		const_cast<Mesh*>(this)->SyncFaces();
+		SyncFacesConst();
 		return ComputeFaceDoubleArea(faces[idxFace]);
 	}
 	// compute area for all faces
@@ -205,7 +219,7 @@ class Mesh
 	// fetch the requested face vertex by value
 	VIndex FVertex(FIndex iF, VIndex iV) const
 	{
-		const_cast<Mesh*>(this)->SyncFaces();
+		SyncFacesConst();
 		const uint32_t idx(FVertexIdx(iF, iV));
 		ASSERT(idx != math::NO_ID);
 		return faces[iF][idx];

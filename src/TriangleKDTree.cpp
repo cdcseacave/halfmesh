@@ -26,7 +26,7 @@ namespace halfmesh {
 
 void TriangleKdTree::Build(const Mesh& mesh, unsigned maxTriangles, unsigned maxDepth)
 {
-	const_cast<Mesh&>(mesh).SyncFaces();
+	mesh.SyncFacesConst();
 	// insert triangles
 	root.Leaf().triangles.resize(mesh.faces.size());
 	std::iota(root.Leaf().triangles.begin(), root.Leaf().triangles.end(), Mesh::FIndex(0));

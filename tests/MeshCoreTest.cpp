@@ -366,6 +366,29 @@ TEST(MeshCore, HalfEdgePipelineBuildsAndHarvestsOnce)
 	EXPECT_EQ(HalfMesh::FFacesCount(), 1u);
 }
 
+// Building a scratch HalfMesh from a half-edge-only Mesh must harvest into its
+// own snapshot, not materialize the source's derived `faces` array behind the
+// caller's back (the source is taken by const reference).
+TEST(MeshCore, BuildFromHalfEdgeOnlyMeshLeavesSourceFacesEmpty)
+{
+	Mesh mesh = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {2, 1, 3}});
+	mesh.BeginHalfEdgePipeline();
+	ASSERT_TRUE(mesh.faces.empty());
+
+	const Mesh& source = mesh;
+	HalfMesh scratch;
+	EXPECT_TRUE(scratch.Build(source));
+	EXPECT_TRUE(mesh.faces.empty());
+	EXPECT_EQ(scratch.FSize(), mesh.halfMesh.FSize());
+	EXPECT_EQ(scratch.VSize(), mesh.halfMesh.VSize());
+	EXPECT_EQ(scratch.ESize(), mesh.halfMesh.ESize());
+
+	mesh.EndHalfEdgePipeline();
+	EXPECT_EQ(mesh.faces.size(), 2u);
+}
+
 TEST(MeshCore, InvalidateFacesDropsAttributesAndWarnsOnce)
 {
 	Mesh m = BuildMesh(
@@ -380,7 +403,7 @@ TEST(MeshCore, InvalidateFacesDropsAttributesAndWarnsOnce)
 	testing::internal::CaptureStderr();
 	m.InvalidateFaces();
 	const std::string firstWarning = testing::internal::GetCapturedStderr();
-	EXPECT_NE(firstWarning.find("face attributes dropped: processing methods expect untextured meshes"), std::string::npos);
+	EXPECT_NE(firstWarning.find("texture attributes dropped: processing methods expect untextured meshes"), std::string::npos);
 	EXPECT_TRUE(m.faces.empty());
 	EXPECT_TRUE(m.faceNormals.empty());
 	EXPECT_TRUE(m.faceTexcoords.empty());
@@ -388,7 +411,16 @@ TEST(MeshCore, InvalidateFacesDropsAttributesAndWarnsOnce)
 	EXPECT_TRUE(m.texturesDiffuse.empty());
 	EXPECT_TRUE(m.vertexFaces.empty());
 
+	// faceNormals/vertexFaces are derived caches, not authored data: dropping
+	// them is routine and must never raise the texture-policy warning
 	m.faceNormals.emplace_back(0.f, 0.f, 1.f);
+	m.ListVertexFaces();
+	testing::internal::CaptureStderr();
+	m.InvalidateFaces();
+	EXPECT_TRUE(testing::internal::GetCapturedStderr().empty());
+
+	// and the texture warning itself is one-time
+	m.faceTexcoords.resize(3);
 	testing::internal::CaptureStderr();
 	m.InvalidateFaces();
 	EXPECT_TRUE(testing::internal::GetCapturedStderr().empty());

@@ -56,7 +56,6 @@
 #include <numbers>
 #include <set>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1247,6 +1246,30 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 	return closed;
 }
 
+// A boundary loop that visits a vertex twice pinches the surface there and has no
+// triangulation, so every filler has to reject it. Tested with one reusable stamp
+// array per enumeration instead of a hash set per loop.
+class LoopSimplicity
+{
+	public:
+	explicit LoopSimplicity(std::size_t numVertices) :
+	    stamp(numVertices, 0) {}
+	bool IsSimple(const std::vector<Mesh::VIndex>& verts)
+	{
+		++current;
+		for (const Mesh::VIndex vertex : verts) {
+			if (stamp[vertex] == current)
+				return false;
+			stamp[vertex] = current;
+		}
+		return true;
+	}
+
+	private:
+	std::vector<unsigned> stamp;
+	unsigned current{0};
+};
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -1287,179 +1310,196 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
 	// and must not repeat a vertex.
 	std::vector<unsigned> candidates;
 	candidates.reserve(loops.size());
+	LoopSimplicity simplicity(vertices.size());
 	for (unsigned idxLoop = 0; idxLoop < loops.size(); ++idxLoop) {
 		const BoundaryLoop& loop = loops[idxLoop];
 		if (loop.verts.size() < 3 || loop.verts.size() > maxHoleEdges)
 			continue;
-		std::unordered_set<VIndex> seen;
-		bool simple = true;
-		for (VIndex v : loop.verts)
-			if (!seen.emplace(v).second) {
-				simple = false;
-				break;
-			}
-		if (simple)
+		if (simplicity.IsSimple(loop.verts))
 			candidates.push_back(idxLoop);
 	}
 	const unsigned closed = FillBoundaryLoops(*this, loops, candidates, holesFaces);
 	SyncFacesOnPublicExit();
-	ASSERT(ValidateHalfMesh());
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
 	return closed;
 }
 
+// ---------------------------------------------------------------------------
+// Mesh::RemoveVerticesAndFill
+//
+// Remove the selected vertices with their incident faces, then span ONLY the
+// boundary loops that removal opened. Classification runs on the untouched
+// connectivity, before the removal renumbers anything:
+//   - a removed region that already reaches a boundary widens an existing hole
+//     rather than creating one, so what it leaves behind stays open;
+//   - an interior edge that loses exactly one of its two faces is "exposed" and
+//     becomes part of a new loop.
+// The verdict is carried across the removal on the edges' ORIGINAL vertex pairs,
+// which the reported pinch-splits and swap-pops let us recover.
+// ---------------------------------------------------------------------------
 unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 {
-	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
-		return 0;
-	if (vertexRemoves.empty())
+	if (vertices.empty() || vertexRemoves.empty() || (faces.empty() && halfMesh.Empty()))
 		return 0;
 	ListHalfEdges();
-	SyncFaces();
+	if (halfMesh.Empty()) {
+		SyncFacesOnPublicExit();
+		return 0;
+	}
 	std::sort(vertexRemoves.begin(), vertexRemoves.end());
 	vertexRemoves.erase(std::unique(vertexRemoves.begin(), vertexRemoves.end()), vertexRemoves.end());
-	ASSERT(vertexRemoves.back() < vertices.size());
-
-	if (halfMesh.Empty())
+	// out-of-range selections are dropped rather than indexed (mirrors FRemoveBulk);
+	// the assert still flags them while developing
+	ASSERT(vertexRemoves.back() < halfMesh.VSize());
+	vertexRemoves.erase(std::lower_bound(vertexRemoves.begin(), vertexRemoves.end(), halfMesh.VSize()),
+	                    vertexRemoves.end());
+	if (vertexRemoves.empty()) {
+		SyncFacesOnPublicExit();
 		return 0;
+	}
 
+	std::vector<bool> removedVertex(halfMesh.VSize(), false);
+	for (const VIndex vertex : vertexRemoves)
+		removedVertex[vertex] = true;
+
+	// Group the removed vertices into connected regions (union-find over the
+	// half-edge's own edges) and flag the regions that already touch a boundary.
+	std::vector<VIndex> regionParent(halfMesh.VSize());
+	std::iota(regionParent.begin(), regionParent.end(), VIndex(0));
+	const auto FindRegion = [&regionParent](VIndex vertex) {
+		VIndex root = vertex;
+		while (regionParent[root] != root)
+			root = regionParent[root];
+		while (regionParent[vertex] != root) { // path compression
+			const VIndex next = regionParent[vertex];
+			regionParent[vertex] = root;
+			vertex = next;
+		}
+		return root;
+	};
+	for (EIndex edge = 0; edge < halfMesh.ESize(); ++edge) {
+		const auto endpoints = halfMesh.EVertices(edge);
+		if (!removedVertex[endpoints.first] || !removedVertex[endpoints.second])
+			continue;
+		const VIndex rootA = FindRegion(endpoints.first);
+		const VIndex rootB = FindRegion(endpoints.second);
+		if (rootA != rootB)
+			regionParent[rootB] = rootA;
+	}
+	std::vector<bool> regionAtBoundary(halfMesh.VSize(), false);
+	for (const VIndex vertex : vertexRemoves)
+		if (halfMesh.VIsBoundary(vertex))
+			regionAtBoundary[FindRegion(vertex)] = true;
+
+	// Every face with a removed corner goes; remember whether the region taking it
+	// away reaches a boundary, so the edges it exposes inherit that verdict.
+	std::vector<FIndex> faceRemoves;
+	std::vector<bool> removedFace(halfMesh.FSize(), false);
+	std::vector<bool> removedFaceAtBoundary(halfMesh.FSize(), false);
+	for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace) {
+		const Face face = halfMesh.F(idxFace);
+		bool remove = false;
+		bool atBoundary = false;
+		for (int corner = 0; corner < 3; ++corner) {
+			if (!removedVertex[face[corner]])
+				continue;
+			remove = true;
+			atBoundary = atBoundary || regionAtBoundary[FindRegion(face[corner])];
+		}
+		if (!remove)
+			continue;
+		removedFace[idxFace] = true;
+		removedFaceAtBoundary[idxFace] = atBoundary;
+		faceRemoves.emplace_back(idxFace);
+	}
+	if (faceRemoves.empty()) {
+		SyncFacesOnPublicExit();
+		return 0;
+	}
+
+	// Flag the surviving edges that decide a loop's fate. Keyed by ORIGINAL vertex
+	// pair because the removal renumbers edges; only flagged edges are stored, so
+	// the map is the size of the removal frontier rather than of the mesh.
+	enum : uint8_t {
+		EDGE_WAS_BOUNDARY = 1, // already open before this call
+		EDGE_EXPOSED = 2, // interior edge losing exactly one of its two faces
+		EDGE_EXPOSED_AT_BOUNDARY = 4, // ... to a region that reaches a boundary
+	};
 	const auto EdgeKey = [](VIndex a, VIndex b) {
 		if (a > b)
 			std::swap(a, b);
 		return (static_cast<uint64_t>(a) << 32) | b;
 	};
-	std::unordered_set<uint64_t> originalBoundaryEdges;
-	std::vector<char> originalBoundaryVertex(vertices.size(), 0);
-	for (HIndex halfedge = 0; halfedge < halfMesh.HeSize(); ++halfedge) {
-		if (!halfMesh.HeIsBoundary(halfedge))
-			continue;
-		const VIndex tail = halfMesh.HeVertex(halfedge);
-		const VIndex head = halfMesh.HeVertex(halfMesh.HeNext(halfedge));
-		originalBoundaryEdges.emplace(EdgeKey(tail, head));
-		originalBoundaryVertex[tail] = originalBoundaryVertex[head] = 1;
+	std::unordered_map<uint64_t, uint8_t> edgeFlags;
+	for (EIndex edge = 0; edge < halfMesh.ESize(); ++edge) {
+		const auto endpoints = halfMesh.EVertices(edge);
+		if (removedVertex[endpoints.first] || removedVertex[endpoints.second])
+			continue; // the edge goes with the region; it can bound no survivor
+		const HIndex even = halfMesh.EHalfedge(edge);
+		const FIndex faceEven = halfMesh.HeFace(even);
+		const FIndex faceOdd = halfMesh.HeFace(halfMesh.HeTwin(even));
+		uint8_t flags = 0;
+		if (faceEven == math::NO_ID || faceOdd == math::NO_ID) {
+			flags = EDGE_WAS_BOUNDARY;
+		} else if (removedFace[faceEven] != removedFace[faceOdd]) {
+			flags = EDGE_EXPOSED;
+			if (removedFaceAtBoundary[removedFace[faceEven] ? faceEven : faceOdd])
+				flags |= EDGE_EXPOSED_AT_BOUNDARY;
+		}
+		if (flags != 0)
+			edgeFlags.emplace(EdgeKey(endpoints.first, endpoints.second), flags);
 	}
 
-	std::vector<char> removedVertex(vertices.size(), 0);
-	for (VIndex vertex : vertexRemoves)
-		removedVertex[vertex] = 1;
-	// Carry original-boundary contact across each connected removed region to
-	// the surviving frontier that replaces it after vertex compaction.
-	std::vector<VIndex> removedParent(vertices.size(), math::NO_ID);
-	for (VIndex vertex : vertexRemoves)
-		removedParent[vertex] = vertex;
-	const auto FindRemovedRoot = [&removedParent](VIndex vertex) {
-		VIndex root = vertex;
-		while (removedParent[root] != root)
-			root = removedParent[root];
-		while (removedParent[vertex] != vertex) {
-			const VIndex next = removedParent[vertex];
-			removedParent[vertex] = root;
-			vertex = next;
-		}
-		return root;
-	};
-	const auto JoinRemoved = [&FindRemovedRoot, &removedParent](VIndex a, VIndex b) {
-		const VIndex rootA = FindRemovedRoot(a);
-		const VIndex rootB = FindRemovedRoot(b);
-		if (rootA != rootB)
-			removedParent[rootB] = rootA;
-	};
-	for (const Face& face : faces) {
-		for (int edge = 0; edge < 3; ++edge) {
-			const VIndex a = face[edge];
-			const VIndex b = face[(edge + 1) % 3];
-			if (removedVertex[a] && removedVertex[b])
-				JoinRemoved(a, b);
-		}
-	}
-	std::vector<char> removedComponentTouchesBoundary(vertices.size(), 0);
-	for (VIndex vertex : vertexRemoves)
-		if (originalBoundaryVertex[vertex])
-			removedComponentTouchesBoundary[FindRemovedRoot(vertex)] = 1;
-
-	std::unordered_map<uint64_t, uint8_t> edgeSides;
-	std::unordered_set<uint64_t> boundaryRemovalEdges;
-	std::vector<FIndex> faceRemoves;
-	for (FIndex idxFace = 0; idxFace < faces.size(); ++idxFace) {
-		const Face& face = faces[idxFace];
-		const bool remove = removedVertex[face[0]] || removedVertex[face[1]] || removedVertex[face[2]];
-		bool removalTouchesBoundary = false;
-		if (remove) {
-			for (int corner = 0; corner < 3; ++corner)
-				if (removedVertex[face[corner]]
-				    && removedComponentTouchesBoundary[FindRemovedRoot(face[corner])]) {
-					removalTouchesBoundary = true;
-					break;
-				}
-		}
-		if (remove)
-			faceRemoves.emplace_back(idxFace);
-		for (int edge = 0; edge < 3; ++edge) {
-			const VIndex a = face[edge];
-			const VIndex b = face[(edge + 1) % 3];
-			if (!removedVertex[a] && !removedVertex[b]) {
-				const uint64_t key = EdgeKey(a, b);
-				edgeSides[key] |= remove ? uint8_t(1) : uint8_t(2);
-				if (remove && removalTouchesBoundary)
-					boundaryRemovalEdges.emplace(key);
-			}
-		}
-	}
-	std::unordered_set<uint64_t> exposedEdges;
-	std::unordered_set<uint64_t> boundaryExposedEdges;
-	for (const auto& [edge, sides] : edgeSides) {
-		if (sides == 3) {
-			exposedEdges.emplace(edge);
-			if (boundaryRemovalEdges.contains(edge))
-				boundaryExposedEdges.emplace(edge);
-		}
-	}
-
-	const VIndex originalVertexCount = static_cast<VIndex>(vertices.size());
+	const VIndex originalVertexCount = halfMesh.VSize();
 	std::vector<VIndex> removedVerts;
 	std::vector<VIndex> splitSrcVerts;
 	if (!RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts)) {
-		SyncFaces();
+		SyncFacesOnPublicExit();
 		return 0;
 	}
-	// Track the original source represented by each current vertex slot. Pinch
-	// duplicates inherit their source; descending removals mirror the primitive's
-	// exact swap-pop order. This lets boundary classification survive both effects.
+	// Map every surviving slot back to the vertex it stands for: pinch duplicates
+	// inherit their source, and replaying the reported removals mirrors the
+	// primitive's own swap-pop order.
 	std::vector<VIndex> vertexOrigin(originalVertexCount);
 	std::iota(vertexOrigin.begin(), vertexOrigin.end(), VIndex(0));
-	for (VIndex source : splitSrcVerts)
+	for (const VIndex source : splitSrcVerts)
 		vertexOrigin.emplace_back(vertexOrigin[source]);
-	for (VIndex removed : removedVerts) {
+	for (const VIndex removed : removedVerts) {
 		vertexOrigin[removed] = vertexOrigin.back();
 		vertexOrigin.pop_back();
 	}
 	ASSERT(vertexOrigin.size() == vertices.size());
+
 	std::vector<BoundaryLoop> loops;
 	EnumerateBoundaryLoops(halfMesh, vertices, loops);
 	std::vector<unsigned> candidates;
+	LoopSimplicity simplicity(halfMesh.VSize());
 	for (unsigned idxLoop = 0; idxLoop < loops.size(); ++idxLoop) {
 		const BoundaryLoop& loop = loops[idxLoop];
-		bool newlyExposed = false;
-		bool touchesOriginalBoundary = false;
-		std::unordered_set<VIndex> seen;
-		for (size_t i = 0; i < loop.verts.size(); ++i) {
-			if (!seen.emplace(loop.verts[i]).second) {
-				newlyExposed = false;
-				touchesOriginalBoundary = true;
-				break;
-			}
-			const uint64_t edge = EdgeKey(vertexOrigin[loop.verts[i]], vertexOrigin[loop.verts[(i + 1) % loop.verts.size()]]);
-			newlyExposed |= exposedEdges.contains(edge);
-			touchesOriginalBoundary |= originalBoundaryEdges.contains(edge)
-			                           || boundaryExposedEdges.contains(edge);
+		if (loop.verts.size() < 3 || !simplicity.IsSimple(loop.verts))
+			continue;
+		uint8_t seen = 0;
+		for (std::size_t i = 0; i < loop.verts.size(); ++i) {
+			const VIndex tail = vertexOrigin[loop.verts[i]];
+			const VIndex head = vertexOrigin[loop.verts[(i + 1) % loop.verts.size()]];
+			const auto flags = edgeFlags.find(EdgeKey(tail, head));
+			if (flags != edgeFlags.end())
+				seen |= flags->second;
 		}
-		if (loop.verts.size() >= 3 && newlyExposed && !touchesOriginalBoundary)
+		// a hole this call opened: at least one newly exposed edge, and nothing
+		// tying the loop back to a boundary that was already open
+		if ((seen & EDGE_EXPOSED) != 0 && (seen & (EDGE_WAS_BOUNDARY | EDGE_EXPOSED_AT_BOUNDARY)) == 0)
 			candidates.emplace_back(idxLoop);
 	}
 	// Span the exposed loops without refining: this path decimates, so re-adding
 	// interior vertices to match the surrounding density would undo the removal.
 	const unsigned closed = FillBoundaryLoops(*this, loops, candidates, nullptr, false);
-	SyncFaces();
-	ASSERT(ValidateHalfMesh());
+	SyncFacesOnPublicExit();
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
 	return closed;
 }
 

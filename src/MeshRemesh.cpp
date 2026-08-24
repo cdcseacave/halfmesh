@@ -299,7 +299,7 @@ void RemeshData::BuildSizingField()
 		const Mesh::Vertex& p0 = mesh.vertices[f[0]];
 		const Mesh::Vertex& p1 = mesh.vertices[f[1]];
 		const Mesh::Vertex& p2 = mesh.vertices[f[2]];
-		const Mesh::Type thirdArea = mesh.ComputeFaceNormal(f).norm() * Mesh::Type(0.5) / Mesh::Type(3);
+		const Mesh::Type thirdArea = mesh.ComputeFaceDoubleArea(f) * Mesh::Type(0.5) / Mesh::Type(3);
 		area[f[0]] += thirdArea;
 		area[f[1]] += thirdArea;
 		area[f[2]] += thirdArea;
@@ -423,9 +423,6 @@ unsigned RemeshData::SplitLongEdges()
 
 	// Refresh the per-face-vertex crease marks from the updated connectivity so
 	// the following collapse pass sees a consistently sized fvSelection.
-#if REMESH_DEBUG_OUTPUT
-	mesh.Save("mesh_split_update.ply");
-#endif
 	TagCreaseEdges();
 	return numSplits;
 }
@@ -580,7 +577,7 @@ bool RemeshData::TestEdgeCollapse(HalfMesh::HIndex iHe,
 	const Mesh::Type th = CollapseThreshold(m.HeTailVertex(iHe), m.HeHeadVertex(iHe));
 	const Mesh::Type dist =
 	    (mesh.vertices[m.HeTailVertex(iHe)] - mesh.vertices[m.HeHeadVertex(iHe)]).norm();
-	const Mesh::Type area = mesh.ComputeFaceNormal(m.F(m.HeFace(iHe))).norm() * 0.5f;
+	const Mesh::Type area = mesh.ComputeFaceDoubleArea(m.F(m.HeFace(iHe))) * 0.5f;
 	return (dist < th || area < SQUARE(params.edgeMinLength) * minAreaPercentage) && CheckCollapseFacesAroundFirstVertex(iHe, newPos, dist < th * minLenghPercentage ? 2 : (relaxed ? 1 : 0));
 }
 
@@ -1224,17 +1221,11 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 			acc.splitCount += data.SplitLongEdges();
 			acc.splitSeconds += secs(t0);
 		}
-#if REMESH_DEBUG_OUTPUT
-		Save(std::string("mesh_") + std::to_string(iter) + "_split.ply");
-#endif
 		if (params.doCollapse) {
 			const auto t0 = RClock::now();
 			acc.collapseCount += data.CollapseShortEdges();
 			acc.collapseSeconds += secs(t0);
 		}
-#if REMESH_DEBUG_OUTPUT
-		Save(std::string("mesh_") + std::to_string(iter) + "_collapse.ply");
-#endif
 		{
 			const auto t0 = RClock::now();
 			data.TagCreaseEdges();
@@ -1245,9 +1236,6 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 			acc.flipCount += data.ImproveValence();
 			acc.flipSeconds += secs(t0);
 		}
-#if REMESH_DEBUG_OUTPUT
-		Save(std::string("mesh_") + std::to_string(iter) + "_valence.ply");
-#endif
 		if (params.doSmooth) {
 			const auto t0 = RClock::now();
 			if (params.smoothTangential)
@@ -1256,17 +1244,11 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 				data.VertexCoordLaplacian(params.smoothIterations, params.smoothDelta);
 			acc.smoothSeconds += secs(t0);
 		}
-#if REMESH_DEBUG_OUTPUT
-		Save(std::string("mesh_") + std::to_string(iter) + "_smooth.ply");
-#endif
 		if (params.doProject) {
 			const auto t0 = RClock::now();
 			data.ProjectVerticesToSurface();
 			acc.projectSeconds += secs(t0);
 		}
-#if REMESH_DEBUG_OUTPUT
-		Save(std::string("mesh_") + std::to_string(iter) + "_project.ply");
-#endif
 	}
 	if (stats != nullptr)
 		*stats = acc;

@@ -323,6 +323,34 @@ TEST(MeshRepairTest, RemoveDegenerateFacesHalfEdgeFlipsCapWithoutBuild)
 	}
 }
 
+// The needle/cap split is an edge-length RATIO, so the same cap must still be
+// flipped (never collapsed) when the mesh is expressed in different units --
+// comparing the shortest edge against the area threshold directly would flip
+// the classification as soon as the model is scaled.
+TEST(MeshRepairTest, RemoveDegenerateFacesHalfEdgeCapClassificationIsScaleInvariant)
+{
+	for (const float scale : {1e-2f, 1.f, 1e3f}) {
+		SCOPED_TRACE(scale);
+		Mesh m;
+		m.vertices = {
+		    {0.f, 0.f, 0.f},
+		    {2.f * scale, 0.f, 0.f},
+		    {1.f * scale, 1e-6f * scale, 0.f},
+		    {1.f * scale, -1.f * scale, 0.f},
+		};
+		m.faces = {{0, 1, 2}, {1, 0, 3}};
+		m.ListHalfEdges();
+		// threshold scaled with the model, as an area threshold must be
+		const float thArea = 1e-5f * scale * scale;
+		EXPECT_EQ(m.RemoveDegenerateFaces(thArea), 0u); // flipped, not collapsed
+		EXPECT_EQ(m.faces.size(), 2u);
+		EXPECT_EQ(m.vertices.size(), 4u);
+		EXPECT_EQ(m.halfMesh.EEdge(0, 1), math::NO_ID);
+		EXPECT_NE(m.halfMesh.EEdge(2, 3), math::NO_ID);
+		EXPECT_TRUE(m.ValidateHalfMesh());
+	}
+}
+
 // The iterated overload must actually iterate: removing the nearly-collinear
 // (0,1,2) vertex-merges P2 onto P1, silently making the VALID neighbor
 // (2,3,4) -> (1,3,4) newly collinear with 3 distinct indices -- invisible to

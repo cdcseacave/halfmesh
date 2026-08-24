@@ -45,17 +45,20 @@ void Mesh::ReleaseOptional()
 
 void Mesh::InvalidateFaces()
 {
-	const bool droppedAttributes = !faceTexcoords.empty() || !faceTexblobs.empty() || !faceNormals.empty() || !texturesDiffuse.empty();
+	// Only AUTHORED data is worth a warning: faceNormals and vertexFaces are
+	// derived caches every mutator is expected to drop, so including them would
+	// make the texture-policy warning fire on untextured meshes.
+	const bool droppedTexture = !faceTexcoords.empty() || !faceTexblobs.empty() || !texturesDiffuse.empty();
 	faces.clear();
 	faceTexcoords.clear();
 	faceTexblobs.clear();
 	faceNormals.clear();
 	texturesDiffuse.clear();
 	vertexFaces.clear();
-	if (droppedAttributes) {
+	if (droppedTexture) {
 		static std::once_flag warningFlag;
 		std::call_once(warningFlag, []() {
-			REPORT_WARNING("face attributes dropped: processing methods expect untextured meshes");
+			REPORT_WARNING("texture attributes dropped: processing methods expect untextured meshes");
 		});
 	}
 }
@@ -328,7 +331,7 @@ std::vector<Mesh::Normal> Mesh::ComputeVertexNormals()
 
 real Mesh::ComputeArea() const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	real area(0);
 	for (const Face& face : faces)
 		area += ComputeFaceDoubleArea(face);
@@ -337,7 +340,7 @@ real Mesh::ComputeArea() const
 
 real Mesh::ComputeArea(const std::vector<FIndex>& indices) const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	real area(0);
 	for (FIndex idxFace : indices)
 		area += ComputeFaceDoubleArea(idxFace);
@@ -446,7 +449,7 @@ std::vector<Mesh::VIndex> Mesh::VAdjacentVertices(VIndex iV) const
 
 Mesh::VIndex Mesh::FVertexIdx(FIndex idxFace, VIndex iV) const
 {
-	const_cast<Mesh*>(this)->SyncFaces();
+	SyncFacesConst();
 	const Face& face = faces[idxFace];
 	for (VIndex i = 0; i < 3; ++i)
 		if (face[i] == iV)
@@ -513,7 +516,10 @@ void Mesh::ECollapse(EIndex iE)
 		vertexColors.pop_back();
 	}
 	InvalidateFaces();
-	SyncFaces();
+	// re-harvesting the whole array for one collapse is O(F); a caller collapsing
+	// many edges should scope the loop in BeginHalfEdgePipeline, which suppresses
+	// this and harvests once at the end
+	SyncFacesOnPublicExit();
 	ASSERT(ValidateInvariants());
 }
 
@@ -570,7 +576,9 @@ Mesh::VIndex Mesh::RemoveUnreferencedVerticesHalfEdge()
 	if (!removedVerts.empty())
 		InvalidateFaces();
 	SyncFacesOnPublicExit();
-	ASSERT(ValidateHalfMesh());
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
 	return static_cast<VIndex>(removedVerts.size());
 }
 
