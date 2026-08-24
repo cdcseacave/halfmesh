@@ -9,14 +9,12 @@
 
 #include <halfmesh/HalfMesh.h>
 #include <halfmesh/Mesh.h>
-#include <halfmesh/Util/Hash.h>
 #include <halfmesh/Util/Loop.h>
 #include <halfmesh/Util/Assert.h>
 #include <halfmesh/Util/Maths.h>
 #include <limits>
 #include <algorithm>
 #include <atomic>
-#include <unordered_map>
 
 using namespace math;
 
@@ -92,27 +90,37 @@ bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces, boo
 	heFaces.reserve(heNexts.capacity());
 	vHalfedges.resize(numVertices, NO_ID);
 	fHalfedges.resize(faces.size(), NO_ID);
-	// walk the faces, creating half-edges if non-existing.
-	// Edges are keyed by a packed 64-bit UNDIRECTED key (min(tail,head)<<32)|max:
-	// VIndex is uint32, so the pack is lossless and gives an identity hash + single
-	// 64-bit compare instead of a two-round HashCombine chain over a tuple. Both
-	// directions of an edge share one key, so a single emplace per corner both
-	// creates the pair (on the first, first-seen direction) and locates the twin
-	// (on the second) — halving hash traffic and node allocations vs probing two
-	// directed keys. The map stores the EVEN half-edge of each pair; the odd twin is
-	// its XOR-partner. Output is bit-identical to a two-directed-key probe: the pair
-	// is still created oriented from the first-seen corner (even = idxTail, so the
-	// same vHalfedges / heVertices), the same corner triggers creation (first
-	// undirected encounter == twin-not-yet-created), and a directed edge reused by a
-	// second face is rejected the same way (its half-edge already carries a face).
-	// The map is never iterated — half-edge indices are assigned in face-walk order.
+	// Walk the faces, creating half-edges if non-existing. Edges are keyed by a
+	// packed 64-bit undirected key (min(tail,head)<<32)|max in a flat linear-probing
+	// table. Key 0 is the empty sentinel: the only edge that could produce it is the
+	// self-edge 0->0, which is rejected before lookup. The table is never iterated,
+	// so pairs are still created in first-encounter face order and slot assignment is
+	// byte-identical to the node-based map this replaces.
 	const auto edgeKey = [](VIndex a, VIndex b) -> uint64_t {
 		if (a > b)
 			std::swap(a, b);
 		return (static_cast<uint64_t>(a) << 32) | b;
 	};
-	std::unordered_map<uint64_t, HIndex> createdHalfedges;
-	createdHalfedges.reserve(heNexts.capacity());
+	const size_t maxEdges = faces.size() * Face::RowsAtCompileTime;
+	size_t edgeTableCapacity = 1;
+	while (edgeTableCapacity <= maxEdges)
+		edgeTableCapacity <<= 1;
+	const size_t edgeTableMask = edgeTableCapacity - 1;
+	std::vector<uint64_t> edgeKeys(edgeTableCapacity, 0);
+	std::vector<HIndex> edgeHalfedges(edgeTableCapacity);
+	const auto findEdgeSlot = [&](uint64_t key) {
+		// MurmurHash3 finalizer: mixes both packed vertex indices before masking.
+		uint64_t hash = key;
+		hash ^= hash >> 33;
+		hash *= 0xff51afd7ed558ccdULL;
+		hash ^= hash >> 33;
+		hash *= 0xc4ceb9fe1a85ec53ULL;
+		hash ^= hash >> 33;
+		size_t slot = static_cast<size_t>(hash) & edgeTableMask;
+		while (edgeKeys[slot] != 0 && edgeKeys[slot] != key)
+			slot = (slot + 1) & edgeTableMask;
+		return slot;
+	};
 	FOREACHIDX (FIndex, idxFace, faces) {
 		const Face& face = faces[idxFace];
 		// walk around this face
@@ -128,17 +136,17 @@ bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces, boo
 				Clear();
 				return false; // self-edge => non-manifold/degenerate input
 			}
-			// one emplace per corner: locate (or create) this edge's half-edge pair
-			HIndex& iHeEven = createdHalfedges.emplace(
-			                                      edgeKey(idxTail, idxHead), NO_ID)
-			                      .first->second;
+			// One probe per corner locates or creates this edge's half-edge pair.
+			const uint64_t key = edgeKey(idxTail, idxHead);
+			const size_t edgeSlot = findEdgeSlot(key);
 			HIndex iHe;
-			if (iHeEven == NO_ID) {
+			if (edgeKeys[edgeSlot] == 0) {
 				// first time this edge is seen: create and initialize a new pair,
 				// oriented from this corner (even half-edge has idxTail as tail)
 				ASSERT(heNexts.size() == heVertices.size() && heNexts.size() == heFaces.size());
 				iHe = static_cast<HIndex>(heNexts.size());
-				iHeEven = iHe;
+				edgeKeys[edgeSlot] = key;
+				edgeHalfedges[edgeSlot] = iHe;
 				vHalfedges[idxTail] = iHe;
 				heNexts.emplace_back(NO_ID);
 				heNexts.emplace_back(NO_ID);
@@ -149,6 +157,7 @@ bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces, boo
 			} else {
 				// edge already exists: pick the half-edge for this corner's direction
 				// (the stored even half-edge if it leaves idxTail, else its twin)
+				const HIndex iHeEven = edgeHalfedges[edgeSlot];
 				iHe = (heVertices[iHeEven] == idxTail) ? iHeEven : HeTwin(iHeEven);
 				// A directed edge seen twice means an edge shared by >2 faces (or a
 				// duplicate face): the half-edge for this direction already carries a

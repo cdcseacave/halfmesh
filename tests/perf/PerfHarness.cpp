@@ -266,6 +266,21 @@ TEST(PerfHarness, Build_800k)
 	EXPECT_LT(dt, MAX_WALL_SECONDS) << "Build_800k blew wall-clock bound";
 }
 
+TEST(PerfHarness, Build_5m)
+{
+	unsigned actual = 0;
+	halfmesh::Mesh m = hmtest::corpus::LargeMesh(TRUCK_TARGET, &actual);
+	halfmesh::HalfMesh hm;
+	const auto t0 = Clock::now();
+	ASSERT_TRUE(hm.Build(m));
+	const double dt = elapsedS(t0);
+	record("Build_5m", dt, actual);
+	std::cout << "  Build_5m: " << dt << " s\n";
+
+	EXPECT_GE(actual, TRUCK_TARGET);
+	EXPECT_LT(dt, MAX_WALL_SECONDS) << "Build_5m blew wall-clock bound";
+}
+
 // ===================== Scaling assertion: Build ============================
 TEST(PerfHarness, ScalingAssertion_Build)
 {

@@ -81,6 +81,20 @@ TEST(HalfMeshTest, Tetrahedron_Counts)
 	EXPECT_EQ(hm.HeSize(), 12u);
 }
 
+TEST(HalfMeshTest, Tetrahedron_BuildSlotAssignment)
+{
+	Mesh m = BuildMesh(4, {{0, 1, 2}, {0, 2, 3}, {0, 3, 1}, {1, 3, 2}});
+	HalfMesh hm;
+	ASSERT_TRUE(hm.Build(m));
+
+	EXPECT_EQ(hm.vHalfedges, (std::vector<HalfMesh::HIndex>{0, 2, 6, 10}));
+	EXPECT_EQ(hm.fHalfedges, (std::vector<HalfMesh::HIndex>{0, 5, 9, 11}));
+	EXPECT_EQ(hm.heNexts, (std::vector<HalfMesh::HIndex>{2, 9, 4, 11, 0, 6, 8, 3, 5, 10, 1, 7}));
+	EXPECT_EQ(hm.heVertices, (std::vector<HalfMesh::VIndex>{0, 1, 1, 2, 2, 0, 2, 3, 3, 0, 3, 1}));
+	EXPECT_EQ(hm.heFaces, (std::vector<HalfMesh::FIndex>{0, 2, 0, 3, 0, 1, 1, 3, 1, 2, 2, 3}));
+	EXPECT_TRUE(hm.alwaysEven);
+}
+
 TEST(HalfMeshTest, Tetrahedron_NoBoundary)
 {
 	Mesh m = BuildMesh(4, {{0, 1, 2}, {0, 2, 3}, {0, 3, 1}, {1, 3, 2}});
@@ -475,7 +489,7 @@ TEST(HalfMeshTest, TwoTriangles_EdgeFlip)
 }
 
 // ---------------------------------------------------------------------------
-// Build non-manifold rejection: the single-emplace half-edge construction must
+// Build non-manifold rejection: the flat-table half-edge construction must
 // reject the same inputs the reference two-key probe did. A self-edge and an
 // edge shared by >2 faces (same directed edge seen twice) cannot be represented
 // by a manifold half-edge structure. (Bow-tie vertex rejection is covered in
@@ -492,9 +506,9 @@ TEST(HalfMeshTest, Build_RejectsSelfEdge)
 
 TEST(HalfMeshTest, Build_RejectsEdgeSharedByThreeFaces)
 {
-	// Three triangles all using the SAME directed edge (0->1): the directed edge
-	// is seen more than twice, so the edge is shared by >2 faces (non-manifold).
-	Mesh m = BuildMesh(5, {{0, 1, 2}, {0, 1, 3}, {0, 1, 4}});
+	// The first two faces use edge 0-1 in opposite directions and fill its valid
+	// twin pair. The third use repeats 0->1, making the edge non-manifold.
+	Mesh m = BuildMesh(5, {{0, 1, 2}, {1, 0, 3}, {0, 1, 4}});
 	HalfMesh hm;
 	EXPECT_FALSE(hm.Build(m)) << "Build must reject an edge shared by >2 faces";
 	EXPECT_TRUE(hm.Empty()) << "rejected Build must leave the mesh cleared";

@@ -1,6 +1,6 @@
 # Half-edge–primary mesh processing — implementation plan
 
-Status: **shipped through M5** — T0–T7 landed; M6 Build speed remains optional backlog · Branch: `openmvs-integration`
+Status: **shipped through M6** — T0–T8 landed · Branch: `openmvs-integration`
 Driven by the OpenMVS `Mesh::Clean` integration; measured numbers below are from
 Tanks&Temples *Truck* (6.1M faces) via `ReconstructMesh --mesh-file` clean-only runs.
 
@@ -19,7 +19,7 @@ repair API keeps the array variants via representation dispatch (§4.9);
 `Build` on `NO_ID` vHalfedges fails in *release*, not debug-only (§3.3);
 Simplify/Remesh historically needed `SyncFaces` on entry until M5 moved their
 setup and working loops onto half-edge faces (§4.8); public `Mesh::InvalidateHalfMesh()` for hand-edited
-`faces` (§2.1); optional `Build`-speed backlog (M6).
+`faces` (§2.1); `Build`-speed work tracked as M6.
 
 Correction pass 3 (2026-08-24, implementation-verified): a scratch `Build`
 cannot reproduce all five positional arrays after an in-place mutation.
@@ -598,12 +598,13 @@ gate.
   `AGENTS.md` (the representation-authority contract is a standing convention
   from then on) + §2.2 texture marking of every public processing method.
   FEATURES still documents “faces primary, HE on demand”.
-- **M6 — `Build` speed (optional backlog).** The plan deletes rebuilds, but
-  ingest still pays one `Build` (dirty ingest two). The
-  `unordered_map<uint64,HIndex>` over ~3F edges is the cost center; a
-  sort-based edge pairing or a flat open-addressing map keyed by
-  (min,max)-packed u64 is typically 3–5× faster at this size. Orthogonal to
-  everything above; shrinks the one Build that cannot be deleted.
+- **M6 — `Build` speed (shipped).** The plan deletes rebuilds, but ingest still
+  pays one `Build` (dirty ingest two). A flat open-addressing map keyed by
+  (min,max)-packed u64 replaced `unordered_map<uint64,HIndex>` after a direct
+  comparison with sort-based pairing. On the 5,003,552-face acceptance mesh it
+  measured 0.608 s vs. 1.969 s (3.24×) while reducing peak working set from
+  904.2 MiB to 495.8 MiB. See `docs/tasks/T8-build-speed.md` for methodology,
+  samples, and tradeoffs.
 
 Perf gates (add to the `HALFMESH_BUILD_PERF` suite so they are repeatable):
 - `Build`-count per simulated Clean pipeline == 1 (instrument with a counter).
