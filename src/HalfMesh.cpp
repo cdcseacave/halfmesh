@@ -531,6 +531,16 @@ void HalfMesh::VRemoveOnly(VIndex* verts, unsigned numVerts)
 		VRemoveOnly(verts[i]);
 }
 
+void HalfMesh::VRemoveUnreferenced(std::vector<VIndex>& removedVerts)
+{
+	const std::size_t firstRemoved = removedVerts.size();
+	FOREACHIDX (VIndex, vertex, vHalfedges)
+		if (vHalfedges[vertex] == NO_ID)
+			removedVerts.emplace_back(vertex);
+	if (removedVerts.size() > firstRemoved)
+		VRemoveOnly(removedVerts.data() + firstRemoved, static_cast<unsigned>(removedVerts.size() - firstRemoved));
+}
+
 HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 {
 // check if adding the face maintains a manifold mesh
@@ -684,6 +694,182 @@ void HalfMesh::FRemove(FIndex iF)
 	}
 	// remove face
 	FRemoveOnly(iF);
+}
+
+void HalfMesh::FRemoveBulk(std::vector<FIndex>& faceRemoves,
+                           std::vector<VIndex>& removedVerts,
+                           std::vector<VIndex>& splitSrcVerts)
+{
+	if (faceRemoves.empty() || fHalfedges.empty())
+		return;
+
+	std::sort(faceRemoves.begin(), faceRemoves.end());
+	faceRemoves.erase(std::unique(faceRemoves.begin(), faceRemoves.end()), faceRemoves.end());
+	faceRemoves.erase(std::remove_if(faceRemoves.begin(), faceRemoves.end(), [this](FIndex face) { return face >= FSize(); }), faceRemoves.end());
+	if (faceRemoves.empty())
+		return;
+	const std::size_t firstRemoved = removedVerts.size();
+
+	const VIndex originalVertexCount = VSize();
+	const EIndex originalEdgeCount = ESize();
+	const FIndex originalFaceCount = FSize();
+	std::vector<bool> removedFace(originalFaceCount, false);
+	for (FIndex face : faceRemoves)
+		removedFace[face] = true;
+	const auto FaceSurvives = [&](FIndex face) {
+		return face != NO_ID && !removedFace[face];
+	};
+
+	std::vector<VIndex> affectedVertices;
+	std::vector<EIndex> affectedEdges;
+	affectedVertices.reserve(faceRemoves.size() * 3);
+	affectedEdges.reserve(faceRemoves.size() * 3);
+	for (FIndex face : faceRemoves) {
+		for (HIndex iHe : FAdjacentHalfedges(face)) {
+			affectedVertices.emplace_back(HeTailVertex(iHe));
+			affectedVertices.emplace_back(HeHeadVertex(iHe));
+			affectedEdges.emplace_back(HeEdge(iHe));
+		}
+	}
+	std::sort(affectedVertices.begin(), affectedVertices.end());
+	affectedVertices.erase(std::unique(affectedVertices.begin(), affectedVertices.end()), affectedVertices.end());
+	std::sort(affectedEdges.begin(), affectedEdges.end());
+	affectedEdges.erase(std::unique(affectedEdges.begin(), affectedEdges.end()), affectedEdges.end());
+
+	std::vector<bool> touchedVertex(originalVertexCount, false);
+	std::vector<VIndex> touchedVertices;
+	touchedVertices.reserve(affectedVertices.size() + faceRemoves.size());
+	const auto TouchVertex = [&](VIndex vertex) {
+		if (vertex >= touchedVertex.size())
+			touchedVertex.resize(static_cast<std::size_t>(vertex) + 1, false);
+		if (!touchedVertex[vertex]) {
+			touchedVertex[vertex] = true;
+			touchedVertices.emplace_back(vertex);
+		}
+	};
+	std::vector<bool> removedVertex(originalVertexCount, false);
+	// Split every surviving disconnected fan before changing face/edge links.
+	// One face-bearing outgoing half-edge represents each incident face in the
+	// cyclic vertex orbit; removed faces and an existing boundary separate runs.
+	for (VIndex vertex : affectedVertices) {
+		std::vector<HIndex> ring;
+		for (HIndex iHe : VOutgoingHalfedges(vertex))
+			ring.emplace_back(iHe);
+		if (ring.empty()) {
+			removedVerts.emplace_back(vertex);
+			removedVertex[vertex] = true;
+			continue;
+		}
+
+		std::vector<std::vector<HIndex>> fans;
+		std::size_t separator = ring.size();
+		for (std::size_t i = 0; i < ring.size(); ++i)
+			if (!FaceSurvives(heFaces[ring[i]])) {
+				separator = i;
+				break;
+			}
+		if (separator == ring.size()) {
+			fans.emplace_back(ring);
+		} else {
+			std::vector<HIndex> fan;
+			for (std::size_t step = 1; step <= ring.size(); ++step) {
+				const HIndex iHe = ring[(separator + step) % ring.size()];
+				if (FaceSurvives(heFaces[iHe])) {
+					fan.emplace_back(iHe);
+				} else if (!fan.empty()) {
+					fans.emplace_back(std::move(fan));
+					fan.clear();
+				}
+			}
+			if (!fan.empty())
+				fans.emplace_back(std::move(fan));
+		}
+
+		if (fans.empty()) {
+			removedVerts.emplace_back(vertex);
+			removedVertex[vertex] = true;
+			continue;
+		}
+		const HIndex oldRepresentative = vHalfedges[vertex];
+		const auto originalFan = std::find_if(fans.begin(), fans.end(), [oldRepresentative](const std::vector<HIndex>& fan) {
+			return std::find(fan.begin(), fan.end(), oldRepresentative) != fan.end();
+		});
+		if (originalFan != fans.end() && originalFan != fans.begin())
+			std::iter_swap(fans.begin(), originalFan);
+		SetVHalfedge(vertex, fans.front().front());
+		if (fans.size() > 1)
+			TouchVertex(vertex);
+
+		for (std::size_t fanIndex = 1; fanIndex < fans.size(); ++fanIndex) {
+			const VIndex duplicate = VSize();
+			vHalfedges.emplace_back(NO_ID);
+			TouchVertex(duplicate);
+			splitSrcVerts.emplace_back(vertex);
+			for (HIndex faceOut : fans[fanIndex]) {
+				const HIndex previous = HePrev(faceOut);
+				heVertices[faceOut] = duplicate;
+				heVertices[HeTwin(previous)] = duplicate;
+			}
+			SetVHalfedge(duplicate, fans[fanIndex].front());
+		}
+	}
+
+	std::vector<EIndex> edgeRemoves;
+	edgeRemoves.reserve(faceRemoves.size() * 2);
+	for (EIndex edge : affectedEdges) {
+		ASSERT(edge < originalEdgeCount);
+		const HIndex even = EHalfedge(edge);
+		const HIndex odd = HeTwin(even);
+		const bool evenSurvives = FaceSurvives(heFaces[even]);
+		const bool oddSurvives = FaceSurvives(heFaces[odd]);
+		if (evenSurvives && oddSurvives)
+			continue;
+
+		const VIndex endpoint0 = heVertices[even];
+		const VIndex endpoint1 = heVertices[odd];
+		TouchVertex(endpoint0);
+		TouchVertex(endpoint1);
+		if (!evenSurvives && !oddSurvives) {
+			edgeRemoves.emplace_back(edge);
+			continue;
+		}
+
+		if (evenSurvives) {
+			heFaces[odd] = NO_ID;
+			heNexts[odd] = NO_ID;
+		} else {
+			const FIndex survivingFace = heFaces[odd];
+			const VIndex survivingTail = heVertices[odd];
+			const HIndex previous = HePrev(odd);
+			heNexts[previous] = even;
+			heNexts[even] = heNexts[odd];
+			heNexts[odd] = NO_ID;
+			if (vHalfedges[survivingTail] == odd)
+				SetVHalfedge(survivingTail, even);
+			std::swap(heVertices[even], heVertices[odd]);
+			heFaces[even] = survivingFace;
+			heFaces[odd] = NO_ID;
+			if (fHalfedges[survivingFace] == odd)
+				fHalfedges[survivingFace] = even;
+		}
+	}
+
+	// Rebuild only the boundary links at vertices whose local fan changed.
+	std::sort(touchedVertices.begin(), touchedVertices.end());
+	for (VIndex vertex : touchedVertices) {
+		if (vertex < removedVertex.size() && removedVertex[vertex])
+			continue;
+		if (!ConnectBorders(vHalfedges[vertex])) {
+			ASSERT(false && "FRemoveBulk produced an invalid surviving fan");
+			return;
+		}
+	}
+
+	if (!edgeRemoves.empty())
+		ERemoveOnly(edgeRemoves.data(), static_cast<unsigned>(edgeRemoves.size()));
+	FRemoveOnly(faceRemoves.data(), static_cast<unsigned>(faceRemoves.size()));
+	if (removedVerts.size() > firstRemoved)
+		VRemoveOnly(removedVerts.data() + firstRemoved, static_cast<unsigned>(removedVerts.size() - firstRemoved));
 }
 
 bool HalfMesh::FRemoveCorner(FIndex iF, RemovedData& removedData)

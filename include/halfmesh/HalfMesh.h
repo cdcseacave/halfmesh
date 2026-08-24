@@ -452,6 +452,9 @@ class HalfMesh
 	void VRemoveOnly(VIndex);
 	// same as above, but for a range of vertices
 	void VRemoveOnly(VIndex*, unsigned numVerts);
+	// remove every unreferenced (NO_ID representative) vertex, reporting the
+	// descending swap-pop order used by VRemoveOnly
+	void VRemoveUnreferenced(std::vector<VIndex>& removedVerts);
 
 	/////////////////
 	// Face adjacency
@@ -615,6 +618,11 @@ class HalfMesh
 	//    on the same border as a face previously removed
 	//TODO(Dan): re-factor to keep connectivity and remove ConnectBorders requirement
 	void FRemove(FIndex);
+	// remove arbitrary faces while preserving valid manifold connectivity;
+	// reports vertex swap-pops and the source of every pinch-split duplicate
+	void FRemoveBulk(std::vector<FIndex>& faceRemoves,
+	                 std::vector<VIndex>& removedVerts,
+	                 std::vector<VIndex>& splitSrcVerts);
 	// remove corner face: triangle having two or three boundary edges
 	// return false if it's a stand alone face (all edges are boundary)
 	bool FRemoveCorner(FIndex, RemovedData&);

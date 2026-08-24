@@ -689,4 +689,33 @@ void Mesh::RemoveFaces(std::vector<FIndex>& faceRemoves, bool updateLists)
 		halfMesh.Clear();
 }
 
+void Mesh::RemoveFacesHalfEdge(std::vector<FIndex>& faceRemoves)
+{
+	ASSERT(!halfMesh.Empty());
+	ASSERT(ValidateInvariants());
+	const FIndex initialFaces = halfMesh.FSize();
+	std::vector<VIndex> removedVerts;
+	std::vector<VIndex> splitSrcVerts;
+	halfMesh.FRemoveBulk(faceRemoves, removedVerts, splitSrcVerts);
+	if (halfMesh.FSize() == initialFaces)
+		return;
+	for (VIndex source : splitSrcVerts) {
+		vertices.emplace_back(vertices[source]);
+		if (!vertexColors.empty())
+			vertexColors.emplace_back(vertexColors[source]);
+	}
+	for (VIndex vertex : removedVerts) {
+		vertices[vertex] = vertices.back();
+		vertices.pop_back();
+		if (!vertexColors.empty()) {
+			vertexColors[vertex] = vertexColors.back();
+			vertexColors.pop_back();
+		}
+	}
+	InvalidateFaces();
+	SyncFaces();
+	ASSERT(vertices.size() == halfMesh.VSize());
+	ASSERT(ValidateInvariants());
+}
+
 } // namespace halfmesh

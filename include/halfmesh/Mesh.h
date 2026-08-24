@@ -277,6 +277,9 @@ class Mesh
 	// remove specified faces
 	// (require vertexFaces if updateLists)
 	void RemoveFaces(std::vector<FIndex>&, bool updateLists = false);
+	// remove specified faces through the live half-edge representation while
+	// preserving manifold connectivity
+	void RemoveFacesHalfEdge(std::vector<FIndex>&);
 	// removes all faces outside the given oriented bounding-box
 	unsigned RemoveFacesOutside(const halfmesh::OBB&);
 
