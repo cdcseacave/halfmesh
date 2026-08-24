@@ -1,0 +1,35 @@
+{
+  "name": "halfmesh",
+  "version": "0.2.0",
+  "port-version": 999,
+  "description": "Fast, compact half-edge triangle mesh processing library (built from the local checkout; port-version 999 so this overlay always out-ranks any registry port)",
+  "homepage": "https://github.com/cdcseacave/halfmesh",
+  "license": "MIT",
+  "supports": "!xbox",
+  "dependencies": [
+    "bshoshany-thread-pool",
+    "eigen3",
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": [
+        "eigen",
+        "fs",
+        "intrinsics",
+        "jpeg",
+        "png",
+        "thread"
+      ]
+    },
+    "tinygltf",
+    "tinyply",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}
