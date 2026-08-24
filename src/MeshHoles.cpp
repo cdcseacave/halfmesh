@@ -1161,7 +1161,7 @@ static void EnumerateBoundaryLoops(const HalfMesh& hm,
 static unsigned FillBoundaryLoops(Mesh& mesh,
                                   const std::vector<BoundaryLoop>& loops, const std::vector<unsigned>& candidates,
                                   std::vector<std::vector<Mesh::FIndex>>* holesFaces,
-                                  bool refine = true, bool rebuildHalfMesh = true)
+                                  bool refine = true)
 {
 	// Stage 2/3 (refine + fairing) remesh the patch to the surrounding density and
 	// smooth its interior, adding vertices; callers that only want the hole spanned
@@ -1191,10 +1191,12 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 			continue;
 		HoleFilling& hf = hfs[j];
 
+		const std::size_t vertexStart = mesh.vertices.size();
 		std::vector<Mesh::VIndex> interiorParent(hf.NumInterior());
 		for (int k = 0; k < hf.NumInterior(); ++k) {
 			interiorParent[k] = static_cast<Mesh::VIndex>(mesh.vertices.size());
 			mesh.vertices.emplace_back(hf.InteriorPoint(k));
+			mesh.halfMesh.vHalfedges.emplace_back(math::NO_ID);
 		}
 
 		const int nb = hf.NumBoundary();
@@ -1202,40 +1204,46 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 			return (local < nb) ? hf.ParentVertex(local) : interiorParent[local - nb];
 		};
 
-		std::vector<Mesh::FIndex> newFaces;
-		newFaces.reserve(hf.Triangles().size());
+		std::vector<Mesh::Face> patchFaces;
+		patchFaces.reserve(hf.Triangles().size());
 		for (const auto& t : hf.Triangles()) {
 			const Mesh::VIndex a = LocalToParent(t[0]);
 			const Mesh::VIndex b = LocalToParent(t[1]);
 			const Mesh::VIndex c = LocalToParent(t[2]);
 			if (a == b || b == c || c == a)
 				continue;
-			newFaces.push_back(static_cast<Mesh::FIndex>(mesh.faces.size()));
-			mesh.faces.emplace_back(Mesh::Face(a, b, c));
+			patchFaces.emplace_back(a, b, c);
 		}
 
-		if (newFaces.empty()) {
-			mesh.vertices.resize(mesh.vertices.size() - interiorParent.size());
+		if (patchFaces.empty()) {
+			mesh.vertices.resize(vertexStart);
+			mesh.halfMesh.vHalfedges.resize(vertexStart);
 			continue;
 		}
+		const Mesh::FIndex faceStart = mesh.halfMesh.FSize();
+		if (!mesh.halfMesh.FAddDisk(patchFaces)) {
+			mesh.vertices.resize(vertexStart);
+			mesh.halfMesh.vHalfedges.resize(vertexStart);
+			continue;
+		}
+		ASSERT([&]() {
+			for (Mesh::VIndex vertex = static_cast<Mesh::VIndex>(vertexStart); vertex < mesh.vertices.size(); ++vertex)
+				if (mesh.halfMesh.VHalfedge(vertex) == math::NO_ID)
+					return false;
+			return true;
+		}());
+		ASSERT(mesh.halfMesh.FSize() == faceStart + patchFaces.size());
 
-		if (holesFaces != nullptr)
+		if (holesFaces != nullptr) {
+			std::vector<Mesh::FIndex> newFaces(patchFaces.size());
+			std::iota(newFaces.begin(), newFaces.end(), faceStart);
 			holesFaces->emplace_back(std::move(newFaces));
+		}
 		++closed;
 	}
 
-	if (closed > 0) {
-		// New faces have no authored UVs; invalidate texture attributes rather
-		// than leave arrays whose sizes no longer match the topology.
-		mesh.faceNormals.clear();
-		mesh.faceTexcoords.clear();
-		mesh.faceTexblobs.clear();
-		mesh.texturesDiffuse.clear();
-		mesh.vertexFaces.clear();
-		mesh.halfMesh.Clear();
-		if (rebuildHalfMesh)
-			mesh.ListHalfEdges();
-	}
+	if (closed > 0)
+		mesh.InvalidateFaces();
 	return closed;
 }
 
@@ -1260,9 +1268,6 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
 	if (maxHoleEdges == 0)
 		return 0;
 
-	// Keep the defensive fresh canonical build until the native harvest lands in
-	// T5; the parity-agnostic FAdd prerequisite is not in place yet.
-	halfMesh.Clear();
 	ListHalfEdges();
 	if (halfMesh.Empty())
 		return 0;
@@ -1291,22 +1296,24 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
 		if (simple)
 			candidates.push_back(idxLoop);
 	}
-	return FillBoundaryLoops(*this, loops, candidates, holesFaces);
+	const unsigned closed = FillBoundaryLoops(*this, loops, candidates, holesFaces);
+	SyncFaces();
+	ASSERT(ValidateHalfMesh());
+	return closed;
 }
 
 unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 {
 	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return 0;
-	SyncFaces();
 	if (vertexRemoves.empty())
 		return 0;
+	ListHalfEdges();
+	SyncFaces();
 	std::sort(vertexRemoves.begin(), vertexRemoves.end());
 	vertexRemoves.erase(std::unique(vertexRemoves.begin(), vertexRemoves.end()), vertexRemoves.end());
 	ASSERT(vertexRemoves.back() < vertices.size());
 
-	halfMesh.Clear();
-	ListHalfEdges();
 	if (halfMesh.Empty())
 		return 0;
 
@@ -1402,40 +1409,25 @@ unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 		}
 	}
 
-	RemoveFaces(faceRemoves);
-	// RemoveVertices compacts by moving the current last vertex into each removed
-	// slot, processing selected indices in descending order. Simulate that exact
-	// map so the recorded boundary-edge identities remain valid after compaction.
-	std::vector<VIndex> oldAtIndex(vertices.size());
-	std::iota(oldAtIndex.begin(), oldAtIndex.end(), VIndex(0));
-	size_t compactSize = oldAtIndex.size();
-	for (auto it = vertexRemoves.rbegin(); it != vertexRemoves.rend(); ++it) {
-		const VIndex idxVertex = *it;
-		ASSERT(idxVertex < compactSize && oldAtIndex[idxVertex] == idxVertex);
-		oldAtIndex[idxVertex] = oldAtIndex[compactSize - 1];
-		--compactSize;
+	const VIndex originalVertexCount = static_cast<VIndex>(vertices.size());
+	std::vector<VIndex> removedVerts;
+	std::vector<VIndex> splitSrcVerts;
+	if (!RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts)) {
+		SyncFaces();
+		return 0;
 	}
-	oldAtIndex.resize(compactSize);
-	std::vector<VIndex> vertexRemap(vertices.size(), math::NO_ID);
-	for (VIndex idxVertex = 0; idxVertex < oldAtIndex.size(); ++idxVertex)
-		vertexRemap[oldAtIndex[idxVertex]] = idxVertex;
-	RemoveVertices(vertexRemoves, false);
-	const auto RemapEdges = [&](std::unordered_set<uint64_t>& edges) {
-		std::unordered_set<uint64_t> remapped;
-		remapped.reserve(edges.size());
-		for (uint64_t edge : edges) {
-			const VIndex oldA = static_cast<VIndex>(edge >> 32);
-			const VIndex oldB = static_cast<VIndex>(edge);
-			if (vertexRemap[oldA] != math::NO_ID && vertexRemap[oldB] != math::NO_ID)
-				remapped.emplace(EdgeKey(vertexRemap[oldA], vertexRemap[oldB]));
-		}
-		edges.swap(remapped);
-	};
-	RemapEdges(originalBoundaryEdges);
-	RemapEdges(exposedEdges);
-	RemapEdges(boundaryExposedEdges);
-	halfMesh.Clear();
-	ListHalfEdges();
+	// Track the original source represented by each current vertex slot. Pinch
+	// duplicates inherit their source; descending removals mirror the primitive's
+	// exact swap-pop order. This lets boundary classification survive both effects.
+	std::vector<VIndex> vertexOrigin(originalVertexCount);
+	std::iota(vertexOrigin.begin(), vertexOrigin.end(), VIndex(0));
+	for (VIndex source : splitSrcVerts)
+		vertexOrigin.emplace_back(vertexOrigin[source]);
+	for (VIndex removed : removedVerts) {
+		vertexOrigin[removed] = vertexOrigin.back();
+		vertexOrigin.pop_back();
+	}
+	ASSERT(vertexOrigin.size() == vertices.size());
 	std::vector<BoundaryLoop> loops;
 	EnumerateBoundaryLoops(halfMesh, vertices, loops);
 	std::vector<unsigned> candidates;
@@ -1450,7 +1442,7 @@ unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 				touchesOriginalBoundary = true;
 				break;
 			}
-			const uint64_t edge = EdgeKey(loop.verts[i], loop.verts[(i + 1) % loop.verts.size()]);
+			const uint64_t edge = EdgeKey(vertexOrigin[loop.verts[i]], vertexOrigin[loop.verts[(i + 1) % loop.verts.size()]]);
 			newlyExposed |= exposedEdges.contains(edge);
 			touchesOriginalBoundary |= originalBoundaryEdges.contains(edge)
 			                           || boundaryExposedEdges.contains(edge);
@@ -1460,11 +1452,9 @@ unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 	}
 	// Span the exposed loops without refining: this path decimates, so re-adding
 	// interior vertices to match the surrounding density would undo the removal.
-	const unsigned closed = FillBoundaryLoops(*this, loops, candidates, nullptr, false, false);
-	RemoveUnreferencedVertices();
-	faceNormals.clear();
-	vertexFaces.clear();
-	halfMesh.Clear();
+	const unsigned closed = FillBoundaryLoops(*this, loops, candidates, nullptr, false);
+	SyncFaces();
+	ASSERT(ValidateHalfMesh());
 	return closed;
 }
 

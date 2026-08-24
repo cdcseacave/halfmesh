@@ -184,7 +184,7 @@ bool Mesh::ValidateHalfMesh() const
 	}
 
 	HalfMesh rebuilt;
-	if (!rebuilt.Build(numVertices, harvestedFaces) || rebuilt.VSize() != numVertices || rebuilt.FSize() != numFaces || rebuilt.ESize() != live.ESize())
+	if (!rebuilt.BuildForValidation(numVertices, harvestedFaces) || rebuilt.VSize() != numVertices || rebuilt.FSize() != numFaces || rebuilt.ESize() != live.ESize())
 		return false;
 
 	const auto SortedAdjacentVertices = [](const HalfMesh& mesh, VIndex vertex) {

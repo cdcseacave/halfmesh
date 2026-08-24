@@ -443,6 +443,21 @@ TEST(PerfHarness, CloseHoles_200k)
 }
 
 // ======================== KD-tree build + queries ==========================
+
+TEST(PerfHarness, PrebuiltCloseHolesWithoutFillsPerformsZeroBuilds)
+{
+	unsigned actual = 0;
+	halfmesh::Mesh mesh = hmtest::corpus::LargeMesh(MED_TARGET, &actual);
+	mesh.ListHalfEdges();
+	halfmesh::HalfMesh::ResetBuildCount();
+	const auto t0 = Clock::now();
+	EXPECT_EQ(mesh.CloseHoles(), 0u);
+	const double dt = elapsedS(t0);
+	record("CloseHoles_Prebuild_NoFill", dt, actual);
+	std::cout << "  CloseHoles_Prebuild_NoFill: " << dt << " s\n";
+	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 0u);
+	EXPECT_LT(dt, MAX_WALL_SECONDS);
+}
 // KD-tree speedup assertion: kd-tree queries must be >= 10x faster than brute-force
 TEST(PerfHarness, KdTree_50k_BuildAndQuery)
 {

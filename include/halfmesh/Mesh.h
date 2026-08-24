@@ -363,7 +363,9 @@ class Mesh
 	// are skipped. Filling invalidates the texture attributes (the new faces have
 	// no authored UVs), so they are cleared.
 	//  - maxHoleEdges: largest hole to fill, in boundary edges (0 is a no-op)
-	//  - holesFaces: optionally receives the new face indices, per filled hole
+	//  - holesFaces: optionally receives the new face indices, per successfully
+	//      filled hole; each list is the contiguous FAdd append range and remains
+	//      valid after the public-exit SyncFaces
 	// return the number of holes closed
 	unsigned CloseHoles(unsigned maxHoleEdges = 30, std::vector<std::vector<FIndex>>* holesFaces = NULL);
 

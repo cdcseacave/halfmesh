@@ -793,6 +793,44 @@ TEST(MeshHolesTest, ParallelCloseHolesDeterministic)
 		EXPECT_TRUE(a.faces[i] == b.faces[i]) << "face " << i << " differs between runs";
 }
 
+TEST(MeshHolesTest, PrebuiltCloseHolesPerformsZeroBuilds)
+{
+	Mesh mesh = MakeGridWithInteriorHole(8, 8);
+	mesh.ListHalfEdges();
+	std::vector<std::vector<Mesh::VIndex>> holes;
+	mesh.halfMesh.EnumerateHoles(holes);
+	unsigned smallest = 0;
+	for (const auto& hole : holes)
+		if (smallest == 0 || hole.size() < smallest)
+			smallest = static_cast<unsigned>(hole.size());
+	ASSERT_GT(smallest, 0u);
+
+	HalfMesh::ResetBuildCount();
+	EXPECT_EQ(mesh.CloseHoles(smallest), 1u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
+TEST(MeshHolesTest, CloseHolesAfterSimplifyKeepsMutatedHalfMesh)
+{
+	Mesh mesh = MakeGridWithInteriorHole(12, 12);
+	mesh.ListHalfEdges();
+	mesh.Simplify(0.85f);
+	ASSERT_FALSE(mesh.halfMesh.Empty());
+	std::vector<std::vector<Mesh::VIndex>> holes;
+	mesh.halfMesh.EnumerateHoles(holes);
+	unsigned smallest = 0;
+	for (const auto& hole : holes)
+		if (smallest == 0 || hole.size() < smallest)
+			smallest = static_cast<unsigned>(hole.size());
+	ASSERT_GT(smallest, 0u);
+
+	HalfMesh::ResetBuildCount();
+	EXPECT_GE(mesh.CloseHoles(smallest), 1u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
 // Deterministic irregular NON-planar hole: perturb a grid (fixed seed) in x,y,z
 // and carve a hole around the central block of vertices, so both the hole
 // boundary and its surrounding surface are non-planar (a saddle-like patch).

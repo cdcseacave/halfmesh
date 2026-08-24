@@ -132,6 +132,13 @@ class HalfMesh
 	// create half-edge data-structures for the given mesh
 	bool Build(const Mesh& mesh);
 	bool Build(VIndex numVertices, const std::vector<Face>& faces);
+
+	private:
+	friend class Mesh;
+	bool BuildForValidation(VIndex numVertices, const std::vector<Face>& faces);
+	bool BuildImpl(VIndex numVertices, const std::vector<Face>& faces, bool countBuild);
+
+	public:
 	// restore the canonical all-even vHalfedges form (see alwaysEven). No-op
 	// when already canonical; otherwise rebuilds in place from the current faces.
 	void GuaranteeAlwaysEven();
@@ -610,7 +617,8 @@ class HalfMesh
 	// does not form a manifold connection with the mesh
 	FIndex FAdd(const Face&);
 	// attach a pre-triangulated disk in dependency order; retries faces that are
-	// not yet attachable and restores the exact input structure on failure
+	// not yet attachable and restores the exact input structure on failure;
+	// caller pre-appends every interior vertex as a NO_ID vHalfedges slot
 	bool FAddDisk(const std::vector<Face>& faces);
 #if HALFMESH_TRIS
 	// check if the face is a corner: triangle having two or three boundary edges

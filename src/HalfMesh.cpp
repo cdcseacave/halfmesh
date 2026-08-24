@@ -50,11 +50,20 @@ void HalfMesh::Clear()
 bool HalfMesh::Build(const Mesh& mesh)
 {
 	const_cast<Mesh&>(mesh).SyncFaces();
-	return Build(static_cast<VIndex>(mesh.vertices.size()), mesh.faces);
+	return BuildImpl(static_cast<VIndex>(mesh.vertices.size()), mesh.faces, true);
 }
 bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 {
-	gBuildCount.fetch_add(1, std::memory_order_relaxed);
+	return BuildImpl(numVertices, faces, true);
+}
+bool HalfMesh::BuildForValidation(VIndex numVertices, const std::vector<Face>& faces)
+{
+	return BuildImpl(numVertices, faces, false);
+}
+bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces, bool countBuild)
+{
+	if (countBuild)
+		gBuildCount.fetch_add(1, std::memory_order_relaxed);
 	Clear();
 	if (numVertices == 0 || faces.empty())
 		return true;
@@ -697,6 +706,19 @@ bool HalfMesh::FAddDisk(const std::vector<Face>& faces)
 		std::vector<Face> retry;
 		retry.reserve(pending.size());
 		for (const Face& face : pending) {
+			bool sharesFrontierEdge = false;
+			for (Eigen::Index corner = 0; corner < face.rows(); ++corner) {
+				const VIndex a = face[corner];
+				const VIndex b = face[(corner + 1) % face.rows()];
+				if (a < VSize() && b < VSize() && VHalfedge(a) != NO_ID && VHalfedge(b) != NO_ID && EEdge(a, b) != NO_ID) {
+					sharesFrontierEdge = true;
+					break;
+				}
+			}
+			if (!sharesFrontierEdge) {
+				retry.emplace_back(face);
+				continue;
+			}
 			const FIndex added = FAdd(face);
 			if (added == NO_ID)
 				retry.emplace_back(face);
