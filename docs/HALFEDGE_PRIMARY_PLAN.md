@@ -1,6 +1,6 @@
 # Half-edge–primary mesh processing — implementation plan
 
-Status: **planned** (hand-off to the halfmesh repo agent) · Branch: `openmvs-integration`
+Status: **planned** — standalone hand-off tasks in `docs/tasks/` · Branch: `openmvs-integration`
 Driven by the OpenMVS `Mesh::Clean` integration; measured numbers below are from
 Tanks&Temples *Truck* (6.1M faces) via `ReconstructMesh --mesh-file` clean-only runs.
 
@@ -8,6 +8,18 @@ Correction pass (2026-08-24): FAdd harvest, FRemoveBulk pinch vertices,
 public-API `SyncFaces`, Remesh’s live `faces` array, M0 `Clear()` coupling,
 dual ingest/native variants, and `RemoveSmallComponents` are folded into the
 sections they belong to. Implement this document, not an earlier draft.
+
+Correction pass 2 (2026-08-24, code-verified review): `FRemoveBulk` must
+*report* pinch-split vertex duplications (§3.1); survivor repointing must keep
+the boundary-canonical representative via `SetVHalfedge` (§3.1);
+parity-agnostic `ConnectBorders`/`FAdd` is a new M1 prerequisite (§3.4) — M3
+deletes the rebuild that today guarantees the all-even form `FAdd` depends on;
+texture policy: processing methods target **untextured** meshes (§2.2); public
+repair API keeps the array variants via representation dispatch (§4.9);
+`Build` on `NO_ID` vHalfedges fails in *release*, not debug-only (§3.3);
+Simplify/Remesh need `SyncFaces` on **entry** even in pipelines that skip
+exit-syncs (§2.1/§4.8); public `Mesh::InvalidateHalfMesh()` for hand-edited
+`faces` (§2.1); optional `Build`-speed backlog (M6).
 
 ## 1. Problem
 
@@ -81,8 +93,11 @@ faces are regenerated once at the end.
 new state member at all — **plus a public vs pipeline split**:
 
 1. `Mesh::InvalidateFaces()` (new, trivial): clears `faces` **and every
-   face-keyed attribute** (`faceTexcoords`, `faceTexblobs`, `faceNormals`) plus
-   `vertexFaces`. Called **after** a successful `ListHalfEdges()` by half-edge
+   face-keyed attribute** (`faceTexcoords`, `faceTexblobs`, `faceNormals`,
+   **`texturesDiffuse`** — the cited `FillBoundaryLoops` precedent clears it
+   too) plus `vertexFaces`. If any attribute was non-empty, emit a one-time
+   `REPORT_WARNING` (processing expects untextured meshes — §2.2).
+   Called **after** a successful `ListHalfEdges()` by half-edge
    topology algorithms that will stop reading `faces`. **Never** call it before
    `ListHalfEdges()`: that would drop the only source of topology.
    `FillBoundaryLoops` already performs this invalidation today; make it uniform.
@@ -95,7 +110,12 @@ new state member at all — **plus a public vs pipeline split**:
      atlas/texture/BVH/KdTree entry — any code that iterates `faces`;
    - OpenMVS `ExportMesh` (the one `FFaces` that matters for Clean cost).
    An internal Clean pipeline may skip per-stage `SyncFaces` and do it once
-   in `ExportMesh`.
+   in `ExportMesh` — **except the entry-syncs Simplify and Remesh require**
+   (§4.8): Simplify's quadric setup reads `faces` (and assumes `faces[iF]`
+   aligns with HE face `iF` — true only for a Build-source or FFaces-derived
+   array), and Remesh reads `faces` throughout until M5. Skipping applies
+   only to *exit*-syncs of stages whose successor is half-edge-native.
+   `FFaces` is cheap; the perf gate is Build-count, not FFaces-count.
 3. Array-mutating algorithms (ingest-time repairs that stay array-native, §4.7)
    keep today's convention: mutate arrays, then **`halfMesh.Clear()`**. M0 must
    add the missing `Clear()` calls; the new `ListHalfEdges` gate is unsound
@@ -110,6 +130,12 @@ new state member at all — **plus a public vs pipeline split**:
    **not** required; half-edge-only is a legal mid-pipeline state.
    Assert on rebuild: `if (halfMesh.Empty() && faces.empty() && !vertices.empty())`
    is a contract violation (lost topology).
+5. `Mesh::InvalidateHalfMesh()` (new, trivial): `halfMesh.Clear()`, public.
+   `faces` is a public member; a user who hand-edits it must call this — the
+   exact gate deliberately trusts the contract and cannot detect hand edits
+   (the old count heuristic at least caught count-changing ones, so this is
+   a real behavior change for such callers). Document the rule on the
+   `faces` member in `Mesh.h` and in FEATURES.md.
 
 Class invariant (assert in debug at algorithm entry/exit):
 
@@ -154,6 +180,32 @@ and Clears, then `ListHalfEdgesSafe` Builds). Optional later: on first-Build
 failure, go straight to Safe. Not required for Clean if OpenMVS manifoldizes
 once up front.
 
+### 2.2 Texture policy (decision)
+
+**All mesh-processing methods (cleaning, repair, hole filling, smoothing,
+simplification, remeshing) target UNTEXTURED meshes.** The UV/texture/atlas
+pipeline runs before or after — never across — processing. Consequences:
+
+- Dropping face-keyed attributes in `InvalidateFaces()` is the *designed*
+  behavior, not a regression to engineer around. Native mutators do not
+  remap or preserve attributes.
+- A processing method that *happens* to keep attributes consistent is a
+  bonus to be **documented, never relied on**. Today that is exactly: the
+  array-path face removers (`Mesh::RemoveFaces` swap-pops `faceTexcoords`/
+  `faceTexblobs`/`faceNormals` in lockstep, so array-path
+  `RemoveFacesOutside`/`RemoveSmallComponents`/`RemoveSpuriousComponents`/
+  `RemoveSpikes` preserve them) and the position-only `Smooth*` family
+  (topology untouched; it already clears `faceNormals`). Simplify/Remesh do
+  **not** support textured meshes — they never touch `faceTexcoords`, so on
+  textured input today they leave a stale, mis-sized array; the explicit
+  drop+warn is strictly better. Textured decimation would be a bonus, not a
+  requirement.
+- Public native mutators warn once (`REPORT_WARNING`) when they drop
+  non-empty attributes so the user learns the policy from the run log;
+  debug builds additionally assert-empty at native-mutator entry (§6).
+- M5 doc task: mark every public processing method in `docs/FEATURES.md` as
+  untextured-only, or attribute-preserving (bonus).
+
 ## 3. New/changed HalfMesh primitives
 
 ### 3.1 `FRemoveBulk` — the workhorse (new)
@@ -163,8 +215,20 @@ once up front.
 // Appends to removedVerts every vertex that lost its last face, in the same
 // descending order VRemoveOnly uses, so the Mesh wrapper swap-pops vertices/
 // vertexColors in lockstep (do not invent a second “application order”).
-void FRemoveBulk(std::vector<FIndex>& faceRemoves, std::vector<VIndex>& removedVerts);
+// Appends to splitSrcVerts, for every vertex DUPLICATED by a pinch split
+// (step 4), the SOURCE vertex index — one entry per appended vHalfedges slot,
+// in append order (mirror of FixNonManifold's duplicatedVertices out-param).
+void FRemoveBulk(std::vector<FIndex>& faceRemoves,
+                 std::vector<VIndex>& removedVerts,
+                 std::vector<VIndex>& splitSrcVerts);
 ```
+
+Without split reporting the wrapper cannot grow `Mesh::vertices` in lockstep
+and the class invariant `vertices.size() == VSize()` breaks on the first
+pinch. Replay order is part of the contract: the wrapper appends one
+position/color per `splitSrcVerts` entry **first**, then applies the
+`removedVerts` swap-pops; both index streams refer to the post-append
+numbering (a descending swap-pop may legally relocate an appended duplicate).
 
 Algorithm, O(removed + affected-border):
 1. Mark removed faces (bitset). Connectivity surgery uses **pre-compact**
@@ -173,8 +237,15 @@ Algorithm, O(removed + affected-border):
    edge becomes a border half-edge (`heFaces = NO_ID`); if both sides die, the
    edge dies (`ERemoveOnly` batch).
 3. Vertices whose every incident face died are collected (`VRemoveOnly` batch +
-   reported through `removedVerts`); survivors get `SetVHalfedge` repointed to a
-   surviving out-half-edge.
+   reported through `removedVerts`); survivors get repointed **via
+   `SetVHalfedge`** (the `alwaysEven` choke point — never a raw
+   `vHalfedges[v] =` write), and the target is NOT “any surviving
+   out-half-edge”: a vertex that is now on the boundary must get the
+   **boundary-canonical representative** — the interior-side half-edge whose
+   twin is the new border half-edge (the load-bearing invariant,
+   HalfMesh.h:87-92). `VIsBoundary`, `EnumerateHoles`, and boundary-loop
+   iteration dereference it blindly; an arbitrary survivor silently breaks
+   hole enumeration, which `CloseHoles` consumes in the SAME pipeline (M3).
 4. **Pinch vertices:** if a surviving vertex would have two (or more) remaining
    fans, **duplicate the vertex and rewire one fan** — the same split
    `FixNonManifold` does on the soup. Do **not** “keep one fan and close the
@@ -182,10 +253,17 @@ Algorithm, O(removed + affected-border):
    `vHalfedges[v]` cannot represent two fans; `ConnectBorders` does not split
    them. Leaving a pinch makes the later `FixNonManifold` short-circuit unsound.
    Scattered long-edge drops in `RemoveSpuriousComponents` can create this;
-   whole-component removal cannot.
+   whole-component removal cannot. The duplicate appends a `vHalfedges` slot
+   and is reported through `splitSrcVerts` (signature above) so the Mesh
+   wrapper grows `vertices`/`vertexColors` in lockstep — exactly what the
+   array `FixNonManifold` does with `vertices.emplace_back` +
+   `duplicatedVertices`.
 5. Re-link border `heNexts` by circulating each affected vertex — the same
    local rule `ConnectBorders(HIndex&)` implements; only vertices touched in
-   (2)/(4) need visiting.
+   (2)/(4) need visiting. Reuse the **parity-agnostic core** from §3.4, not
+   the function as written: `ConnectBorders(HIndex&)` hard-fails on an odd
+   representative, and mid-pipeline (post-`EFlip`/`ESplit`) odd interior
+   representatives are legal.
 6. Compact with the existing descending-sort `FRemoveOnly`/`ERemoveOnly`/
    `VRemoveOnly` batch overloads (they were built for exactly this).
 
@@ -202,8 +280,10 @@ footnotes and resolves the standing
 Whole-component removal is the degenerate easy case (no new borders at all).
 
 Mesh-level wrapper `Mesh::RemoveFacesHalfEdge(std::vector<FIndex>&)`: calls
-`FRemoveBulk`, replays `removedVerts` as swap-pops on `vertices`/`vertexColors`
-(mirror of `Mesh::ECollapse`, **same index order**), calls `InvalidateFaces()`.
+`FRemoveBulk`, appends one position/color per `splitSrcVerts` entry (copy of
+the source vertex), then replays `removedVerts` as swap-pops on
+`vertices`/`vertexColors` (mirror of `Mesh::ECollapse`, **same index order**),
+calls `InvalidateFaces()`. Exit assert: `vertices.size() == halfMesh.VSize()`.
 
 ### 3.2 `FAdd` isolated-vertex support (finish the existing TODO — and more)
 
@@ -250,8 +330,38 @@ today’s `ok[j]==0` path.
 `vHalfedges`, batch `VRemoveOnly` every `NO_ID` slot, report for lockstep.
 Replaces the `vertexFaces`-based `Mesh::RemoveUnreferencedVertices` **inside
 native pipelines**. Keep the array implementation for `ListHalfEdgesSafe`
-(there is no HE yet). Successful `Build` currently debug-asserts no `NO_ID`
-vHalfedges, so ingest must still unref on the soup before `Build`.
+(there is no HE yet). `Build` on a mesh with unreferenced vertices fails in
+**release**, not just debug: `NO_ID` is odd, so `ConnectBorders()`'s parity
+test rejects the anchor and `Build` returns false — falling back to the full
+`ListHalfEdgesSafe` repair sweep. Ingest must still unref on the soup before
+`Build`; a stray isolated vertex costs a silent Safe-path manifoldization,
+not an assert.
+
+### 3.4 Parity-agnostic border relinking + `FAdd` failure propagation (new — M1 prerequisite)
+
+Two latent defects become live the moment M3 deletes the defensive entry
+rebuild in `CloseHoles`:
+
+- `ConnectBorders(HIndex&)` hard-fails on an odd representative
+  (`(iHeStart & 1) != 0 → return false`) and its closing walk assumes the
+  all-even canonical form. That form is guaranteed only by a fresh `Build`;
+  `EFlip`/`ESplit` legally leave odd interior representatives
+  (HalfMesh.h:80-92, `alwaysEven`). Today every `FAdd` call site runs on a
+  freshly built HE **because of** the defensive rebuilds this plan deletes —
+  the §2.1 contract preserves *validity*, but NOT the all-even *freshness*
+  those rebuilds were silently providing.
+- `FAdd` **ignores `ConnectBorders`' return value** (the closing
+  border-rewire loop): on failure it still returns a face index with border
+  connectivity silently un-rewired — corruption, not a clean reject.
+
+Fix in M1, before anything builds on the primitives: make the border-relink
+core parity-agnostic (identify the boundary representative via `heFaces`,
+never via parity), have `FAdd` propagate a `ConnectBorders` failure as
+`NO_ID` with the partially-inserted face backed out (or prove it unreachable
+once the core is parity-agnostic and assert), and add tests that run `FAdd`
+on a HE mutated by `ERemove`/`EFlip`/`ESplit` — never freshly built.
+`GuaranteeAlwaysEven` is NOT an acceptable workaround: it is a full in-place
+`Build`, the exact cost M3 exists to delete.
 
 ## 4. Per-operation conversion audit
 
@@ -304,10 +414,14 @@ Current: per-iteration `ListVertexFaces()` (full O(V+F) rebuild of the third
 representation), scan for vertices with ≤1 incident face, `RemoveVertices(…,
 true)`, final `Clear()`.
 Native: a spike vertex is detected by circulating `vHalfedges[v]` — valence-1
-(one incident face) or isolated (`NO_ID`). First pass O(V); collect the
-incident faces, `FRemoveBulk`. Cascade via a **worklist**: only neighbours of
-removed faces can become spikes, so iterations after the first are O(affected)
-instead of O(V).
+(one incident face). Isolated (`NO_ID`) slots cannot exist in a valid HE
+(§3.3: `Build` rejects them, `FRemoveBulk` sweeps the ones it creates), so
+the array variant's `size() <= 1` zero-face case has no native counterpart.
+First pass O(V); collect the incident faces, `FRemoveBulk`. Cascade via a
+**worklist**: only neighbours of removed faces can become spikes, so
+iterations after the first are O(affected) instead of O(V). Public entry
+dispatches per §4.9 — the array path (vertexFaces only, no `Build`, works on
+non-manifold soup) stays public for arrays-only meshes.
 
 ### 4.3 `CloseHoles` / `RemoveVerticesAndFill` — native, strictly faster
 
@@ -317,7 +431,10 @@ harvest **appends to `vertices`/`faces`** and ends with `Clear()` (+ another
 `Build` when `rebuildHalfMesh`). Two full rebuilds to fill holes whose patches
 total a few thousand triangles. Entry also early-outs on `faces.empty()` —
 under half-edge-only that would skip filling; change the early-out (M0).
-Native: entry rebuild deleted (the §2.1 contract makes it unnecessary);
+Native: entry rebuild deleted — the §2.1 contract makes it unnecessary *for
+validity*; the all-even freshness it also provided is what §3.4 fixes, which
+must land first (the `FAdd`/`ConnectBorders` parity trap otherwise fires here,
+silently, on the first post-Simplify hole);
 `RemoveVerticesAndFill`'s removal phase uses `FRemoveBulk`; harvest appends
 interior vertices (positions + `NO_ID` `vHalfedges` slots) and adds patch
 triangles via `FAdd` using **`TriangulateHole`’s retry queue and/or ear-clip
@@ -371,8 +488,10 @@ it). Do not substitute it for `Build`’s return value.
 
 `RemoveDuplicateVertices`, `RemoveDuplicateFaces`, `RemoveFacesOutside`, IO,
 and the atlas/texture pipeline consume or repair raw arrays (pre-half-edge
-ingest, or read-only scans). They call `SyncFaces()` on entry (read-only ones)
-or keep the mutate-then-`halfMesh.Clear()` convention (repairs). No conversion;
+ingest, or read-only scans). Read-only scans call `SyncFaces()` on entry;
+array mutators keep the mutate-then-`halfMesh.Clear()` convention;
+`RemoveFacesOutside` needs **both** (it iterates `faces` on entry AND mutates
+through `RemoveFaces`). No conversion;
 they are not on the `Clean` hot path. Atlas/KdTree/BVH/`ComputeFaceNormal(FIndex)`
 all iterate `mesh.faces` — they are array consumers, not a reason to keep
 repair native.
@@ -402,6 +521,38 @@ as an earlier draft stated.
 Public Simplify/Remesh still `SyncFaces` (or keep today’s `FFaces`) on exit
 until the OpenMVS pipeline opts out. The Clean win is **zero extra `Build`s**.
 
+### 4.9 Public API: representation dispatch (dual variants)
+
+Public repair methods never force a representation transition in either
+direction. Pattern:
+
+```cpp
+unsigned Mesh::RemoveSpikes(unsigned maxIterations) {
+    if (!halfMesh.Empty())
+        return RemoveSpikesHalfEdge(maxIterations); // native; keeps HE valid
+    return RemoveSpikesArrays(maxIterations);       // today's impl + Clear()
+}
+```
+
+- Arrays-only mesh → array impl: no `Build`, and crucially no silent
+  Safe-path **manifoldization as a side effect** (today `RemoveSpikes` and
+  `RemoveDegenerateFaces(thArea)` run on `vertexFaces` alone and work on
+  non-manifold soup; a native-only version would call `ListHalfEdges`, fall
+  into `ListHalfEdgesSafe` on soup, and weld/dedupe/split topology the caller
+  never asked to change — a regression in both cost and semantics).
+  Attributes happen to be preserved (bonus, §2.2).
+- Half-edge state → native impl: no `Clear()`, no rebuild for the next stage.
+- Genuinely dual methods (array arm works on soup; both arms public, plus
+  the plain dispatching name): `RemoveSpikes`, `RemoveDegenerateFaces`,
+  `RemoveUnreferencedVertices`.
+- Native-only is fine (no regression) for `RemoveSpuriousComponents`,
+  `RemoveSmallComponents`, `CloseHoles`, `RemoveVerticesAndFill` — they
+  already require the HE today; the change is only that the exit state keeps
+  it. Their entry stays `ListHalfEdges()` as today.
+- Results may differ between arms for degenerates (§4.4 already exempts them
+  from count identity); spikes/unref removal sets are
+  identical-by-construction — assert that in the metamorphic tests.
+
 ## 5. Milestones
 
 Each lands independently, tests green (`ctest`: 507/507 today) before the next.
@@ -409,7 +560,8 @@ M0 is **not** behavior-neutral unless the `Clear()`s, early-out rewrites, and
 public `SyncFaces` land in the **same** milestone as the new `ListHalfEdges`
 gate.
 
-- **M0 — contract.** `InvalidateFaces()` + `SyncFaces()` + exact
+- **M0 — contract.** `InvalidateFaces()` (incl. `texturesDiffuse` + §2.2
+  warn-on-drop) + `SyncFaces()` + public `InvalidateHalfMesh()` + exact
   `ListHalfEdges()` gate + class invariant asserts (faces **and**
   `vertices.size()==VSize()`) + debug `ValidateHalfMesh()` (harvest then
   rebuild). **`halfMesh.Clear()` on every array mutator** that currently
@@ -418,22 +570,32 @@ gate.
   array consumers (grep for `faces` iteration). **Do not** drop
   Simplify/Remesh `FFaces` yet. Order inside native ops: `ListHalfEdges()`
   first, then optionally `InvalidateFaces()`.
-- **M1 — bulk primitive.** `FRemoveBulk` (pinch = vertex split, multi-border
-  faces, descending `removedVerts`) + `Mesh::RemoveFacesHalfEdge` +
-  `VRemoveUnreferenced` + `FAdd` isolated-vertex **and two-new-edges**.
-  Reuse `TriangulateHole` retry for disk attach. Unit tests vs from-scratch
-  rebuild (`ValidateHalfMesh`).
+- **M1 — bulk primitive.** **First** the §3.4 parity work (parity-agnostic
+  border-relink core + `FAdd` failure propagation + mutated-HE tests) —
+  everything else builds on it. Then `FRemoveBulk` (pinch = vertex split
+  **reported via `splitSrcVerts`**, multi-border faces, descending
+  `removedVerts`, boundary-canonical repointing via `SetVHalfedge`) +
+  `Mesh::RemoveFacesHalfEdge` + `VRemoveUnreferenced` + `FAdd`
+  isolated-vertex **and two-new-edges**. Reuse `TriangulateHole` retry for
+  disk attach. Unit tests vs from-scratch rebuild (`ValidateHalfMesh`).
 - **M2 — repair family.** §4.1 spurious + §4.1b **small components** + §4.2
-  spikes native.
+  spikes native + §4.9 dispatch wrappers (spikes keeps its array arm public).
 - **M3 — holes family.** §4.3 native harvest; delete the defensive entry
-  rebuild in `CloseHoles`.
+  rebuild in `CloseHoles` (requires §3.4 landed in M1).
 - **M4 — finalize family.** §4.4 native geometric degenerates (array `(0)`
   kept for Safe) + §4.5 native unref (array kept for Safe) + §4.6
-  `FixNonManifold` short-circuit.
+  `FixNonManifold` short-circuit + §4.9 dispatch for degenerates/unref.
 - **M5 — Remesh (and Simplify setup) off `mesh.faces`**, then allow the
   OpenMVS pipeline to skip per-stage `FFaces`. Update `docs/FEATURES.md` +
   `AGENTS.md` (the representation-authority contract is a standing convention
-  from then on). FEATURES still documents “faces primary, HE on demand”.
+  from then on) + §2.2 texture marking of every public processing method.
+  FEATURES still documents “faces primary, HE on demand”.
+- **M6 — `Build` speed (optional backlog).** The plan deletes rebuilds, but
+  ingest still pays one `Build` (dirty ingest two). The
+  `unordered_map<uint64,HIndex>` over ~3F edges is the cost center; a
+  sort-based edge pairing or a flat open-addressing map keyed by
+  (min,max)-packed u64 is typically 3–5× faster at this size. Orthogonal to
+  everything above; shrinks the one Build that cannot be deleted.
 
 Perf gates (add to the `HALFMESH_BUILD_PERF` suite so they are repeatable):
 - `Build`-count per simulated Clean pipeline == 1 (instrument with a counter).
@@ -458,11 +620,13 @@ Correctness gates:
 - Bulk removals that slice a component in two are fine (no global bookkeeping
   is kept). Removals that create a pinch vertex **must split the vertex**
   (§3.1 step 4). Add an explicit pinch test; `ConnectBorders` is not a fix.
-- Attribute arrays (`faceTexcoords` etc.) are *dropped* on topology change,
-  matching today's `FillBoundaryLoops` behavior — the UV/texture pipeline runs
-  before or after, never across, a topology-mutating pass. Assert-empty at the
-  entry of native mutators to make the assumption loud. `SyncFaces` does not
-  restore dropped UVs.
+- Attribute arrays (`faceTexcoords` etc.) are *dropped* on topology change —
+  by design, per the §2.2 texture policy (processing targets untextured
+  meshes; `FillBoundaryLoops` is the precedent). Assert-empty at the entry of
+  native mutators in debug, plus the §2.2 one-time warning in release.
+  `SyncFaces` does not restore dropped UVs. The array-path removers that
+  happen to preserve attributes are documented as a bonus (§2.2), never a
+  contract.
 - `GuaranteeAlwaysEven` harvests faces from the **half-edge** via `FFaces`,
   not from `Mesh::faces`. Empty mesh faces do not break it.
 - `HALFMESH_TRIS == 1` only, as everywhere else in the OpenMVS integration.
