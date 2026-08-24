@@ -126,6 +126,8 @@ class HalfMesh
 		return vHalfedges.empty();
 	}
 	void Clear();
+	static uint64_t BuildCount();
+	static void ResetBuildCount();
 
 	// create half-edge data-structures for the given mesh
 	bool Build(const Mesh& mesh);

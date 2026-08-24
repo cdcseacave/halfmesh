@@ -549,27 +549,31 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 {
 	TIMER_START("RemoveSmallComponents");
 	ListHalfEdges();
-	SyncFaces();
 	std::vector<FIndex> components;
 	const FIndex numComponents = halfMesh.ConnectedComponents(components);
-	if (numComponents <= 1)
+	if (numComponents <= 1) {
+		SyncFaces();
 		return 0;
+	}
 	std::vector<unsigned> componentSizes(numComponents, 0);
 	for (FIndex component : components)
 		++componentSizes[component];
 	const unsigned numSmallComponents = std::accumulate(componentSizes.begin(), componentSizes.end(), 0u,
 	                                                    [minComponentSize](unsigned num, unsigned size) { return size < minComponentSize ? num + 1 : num; });
-	if (numSmallComponents == 0)
+	if (numSmallComponents == 0) {
+		SyncFaces();
 		return 0;
-	RFOREACHIDX (FIndex, idxFace, faces) {
-		if (componentSizes[components[idxFace]] < minComponentSize) {
-			faces[idxFace] = faces.back();
-			faces.pop_back();
-		}
 	}
-	halfMesh.Clear();
-	RemoveUnreferencedVertices();
-	vertexFaces = std::vector<Mesh::VertexFaces>();
+	std::vector<FIndex> faceRemoves;
+	faceRemoves.reserve(halfMesh.FSize());
+	for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace)
+		if (componentSizes[components[idxFace]] < minComponentSize)
+			faceRemoves.emplace_back(idxFace);
+	std::vector<VIndex> removedVerts;
+	std::vector<VIndex> splitSrcVerts;
+	RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts);
+	SyncFaces();
+	ASSERT(ValidateHalfMesh());
 	REPORT_STATUS_NOW("Removed {} small components from {} total ({})",
 	                  numSmallComponents, numComponents, TIMER_STR());
 	return numSmallComponents;
@@ -588,8 +592,10 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 	// cost of the weld/dedupe/repair sweep, and it falls back to the safe path by
 	// itself when the input turns out to be non-manifold
 	ListHalfEdges();
-	if (halfMesh.Empty())
+	if (halfMesh.Empty()) {
+		SyncFaces();
 		return initialFaces - static_cast<FIndex>(faces.size());
+	}
 
 	std::vector<float> edgeLengths;
 	edgeLengths.reserve(halfMesh.ESize());
@@ -597,64 +603,73 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 		const auto verts = halfMesh.EVertices(edge);
 		edgeLengths.emplace_back((vertices[verts.first] - vertices[verts.second]).norm());
 	}
-	if (edgeLengths.empty())
+	if (edgeLengths.empty()) {
+		SyncFaces();
 		return 0;
-	const size_t idx95 = edgeLengths.size() * 95 / 100;
-	const size_t idx55 = edgeLengths.size() * 55 / 100;
-	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx95, edgeLengths.end());
-	const float maxEdgeLength = edgeLengths[idx95] * factor;
-	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx55, edgeLengths.end());
-	const float minComponentDiameter = edgeLengths[idx55] * factor;
+	}
+	std::vector<float> percentiles(edgeLengths);
+	const size_t idx95 = percentiles.size() * 95 / 100;
+	const size_t idx55 = percentiles.size() * 55 / 100;
+	std::nth_element(percentiles.begin(), percentiles.begin() + idx95, percentiles.end());
+	const float maxEdgeLength = percentiles[idx95] * factor;
+	std::nth_element(percentiles.begin(), percentiles.begin() + idx55, percentiles.end());
+	const float minComponentDiameter = percentiles[idx55] * factor;
 
 	std::vector<FIndex> removeFaces;
-	for (FIndex idxFace = 0; idxFace < faces.size(); ++idxFace) {
-		const Face& face = faces[idxFace];
-		for (int i = 0; i < 3; ++i) {
-			if ((vertices[face[i]] - vertices[face[(i + 1) % 3]]).norm() > maxEdgeLength) {
-				removeFaces.emplace_back(idxFace);
-				break;
-			}
-		}
+	for (EIndex edge = 0; edge < halfMesh.ESize(); ++edge) {
+		if (edgeLengths[edge] <= maxEdgeLength)
+			continue;
+		for (HIndex iHe : halfMesh.EAdjacentInteriorHalfedges(edge))
+			removeFaces.emplace_back(halfMesh.HeFace(iHe));
 	}
+	std::sort(removeFaces.begin(), removeFaces.end());
+	removeFaces.erase(std::unique(removeFaces.begin(), removeFaces.end()), removeFaces.end());
 	if (!removeFaces.empty()) {
-		RemoveFaces(removeFaces);
-		RemoveUnreferencedVertices();
-		ListHalfEdges();
+		std::vector<VIndex> removedVerts;
+		std::vector<VIndex> splitSrcVerts;
+		RemoveFacesHalfEdgeImpl(removeFaces, removedVerts, splitSrcVerts);
 	}
-	if (faces.empty() || halfMesh.Empty())
-		return initialFaces - static_cast<FIndex>(faces.size());
+	if (halfMesh.Empty()) {
+		SyncFaces();
+		return initialFaces;
+	}
 
 	std::vector<FIndex> components;
 	const FIndex numComponents = halfMesh.ConnectedComponents(components);
 	if (numComponents > 1) {
 		std::vector<Eigen::AlignedBox<float, 3>> bounds(numComponents);
-		for (FIndex idxFace = 0; idxFace < faces.size(); ++idxFace) {
-			const Face& face = faces[idxFace];
+		for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace) {
+			const Face face = halfMesh.F(idxFace);
 			for (int i = 0; i < 3; ++i)
 				bounds[components[idxFace]].extend(vertices[face[i]]);
 		}
 		removeFaces.clear();
-		for (FIndex idxFace = 0; idxFace < faces.size(); ++idxFace) {
+		for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace) {
 			const Eigen::AlignedBox<float, 3>& bound = bounds[components[idxFace]];
 			if (!bound.isEmpty() && bound.diagonal().norm() < minComponentDiameter)
 				removeFaces.emplace_back(idxFace);
 		}
 		if (!removeFaces.empty()) {
-			RemoveFaces(removeFaces);
-			RemoveUnreferencedVertices();
+			std::vector<VIndex> removedVerts;
+			std::vector<VIndex> splitSrcVerts;
+			RemoveFacesHalfEdgeImpl(removeFaces, removedVerts, splitSrcVerts);
 		}
 	}
 
-	const FIndex removed = initialFaces - static_cast<FIndex>(faces.size());
-	if (removed > 0) {
-		vertexFaces = std::vector<Mesh::VertexFaces>();
-		halfMesh.Clear();
+	const FIndex removed = initialFaces - halfMesh.FSize();
+	SyncFaces();
+	ASSERT(ValidateHalfMesh());
+	if (removed > 0)
 		REPORT_STATUS_NOW("Removed {} spurious faces ({})", removed, TIMER_STR());
-	}
 	return removed;
 }
 
 unsigned Mesh::RemoveSpikes(unsigned maxIterations)
+{
+	return halfMesh.Empty() ? RemoveSpikesArrays(maxIterations) : RemoveSpikesHalfEdge(maxIterations);
+}
+
+unsigned Mesh::RemoveSpikesArrays(unsigned maxIterations)
 {
 	SyncFaces();
 	if (vertices.empty())
@@ -680,7 +695,112 @@ unsigned Mesh::RemoveSpikes(unsigned maxIterations)
 		return 0;
 	vertexFaces = std::vector<Mesh::VertexFaces>();
 	halfMesh.Clear();
+	SyncFaces();
 	REPORT_STATUS_NOW("Removed {} spike vertices ({})", numSpikes, TIMER_STR());
+	return numSpikes;
+}
+
+unsigned Mesh::RemoveSpikesHalfEdge(unsigned maxIterations)
+{
+	if (vertices.empty() || maxIterations == 0) {
+		SyncFaces();
+		return 0;
+	}
+	ListHalfEdges();
+	if (halfMesh.Empty()) {
+		SyncFaces();
+		return 0;
+	}
+	TIMER_START("RemoveSpikesHalfEdge");
+
+	std::vector<VIndex> candidates;
+	candidates.reserve(vertices.size() / 16 + 1);
+	for (VIndex vertex = 0; vertex < halfMesh.VSize(); ++vertex)
+		if (halfMesh.VFaceDegree(vertex) == 1)
+			candidates.emplace_back(vertex);
+
+	unsigned numSpikes = 0;
+	for (unsigned iteration = 0; iteration < maxIterations && !candidates.empty(); ++iteration) {
+		std::sort(candidates.begin(), candidates.end());
+		candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+		std::vector<VIndex> spikes;
+		std::vector<FIndex> faceRemoves;
+		for (VIndex vertex : candidates) {
+			if (vertex >= halfMesh.VSize() || halfMesh.VFaceDegree(vertex) != 1)
+				continue;
+			spikes.emplace_back(vertex);
+			faceRemoves.emplace_back(halfMesh.HeFace(halfMesh.VHalfedge(vertex)));
+		}
+		if (faceRemoves.empty())
+			break;
+		std::sort(faceRemoves.begin(), faceRemoves.end());
+		faceRemoves.erase(std::unique(faceRemoves.begin(), faceRemoves.end()), faceRemoves.end());
+		numSpikes += static_cast<unsigned>(spikes.size());
+
+		std::vector<VIndex> tracked;
+		tracked.reserve(faceRemoves.size() * 3);
+		for (FIndex face : faceRemoves) {
+			const Face f = halfMesh.F(face);
+			for (int corner = 0; corner < 3; ++corner)
+				tracked.emplace_back(f[corner]);
+		}
+		std::sort(tracked.begin(), tracked.end());
+		tracked.erase(std::unique(tracked.begin(), tracked.end()), tracked.end());
+		std::vector<VIndex> trackedPosition(halfMesh.VSize(), NO_ID);
+		for (VIndex position = 0; position < tracked.size(); ++position)
+			trackedPosition[tracked[position]] = position;
+
+		std::vector<VIndex> removedVerts;
+		std::vector<VIndex> splitSrcVerts;
+		const bool changed = RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts);
+		ASSERT(changed);
+		if (!changed)
+			break;
+
+		for (VIndex source : splitSrcVerts) {
+			const VIndex duplicate = static_cast<VIndex>(trackedPosition.size());
+			trackedPosition.emplace_back(NO_ID);
+			if (source < trackedPosition.size() && trackedPosition[source] != NO_ID) {
+				trackedPosition[duplicate] = static_cast<VIndex>(tracked.size());
+				tracked.emplace_back(duplicate);
+			}
+		}
+		const auto EraseTracked = [&](VIndex vertex) {
+			const VIndex position = trackedPosition[vertex];
+			if (position == NO_ID)
+				return;
+			const VIndex moved = tracked.back();
+			tracked[position] = moved;
+			trackedPosition[moved] = position;
+			tracked.pop_back();
+			trackedPosition[vertex] = NO_ID;
+		};
+		VIndex currentSize = static_cast<VIndex>(trackedPosition.size());
+		for (VIndex removed : removedVerts) {
+			const VIndex last = currentSize - 1;
+			EraseTracked(removed);
+			if (removed != last && trackedPosition[last] != NO_ID) {
+				const VIndex position = trackedPosition[last];
+				tracked[position] = removed;
+				trackedPosition[removed] = position;
+				trackedPosition[last] = NO_ID;
+			} else if (removed != last) {
+				trackedPosition[removed] = NO_ID;
+			}
+			trackedPosition.pop_back();
+			--currentSize;
+		}
+
+		candidates.clear();
+		for (VIndex vertex : tracked)
+			if (vertex < halfMesh.VSize() && halfMesh.VFaceDegree(vertex) == 1)
+				candidates.emplace_back(vertex);
+	}
+
+	SyncFaces();
+	ASSERT(ValidateHalfMesh());
+	if (numSpikes > 0)
+		REPORT_STATUS_NOW("Removed {} spike vertices ({})", numSpikes, TIMER_STR());
 	return numSpikes;
 }
 

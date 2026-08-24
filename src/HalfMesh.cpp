@@ -15,11 +15,27 @@
 #include <halfmesh/Util/Maths.h>
 #include <limits>
 #include <algorithm>
+#include <atomic>
 #include <unordered_map>
 
 using namespace math;
 
 namespace halfmesh {
+namespace {
+
+std::atomic<uint64_t> gBuildCount{0};
+
+} // anonymous namespace
+
+uint64_t HalfMesh::BuildCount()
+{
+	return gBuildCount.load(std::memory_order_relaxed);
+}
+
+void HalfMesh::ResetBuildCount()
+{
+	gBuildCount.store(0, std::memory_order_relaxed);
+}
 
 void HalfMesh::Clear()
 {
@@ -38,6 +54,7 @@ bool HalfMesh::Build(const Mesh& mesh)
 }
 bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 {
+	gBuildCount.fetch_add(1, std::memory_order_relaxed);
 	Clear();
 	if (numVertices == 0 || faces.empty())
 		return true;

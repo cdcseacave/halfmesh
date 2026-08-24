@@ -19,8 +19,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <numeric>
 #include <string>
+#include <vector>
 
 namespace halfmesh {
 namespace {
@@ -72,6 +75,74 @@ static Mesh MakeTetra()
 	    {0, 3, 2}, // left
 	};
 	return m;
+}
+
+static unsigned RemoveSmallComponentsArraysReference(Mesh& mesh, unsigned minComponentSize)
+{
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> components;
+	const Mesh::FIndex numComponents = mesh.halfMesh.ConnectedComponents(components);
+	std::vector<unsigned> sizes(numComponents, 0);
+	for (Mesh::FIndex component : components)
+		++sizes[component];
+	const unsigned removedComponents = std::accumulate(sizes.begin(), sizes.end(), 0u,
+	                                                   [minComponentSize](unsigned count, unsigned size) { return count + (size < minComponentSize); });
+	std::vector<Mesh::FIndex> removes;
+	for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+		if (sizes[components[face]] < minComponentSize)
+			removes.emplace_back(face);
+	mesh.RemoveFaces(removes);
+	mesh.RemoveUnreferencedVertices();
+	return removedComponents;
+}
+
+static Mesh::FIndex RemoveSpuriousComponentsArraysReference(Mesh& mesh, float factor)
+{
+	const Mesh::FIndex initialFaces = static_cast<Mesh::FIndex>(mesh.faces.size());
+	mesh.ListHalfEdges();
+	std::vector<float> edgeLengths;
+	for (Mesh::EIndex edge = 0; edge < mesh.halfMesh.ESize(); ++edge) {
+		const auto vertices = mesh.halfMesh.EVertices(edge);
+		edgeLengths.emplace_back((mesh.vertices[vertices.first] - mesh.vertices[vertices.second]).norm());
+	}
+	const size_t idx95 = edgeLengths.size() * 95 / 100;
+	const size_t idx55 = edgeLengths.size() * 55 / 100;
+	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx95, edgeLengths.end());
+	const float maxEdgeLength = edgeLengths[idx95] * factor;
+	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx55, edgeLengths.end());
+	const float minComponentDiameter = edgeLengths[idx55] * factor;
+
+	std::vector<Mesh::FIndex> removes;
+	for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+		for (int edge = 0; edge < 3; ++edge)
+			if ((mesh.vertices[mesh.faces[face][edge]] - mesh.vertices[mesh.faces[face][(edge + 1) % 3]]).norm() > maxEdgeLength) {
+				removes.emplace_back(face);
+				break;
+			}
+	if (!removes.empty()) {
+		mesh.RemoveFaces(removes);
+		mesh.RemoveUnreferencedVertices();
+		mesh.ListHalfEdges();
+	}
+	if (!mesh.faces.empty() && !mesh.halfMesh.Empty()) {
+		std::vector<Mesh::FIndex> components;
+		const Mesh::FIndex numComponents = mesh.halfMesh.ConnectedComponents(components);
+		if (numComponents > 1) {
+			std::vector<Eigen::AlignedBox<float, 3>> bounds(numComponents);
+			for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+				for (int corner = 0; corner < 3; ++corner)
+					bounds[components[face]].extend(mesh.vertices[mesh.faces[face][corner]]);
+			removes.clear();
+			for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+				if (bounds[components[face]].diagonal().norm() < minComponentDiameter)
+					removes.emplace_back(face);
+			if (!removes.empty()) {
+				mesh.RemoveFaces(removes);
+				mesh.RemoveUnreferencedVertices();
+			}
+		}
+	}
+	return initialFaces - static_cast<Mesh::FIndex>(mesh.faces.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +384,22 @@ TEST(MeshRepairTest, RemoveSmallComponentsSingleComponent)
 	EXPECT_EQ(m.faces.size(), faceCountBefore);
 }
 
+TEST(MeshRepairTest, RemoveSmallComponentsNativeMatchesArrayReference)
+{
+	Mesh arrays;
+	arrays.vertices = {
+	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}, {10.f, 0.f, 0.f}, {11.f, 0.f, 0.f}, {10.f, 1.f, 0.f}};
+	arrays.faces = {{0, 1, 2}, {1, 3, 2}, {4, 5, 6}};
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(RemoveSmallComponentsArraysReference(arrays, 2), native.RemoveSmallComponents(2));
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_FALSE(native.halfMesh.Empty());
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
 // ---------------------------------------------------------------------------
 // RemoveSpuriousComponents
 // ---------------------------------------------------------------------------
@@ -358,6 +445,50 @@ TEST(MeshRepairTest, RemoveSpuriousComponentsDropsSmallDisconnectedSurface)
 	EXPECT_EQ(mesh.vertices.size(), 22u);
 	for (const Mesh::Vertex& vertex : mesh.vertices)
 		EXPECT_LT(vertex.x(), 20.f);
+}
+
+TEST(MeshRepairTest, RemoveSpuriousComponentsSplitsCreatedPinch)
+{
+	Mesh mesh;
+	mesh.vertices = {
+	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {-1.f, 0.f, 0.f}, {-0.5f, 0.8660254f, 0.f}, {0.f, 1.f, 0.f}, {0.f, -1.f, 0.f}, {0.8660254f, -0.5f, 0.f}};
+	for (Mesh::VIndex ring = 1; ring <= 6; ++ring)
+		mesh.faces.emplace_back(0, ring, ring == 6 ? 1 : ring + 1);
+
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(0.9f), 2u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+	EXPECT_EQ(mesh.vertices.size(), 8u) << "the center pinch must duplicate its source vertex";
+	EXPECT_FALSE(mesh.halfMesh.Empty());
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	HalfMesh rebuilt;
+	EXPECT_TRUE(rebuilt.Build(mesh));
+}
+
+TEST(MeshRepairTest, RemoveSpuriousComponentsNativeMatchesArrayReference)
+{
+	Mesh arrays;
+	for (unsigned x = 0; x <= 10; ++x) {
+		arrays.vertices.emplace_back(static_cast<float>(x), 0.f, 0.f);
+		arrays.vertices.emplace_back(static_cast<float>(x), 1.f, 0.f);
+	}
+	for (unsigned x = 0; x < 10; ++x) {
+		const Mesh::VIndex lower = 2 * x;
+		arrays.faces.emplace_back(lower, lower + 1, lower + 3);
+		arrays.faces.emplace_back(lower, lower + 3, lower + 2);
+	}
+	const Mesh::VIndex tiny = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.emplace_back(20.f, 0.f, 0.f);
+	arrays.vertices.emplace_back(20.01f, 0.f, 0.f);
+	arrays.vertices.emplace_back(20.f, 0.01f, 0.f);
+	arrays.faces.emplace_back(tiny, tiny + 1, tiny + 2);
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(RemoveSpuriousComponentsArraysReference(arrays, 2.f), native.RemoveSpuriousComponents(2.f));
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_FALSE(native.halfMesh.Empty());
+	EXPECT_TRUE(native.ValidateHalfMesh());
 }
 
 // ---------------------------------------------------------------------------
@@ -804,6 +935,63 @@ TEST(MeshRepairTest, RemoveSpikesHonorsIterationLimit)
 	EXPECT_EQ(mesh.RemoveSpikes(1), 1u);
 	EXPECT_EQ(mesh.vertices.size(), 5u);
 	EXPECT_EQ(mesh.faces.size(), 5u);
+}
+
+TEST(MeshRepairTest, RemoveSpikesNativeMatchesArrayCascade)
+{
+	Mesh arrays = MakeTetra();
+	std::vector<Mesh::FIndex> openFace{0};
+	arrays.RemoveFaces(openFace);
+	const Mesh::VIndex mid = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(3.f, 0.f, 0.f));
+	arrays.faces.push_back(Mesh::Face(1, 0, mid));
+	arrays.faces.push_back(Mesh::Face(mid, 0, tip));
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(arrays.RemoveSpikesArrays(), native.RemoveSpikes());
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_FALSE(native.halfMesh.Empty());
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
+TEST(MeshRepairTest, RemoveSpikesNativeMatchesArrayIterationLimit)
+{
+	Mesh arrays = MakeTetra();
+	std::vector<Mesh::FIndex> openFace{0};
+	arrays.RemoveFaces(openFace);
+	const Mesh::VIndex mid = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(3.f, 0.f, 0.f));
+	arrays.faces.push_back(Mesh::Face(1, 0, mid));
+	arrays.faces.push_back(Mesh::Face(mid, 0, tip));
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(arrays.RemoveSpikesArrays(1), native.RemoveSpikes(1));
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
+TEST(MeshRepairTest, RemoveSpikesDispatchAttributePolicy)
+{
+	Mesh arrays = MakeTetra();
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	arrays.faces.push_back(Mesh::Face(0, 1, tip));
+	arrays.faceTexcoords.resize(arrays.faces.size() * 3, Mesh::TexCoord::Zero());
+	Mesh native = arrays;
+	native.ListHalfEdgesSafe();
+
+	arrays.RemoveSpikes();
+	EXPECT_EQ(arrays.faceTexcoords.size(), arrays.faces.size() * 3);
+	native.RemoveSpikes();
+	EXPECT_TRUE(native.faceTexcoords.empty());
 }
 
 } // namespace

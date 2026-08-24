@@ -289,6 +289,17 @@ TEST(PerfHarness, ScalingAssertion_Build)
 	    << "Build time grew " << ratio << "x for 4x faces — possible O(n^2)";
 }
 
+TEST(PerfHarness, PrebuiltRepairPipelinePerformsZeroBuilds)
+{
+	halfmesh::Mesh mesh = hmtest::corpus::UVSphere(24, 36);
+	mesh.ListHalfEdges();
+	halfmesh::HalfMesh::ResetBuildCount();
+	mesh.RemoveSpuriousComponents(100.f);
+	mesh.RemoveSpikes();
+	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 0u);
+	EXPECT_FALSE(mesh.halfMesh.Empty());
+}
+
 // ======================== Simplify (50k and 200k) ==========================
 TEST(PerfHarness, Simplify_50k)
 {

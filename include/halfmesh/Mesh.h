@@ -280,6 +280,11 @@ class Mesh
 	// remove specified faces through the live half-edge representation while
 	// preserving manifold connectivity
 	void RemoveFacesHalfEdge(std::vector<FIndex>&);
+
+	private:
+	bool RemoveFacesHalfEdgeImpl(std::vector<FIndex>&, std::vector<VIndex>& removedVerts, std::vector<VIndex>& splitSrcVerts);
+
+	public:
 	// removes all faces outside the given oriented bounding-box
 	unsigned RemoveFacesOutside(const halfmesh::OBB&);
 
@@ -310,10 +315,14 @@ class Mesh
 	// Dropping such a vertex takes its incident face with it, which can starve a
 	// neighbour down to a single face, so the sweep repeats until the mesh is
 	// stable or maxIterations rounds have run.
-	// invalidates vertexFaces and the half-edge structure; unreferenced vertices
-	// are not created (the spikes themselves are removed)
+	// The public name dispatches by representation. RemoveSpikesArrays keeps the
+	// soup-compatible array behavior and happens to preserve face attributes;
+	// RemoveSpikesHalfEdge keeps live connectivity and drops face attributes by
+	// the processing policy.
 	// return number of vertices removed
 	unsigned RemoveSpikes(unsigned maxIterations = 100);
+	unsigned RemoveSpikesArrays(unsigned maxIterations = 100);
+	unsigned RemoveSpikesHalfEdge(unsigned maxIterations = 100);
 
 	// implement edge collapse mesh simplification approximating the error
 	// locally for each vertex using a quadric representation;

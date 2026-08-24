@@ -689,16 +689,14 @@ void Mesh::RemoveFaces(std::vector<FIndex>& faceRemoves, bool updateLists)
 		halfMesh.Clear();
 }
 
-void Mesh::RemoveFacesHalfEdge(std::vector<FIndex>& faceRemoves)
+bool Mesh::RemoveFacesHalfEdgeImpl(std::vector<FIndex>& faceRemoves, std::vector<VIndex>& removedVerts, std::vector<VIndex>& splitSrcVerts)
 {
 	ASSERT(!halfMesh.Empty());
 	ASSERT(ValidateInvariants());
 	const FIndex initialFaces = halfMesh.FSize();
-	std::vector<VIndex> removedVerts;
-	std::vector<VIndex> splitSrcVerts;
 	halfMesh.FRemoveBulk(faceRemoves, removedVerts, splitSrcVerts);
 	if (halfMesh.FSize() == initialFaces)
-		return;
+		return false;
 	for (VIndex source : splitSrcVerts) {
 		vertices.emplace_back(vertices[source]);
 		if (!vertexColors.empty())
@@ -713,9 +711,17 @@ void Mesh::RemoveFacesHalfEdge(std::vector<FIndex>& faceRemoves)
 		}
 	}
 	InvalidateFaces();
-	SyncFaces();
 	ASSERT(vertices.size() == halfMesh.VSize());
 	ASSERT(ValidateInvariants());
+	return true;
+}
+
+void Mesh::RemoveFacesHalfEdge(std::vector<FIndex>& faceRemoves)
+{
+	std::vector<VIndex> removedVerts;
+	std::vector<VIndex> splitSrcVerts;
+	if (RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts))
+		SyncFaces();
 }
 
 } // namespace halfmesh
