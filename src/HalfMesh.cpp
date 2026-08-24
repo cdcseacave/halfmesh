@@ -33,6 +33,7 @@ void HalfMesh::Clear()
 
 bool HalfMesh::Build(const Mesh& mesh)
 {
+	const_cast<Mesh&>(mesh).SyncFaces();
 	return Build(static_cast<VIndex>(mesh.vertices.size()), mesh.faces);
 }
 bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)

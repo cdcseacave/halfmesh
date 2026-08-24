@@ -46,6 +46,8 @@ class Mesh
 
 	public:
 	std::vector<Vertex> vertices;
+	// Derived topology snapshot. After editing faces directly, call
+	// InvalidateHalfMesh() before invoking any half-edge consumer.
 	std::vector<Face> faces;
 
 	// optional data
@@ -61,12 +63,21 @@ class Mesh
 
 	public:
 	void ReleaseOptional();
+	void InvalidateFaces();
+	void SyncFaces();
+	void InvalidateHalfMesh();
+	bool ValidateInvariants() const;
+	bool ValidateHalfMesh() const;
 	bool Empty() const
 	{
 		ASSERT(vertices.empty() == faces.empty() || vertices.empty() == halfMesh.Empty());
 		return vertices.empty();
 	}
-	bool HasTextureCoordinates() const { return faceTexcoords.size() == faces.size() * 3 || faceTexcoords.size() == vertices.size(); }
+	bool HasTextureCoordinates() const
+	{
+		const_cast<Mesh*>(this)->SyncFaces();
+		return !faceTexcoords.empty() && (faceTexcoords.size() == faces.size() * 3 || faceTexcoords.size() == vertices.size());
+	}
 	bool HasTexture() const { return HasTextureCoordinates() && !texturesDiffuse.empty(); }
 
 	// convert a textured mesh from storing the texture coordinates per face,
@@ -101,6 +112,7 @@ class Mesh
 	}
 	Normal ComputeFaceNormal(FIndex idxFace) const
 	{
+		const_cast<Mesh*>(this)->SyncFaces();
 		return ComputeFaceNormal(faces[idxFace]);
 	}
 	// compute normal for all faces
@@ -130,6 +142,7 @@ class Mesh
 	}
 	Type ComputeFaceDoubleArea(FIndex idxFace) const
 	{
+		const_cast<Mesh*>(this)->SyncFaces();
 		return ComputeFaceDoubleArea(faces[idxFace]);
 	}
 	// compute area for all faces
@@ -184,12 +197,14 @@ class Mesh
 	// fetch the requested face vertex by value
 	VIndex FVertex(FIndex iF, VIndex iV) const
 	{
+		const_cast<Mesh*>(this)->SyncFaces();
 		const uint32_t idx(FVertexIdx(iF, iV));
 		ASSERT(idx != math::NO_ID);
 		return faces[iF][idx];
 	}
 	VIndex& FVertex(FIndex iF, VIndex iV)
 	{
+		SyncFaces();
 		const uint32_t idx(FVertexIdx(iF, iV));
 		ASSERT(idx != math::NO_ID);
 		return faces[iF][idx];

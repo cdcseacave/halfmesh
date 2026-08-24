@@ -61,19 +61,20 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	// An empty mesh and the documented identity call (ratio == 1, no
 	// minEdgeLength) are graceful no-ops in every build mode — matching the
 	// early-return convention of the smoothers and CloseHoles.
-	if (vertices.empty() || faces.empty())
+	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return;
+	ListHalfEdges();
+	SyncFaces();
+	ASSERT(ValidateInvariants());
 	if (minEdgeLength <= 0 && decimateRatio == 1.f)
 		return; // identity: nothing to decimate
 	ASSERT(decimateRatio > 0);
 	ASSERT(minEdgeLength <= 0 || decimateRatio == 1.f);
 	TIMER_START("Simplify");
-	ReleaseOptional();
 	const size_t numFaces = faces.size();
 	const size_t numTargetFaces(minEdgeLength > 0     ? 1u
 	                            : decimateRatio > 1.f ? static_cast<size_t>(std::llround(decimateRatio))
 	                                                  : RoundCast<size_t>(numFaces * decimateRatio));
-	ListHalfEdges();
 	BS::light_thread_pool pool; // persistent worker pool for the parallel setup phases
 	// Build one quadric per vertex: the sum of the plane quadrics (n, d) of every
 	// incident face, where the plane is n.x + d = 0 with unit normal n. Summing
@@ -147,7 +148,8 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 				                                     .ComputeError(vertices[iV0].cast<real>(), vertices[iV1].cast<real>()));
 			}
 		});
-		faces = std::vector<Face>();
+		vertexColors.clear();
+		InvalidateFaces();
 		// iterates over all faces, increasing the threshold at each iteration
 		std::vector<bool> facesDirty(numFaces);
 		const size_t maxNumIterations = 100;
@@ -222,7 +224,8 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 		// incident to the surviving vertex change cost, so just those are re-costed
 		// (queue.update); deleted edges are removed and the queue's index mapping is
 		// kept consistent with the half-edge array's swap-with-last renumbering.
-		faces = std::vector<Face>();
+		vertexColors.clear();
+		InvalidateFaces();
 		// create priority queue
 		// Edge costs are the double ComputeError results; keep them in double (real)
 		// rather than narrowing to float queue keys. Near-planar/symmetric regions
@@ -398,6 +401,7 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 		               "RemoveUnreferencedVertices() + FixNonManifold() before Simplify",
 		               halfMesh.FSize(), numTargetFaces);
 	halfMesh.FFaces(faces);
+	ASSERT(ValidateInvariants());
 	REPORT_STATUS_NOW("Mesh decimated: {} -> {} faces ({})", numFaces, faces.size(), TIMER_STR());
 }
 

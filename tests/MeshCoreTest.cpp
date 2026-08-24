@@ -286,6 +286,91 @@ TEST(MeshCore, ListHalfEdges_FAdjacentFaces)
 	EXPECT_TRUE(hasFace1);
 }
 
+TEST(MeshCore, HalfEdgeGateRequiresExplicitInvalidationAfterDirectFaceEdit)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {0, 2, 3}});
+	m.ListHalfEdges();
+	m.faces = {Mesh::Face(0, 1, 3), Mesh::Face(1, 2, 3)};
+	m.ListHalfEdges();
+	std::vector<Mesh::Face> harvested;
+	m.halfMesh.FFaces(harvested);
+	EXPECT_EQ(harvested[0][2], 2u) << "a live half-edge is trusted until explicitly invalidated";
+
+	m.InvalidateHalfMesh();
+	m.ListHalfEdges();
+	harvested.clear();
+	m.halfMesh.FFaces(harvested);
+	ASSERT_EQ(harvested.size(), m.faces.size());
+	for (size_t i = 0; i < harvested.size(); ++i)
+		for (int j = 0; j < 3; ++j)
+			EXPECT_EQ(harvested[i][j], m.faces[i][j]);
+}
+
+TEST(MeshCore, RepresentationStateRoundTrip)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {0, 2, 3}});
+	const std::vector<Mesh::Face> originalFaces = m.faces;
+	EXPECT_TRUE(m.halfMesh.Empty());
+	m.ListHalfEdges();
+	EXPECT_TRUE(m.ValidateInvariants());
+	m.InvalidateFaces();
+	EXPECT_TRUE(m.faces.empty());
+	EXPECT_FALSE(m.halfMesh.Empty());
+	EXPECT_TRUE(m.ValidateInvariants());
+	m.SyncFaces();
+	m.SyncFaces();
+	ASSERT_EQ(m.faces.size(), originalFaces.size()) << "SyncFaces must not append twice";
+	for (size_t i = 0; i < originalFaces.size(); ++i)
+		for (int j = 0; j < 3; ++j)
+			EXPECT_EQ(m.faces[i][j], originalFaces[i][j]);
+}
+
+TEST(MeshCore, RepresentationInvariantAndHalfMeshValidation)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {0, 2, 3}});
+	m.ListHalfEdges();
+	EXPECT_TRUE(m.ValidateInvariants());
+	EXPECT_TRUE(m.ValidateHalfMesh());
+	m.vertices.emplace_back(2.f, 2.f, 0.f);
+	EXPECT_FALSE(m.ValidateInvariants());
+	m.vertices.pop_back();
+	EXPECT_TRUE(m.ValidateInvariants());
+}
+
+TEST(MeshCore, InvalidateFacesDropsAttributesAndWarnsOnce)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}});
+	m.ListHalfEdges();
+	m.faceNormals.emplace_back(0.f, 0.f, 1.f);
+	m.faceTexcoords.resize(3);
+	m.faceTexblobs.emplace_back(0);
+	m.texturesDiffuse.emplace_back(1, 1);
+	m.ListVertexFaces();
+	testing::internal::CaptureStderr();
+	m.InvalidateFaces();
+	const std::string firstWarning = testing::internal::GetCapturedStderr();
+	EXPECT_NE(firstWarning.find("face attributes dropped: processing methods expect untextured meshes"), std::string::npos);
+	EXPECT_TRUE(m.faces.empty());
+	EXPECT_TRUE(m.faceNormals.empty());
+	EXPECT_TRUE(m.faceTexcoords.empty());
+	EXPECT_TRUE(m.faceTexblobs.empty());
+	EXPECT_TRUE(m.texturesDiffuse.empty());
+	EXPECT_TRUE(m.vertexFaces.empty());
+
+	m.faceNormals.emplace_back(0.f, 0.f, 1.f);
+	testing::internal::CaptureStderr();
+	m.InvalidateFaces();
+	EXPECT_TRUE(testing::internal::GetCapturedStderr().empty());
+}
+
 // ---------------------------------------------------------------------------
 // RemoveFaces — remove face 0 from a two-face mesh; expect 1 face left.
 // updateLists=false → vertexFaces cleared.
@@ -566,11 +651,8 @@ TEST(MeshCore, ReleaseOptional)
 	EXPECT_TRUE(m.texturesDiffuse.empty());
 }
 
-// The half-edge freshness gate must detect a face-count change: RemoveFaces
-// mutates faces without touching halfMesh, and before this guard the gate
-// compared vertex count only, so ListHalfEdges() kept returning the stale
-// adjacency and ComputeSmoothFaceNormals iterated face ids past
-// faceNormals.size().
+// Public array surgery must invalidate the half-edge so the exact validity gate
+// never trusts stale connectivity.
 TEST(MeshCore, HalfEdgesRebuiltAfterRemoveFaces)
 {
 	Mesh mesh;
@@ -601,7 +683,7 @@ TEST(MeshCore, HalfEdgesRebuiltAfterRemoveFaces)
 	std::vector<Mesh::FIndex> removes{3}; // all 4 vertices stay referenced
 	mesh.RemoveFaces(removes);
 	ASSERT_EQ(mesh.faces.size(), 3u);
-	mesh.ListHalfEdges(); // vertex count unchanged — only the face clause can catch this
+	mesh.ListHalfEdges();
 	EXPECT_EQ(mesh.halfMesh.FSize(), mesh.faces.size());
 	// the motivating consumer must now be safe to call as-is
 	mesh.ComputeSmoothFaceNormals();

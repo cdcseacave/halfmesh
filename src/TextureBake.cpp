@@ -296,8 +296,10 @@ bool SameUVResolver::Resolve(Mesh::FIndex tgtFace, const Vector3& bary,
 RaycastResolver::RaycastResolver(const Mesh& source, Correspondence mode,
                                  float raySearchDist, Accelerator accel) :
     source(source), mode(mode), rayDist(raySearchDist),
-    srcNormalized(UVBlobsAreNormalized(source.faceTexcoords, source.faceTexblobs, BlobDims(source)))
+    srcNormalized()
 {
+	const_cast<Mesh&>(source).SyncFaces();
+	srcNormalized = UVBlobsAreNormalized(source.faceTexcoords, source.faceTexblobs, BlobDims(source));
 	if (accel == Accelerator::KdTree)
 		kdtree = std::make_unique<TriangleKdTree>(source);
 	else
@@ -425,6 +427,7 @@ bool RaycastResolver::Resolve(Mesh::FIndex /*tgtFace*/, const Vector3& /*bary*/,
 BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
                      const SourceResolver& resolver, const BakeParams& params)
 {
+	target.SyncFaces();
 	BakeResult res;
 	const int W = static_cast<int>(params.resolution);
 	const int H = static_cast<int>(params.resolution);
@@ -802,6 +805,8 @@ void ApplyPackedLayout(Mesh& mesh, const AtlasResult& atlas)
 // -------------------------------------------------------------------------
 BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams& params)
 {
+	const_cast<Mesh&>(source).SyncFaces();
+	target.SyncFaces();
 	// Fail fast on violated preconditions (documented in TextureBake.h): the
 	// size invariants downstream are Debug-only ASSERTs, so without this an
 	// untextured source is an out-of-bounds read in Release, not a diagnostic.
@@ -846,6 +851,7 @@ BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams& par
 // -------------------------------------------------------------------------
 BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 {
+	mesh.SyncFaces();
 	// Fail fast on violated preconditions (documented in TextureBake.h) — the
 	// downstream size invariants are Debug-only ASSERTs, so an untextured mesh
 	// would be an out-of-bounds read in Release instead of a diagnostic.
@@ -870,7 +876,7 @@ BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 	// Existing UV islands are the charts (light defrag: no re-parametrization).
 	if (mesh.halfMesh.Empty())
 		mesh.ListHalfEdges(); // NOTE: auto-repairs (manifoldizes) non-manifold
-		    // input in place — see Mesh::ListHalfEdges
+	// input in place — see Mesh::ListHalfEdges
 	std::vector<unsigned> faceChart;
 	const unsigned numCharts = mesh.ListTexPatchFaces(faceChart);
 	// Guard against pathologically fragmented source atlases: the skyline
@@ -920,6 +926,7 @@ BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 
 unsigned AutoAtlasResolution(const Mesh& source, unsigned maxResolution)
 {
+	const_cast<Mesh&>(source).SyncFaces();
 	return NextPow2Clamp(IdealSinglePageSide(source), std::min(256u, maxResolution),
 	                     maxResolution);
 }

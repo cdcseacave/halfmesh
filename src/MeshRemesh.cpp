@@ -1197,6 +1197,10 @@ void RemeshData::ProjectVerticesToSurface()
 void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 {
 	static_assert(HALFMESH_TRIS, "mesh faces must be triangs");
+	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
+		return;
+	SyncFaces();
+	ASSERT(ValidateInvariants());
 	// Edge lengths have no safe default (a default-constructed RemeshParams
 	// zero-initializes them): a non-finite or non-positive edgeMaxLength
 	// would make SplitLongEdges subdivide forever (each sweep halves lengths,
@@ -1208,6 +1212,7 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 		return;
 	}
 	ListHalfEdges();
+	SyncFaces();
 	RemeshData data(*this, params);
 	data.TagCreaseEdges();
 	if (params.adapt)
@@ -1269,6 +1274,8 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 	}
 	if (stats != nullptr)
 		*stats = acc;
+	SyncFaces();
+	ASSERT(ValidateInvariants());
 }
 
 } // namespace halfmesh

@@ -18,6 +18,7 @@
 #include <unordered_set>
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 #include <BS_thread_pool.hpp>
 
@@ -42,8 +43,61 @@ void Mesh::ReleaseOptional()
 	vertexFaces = std::vector<VertexFaces>();
 }
 
+void Mesh::InvalidateFaces()
+{
+	const bool droppedAttributes = !faceTexcoords.empty() || !faceTexblobs.empty() || !faceNormals.empty() || !texturesDiffuse.empty();
+	faces.clear();
+	faceTexcoords.clear();
+	faceTexblobs.clear();
+	faceNormals.clear();
+	texturesDiffuse.clear();
+	vertexFaces.clear();
+	if (droppedAttributes) {
+		static std::once_flag warningFlag;
+		std::call_once(warningFlag, []() {
+			REPORT_WARNING("face attributes dropped: processing methods expect untextured meshes");
+		});
+	}
+}
+
+void Mesh::SyncFaces()
+{
+	if (faces.empty() && !halfMesh.Empty())
+		halfMesh.FFaces(faces);
+	ASSERT(ValidateInvariants());
+}
+
+void Mesh::InvalidateHalfMesh()
+{
+	halfMesh.Clear();
+}
+
+bool Mesh::ValidateInvariants() const
+{
+	return (faces.empty() || halfMesh.Empty() || faces.size() == halfMesh.FSize()) && (halfMesh.Empty() || vertices.size() == halfMesh.VSize());
+}
+
+bool Mesh::ValidateHalfMesh() const
+{
+	if (!ValidateInvariants())
+		return false;
+	if (halfMesh.Empty())
+		return vertices.empty() && faces.empty();
+	std::vector<Face> harvestedFaces;
+	const std::vector<Face>* sourceFaces = &faces;
+	if (faces.empty()) {
+		halfMesh.FFaces(harvestedFaces);
+		sourceFaces = &harvestedFaces;
+	}
+	HalfMesh rebuilt;
+	if (!rebuilt.Build(static_cast<VIndex>(vertices.size()), *sourceFaces))
+		return false;
+	return rebuilt.vHalfedges == halfMesh.vHalfedges && rebuilt.fHalfedges == halfMesh.fHalfedges && rebuilt.heNexts == halfMesh.heNexts && rebuilt.heVertices == halfMesh.heVertices && rebuilt.heFaces == halfMesh.heFaces;
+}
+
 void Mesh::ComputeFaceNormals()
 {
+	SyncFaces();
 	faceNormals.resize(faces.size());
 	FOREACH (idxFace, faces) {
 		// exactly-degenerate (collinear) face: .normalized() on the zero cross
@@ -57,6 +111,7 @@ void Mesh::ComputeFaceNormals()
 void Mesh::ComputeSmoothFaceNormals(float maxAngle, float currentNormalWeight, unsigned iterations)
 {
 	ListHalfEdges();
+	SyncFaces();
 	if (faceNormals.size() != faces.size())
 		ComputeFaceNormals();
 	const float cosMaxAngle = std::cos(D2R(maxAngle));
@@ -95,6 +150,7 @@ void Mesh::ComputeSmoothFaceNormals(float maxAngle, float currentNormalWeight, u
 
 std::vector<Mesh::Normal> Mesh::ComputeVertexNormals()
 {
+	SyncFaces();
 	if (faceNormals.size() != faces.size())
 		ComputeFaceNormals();
 	// Angle-weighted (Thurmer & Wuthrich 1998) pseudonormals: weight each
@@ -126,6 +182,7 @@ std::vector<Mesh::Normal> Mesh::ComputeVertexNormals()
 
 real Mesh::ComputeArea() const
 {
+	const_cast<Mesh*>(this)->SyncFaces();
 	real area(0);
 	for (const Face& face : faces)
 		area += ComputeFaceDoubleArea(face);
@@ -134,6 +191,7 @@ real Mesh::ComputeArea() const
 
 real Mesh::ComputeArea(const std::vector<FIndex>& indices) const
 {
+	const_cast<Mesh*>(this)->SyncFaces();
 	real area(0);
 	for (FIndex idxFace : indices)
 		area += ComputeFaceDoubleArea(idxFace);
@@ -163,6 +221,7 @@ Eigen::AlignedBox<Mesh::Type, 3> Mesh::ComputeAABBox() const
 
 void Mesh::ListVertexFaces()
 {
+	SyncFaces();
 	vertexFaces.clear();
 	vertexFaces.resize(vertices.size());
 	// First pass: count incident face-corners per vertex so each list is reserved
@@ -205,12 +264,9 @@ bool Mesh::ValidateVertexFaces()
 
 void Mesh::ListHalfEdges()
 {
-	// Freshness gate: vertex count alone misses face-only mutations (RemoveFaces
-	// leaves halfMesh untouched by design — see RemoveSmallestComponents, which
-	// keeps using the old structure mid-surgery and clears it itself). Compare
-	// BOTH counts so any face add/remove forces a rebuild here.
-	if (halfMesh.vHalfedges.size() == vertices.size() && halfMesh.FSize() == faces.size())
+	if (!halfMesh.Empty())
 		return;
+	ASSERT(!(faces.empty() && !vertices.empty()));
 	// Fast path: Build assumes a manifold mesh but now *detects* non-manifold
 	// input cheaply and returns false instead of producing a corrupt structure
 	// (which used to hang the adjacency walk).  On failure, repair to manifold
@@ -220,6 +276,7 @@ void Mesh::ListHalfEdges()
 		REPORT_WARNING("non-manifold mesh; repairing to manifold before half-edge build");
 		ListHalfEdgesSafe();
 	}
+	ASSERT(ValidateInvariants());
 }
 
 // NOTE: ListHalfEdgesSafe() and FixNonManifold() are implemented in
@@ -243,6 +300,7 @@ std::vector<Mesh::VIndex> Mesh::VAdjacentVertices(VIndex iV) const
 
 Mesh::VIndex Mesh::FVertexIdx(FIndex idxFace, VIndex iV) const
 {
+	const_cast<Mesh*>(this)->SyncFaces();
 	const Face& face = faces[idxFace];
 	for (VIndex i = 0; i < 3; ++i)
 		if (face[i] == iV)
@@ -295,6 +353,7 @@ Mesh::FIndex Mesh::FEdgeAdjacentFace(FIndex idxFace, VIndex iV0, VIndex iV1) con
 
 void Mesh::ECollapse(EIndex iE)
 {
+	ASSERT(ValidateInvariants());
 	ASSERT(!halfMesh.Empty());
 	HalfMesh::RemovedData removedData;
 	halfMesh.ERemove(iE, removedData);
@@ -307,6 +366,9 @@ void Mesh::ECollapse(EIndex iE)
 		vertexColors[removedData.verts[0]] = vertexColors.back();
 		vertexColors.pop_back();
 	}
+	InvalidateFaces();
+	SyncFaces();
+	ASSERT(ValidateInvariants());
 }
 
 Mesh::VIndex Mesh::RemoveUnreferencedVertices()
@@ -335,6 +397,8 @@ Mesh::VIndex Mesh::RemoveUnreferencedVertices()
 			++numVerticesRemoved;
 		}
 	}
+	if (numVerticesRemoved > 0)
+		halfMesh.Clear();
 	return numVerticesRemoved;
 }
 
@@ -366,6 +430,8 @@ void Mesh::RemoveVertices(std::vector<VIndex>& vertexRemoves, bool updateLists)
 			}
 			idxVertLast = idxVert;
 		}
+		if (!vertexRemoves.empty())
+			halfMesh.Clear();
 		return;
 	}
 	std::vector<FIndex> faceRemoves;
@@ -392,10 +458,13 @@ void Mesh::RemoveVertices(std::vector<VIndex>& vertexRemoves, bool updateLists)
 		idxVertLast = idxVert;
 	}
 	RemoveFaces(faceRemoves);
+	if (!vertexRemoves.empty())
+		halfMesh.Clear();
 }
 
 void Mesh::RemoveFaces(std::vector<FIndex>& faceRemoves, bool updateLists)
 {
+	SyncFaces();
 	const auto RemoveAt = [this](FIndex idxFace) {
 		ASSERT(idxFace < faces.size());
 		if (!faceTexcoords.empty()) {
@@ -492,6 +561,8 @@ void Mesh::RemoveFaces(std::vector<FIndex>& faceRemoves, bool updateLists)
 			idxFaceLast = idxFace;
 		}
 	}
+	if (!faceRemoves.empty())
+		halfMesh.Clear();
 }
 
 } // namespace halfmesh

@@ -52,9 +52,8 @@ static std::string TestMeshPath()
 	    .string();
 }
 
-// Count boundary loops (holes) via the library's own hole enumeration.
-// Force a rebuild: Mesh::ListHalfEdges() caches by vertex count, so after a
-// face-only edit (RemoveFaces keeps vertices) we must clear it to rebuild.
+// Count boundary loops (holes) via the library's own hole enumeration. Force a
+// rebuild for measurements made after direct face edits.
 static unsigned CountBoundaryLoops(Mesh& m)
 {
 	m.halfMesh.Clear();

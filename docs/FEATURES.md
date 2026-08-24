@@ -87,6 +87,11 @@ buffers is a single copy in each direction. Geometry helpers include
 conversions: `ToTexCoordPerVertex()`, `ToTexCoordPerVertexUVOnly()`,
 `ToOneMeshPerTexblob()`.
 
+`faces` is a derived topology snapshot once `halfMesh` has been built. Call
+`Mesh::InvalidateHalfMesh()` after editing `faces` directly; half-edge
+consumers deliberately trust a non-empty `halfMesh` and cannot detect direct
+array edits.
+
 Header: [`Mesh.h`](../include/halfmesh/Mesh.h).
 
 ## PLY / glTF I/O

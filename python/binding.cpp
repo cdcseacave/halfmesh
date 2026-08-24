@@ -69,8 +69,9 @@ Mesh MeshFromArrays(const VertArray& v, const FaceArray& f)
 	return m;
 }
 
-py::tuple ArraysFromMesh(const Mesh& m)
+py::tuple ArraysFromMesh(Mesh& m)
 {
+	m.SyncFaces();
 	py::array_t<float> v({static_cast<py::ssize_t>(m.vertices.size()), py::ssize_t(3)});
 	if (!m.vertices.empty())
 		std::memcpy(v.mutable_data(), m.vertices.data(), sizeof(float) * 3 * m.vertices.size());
@@ -177,7 +178,7 @@ PYBIND11_MODULE(_halfmesh, m)
 	                 "Triangle mesh facade over halfmesh::Mesh (PLY / glTF / GLB I/O).")
 	    .def(py::init<>())
 	    .def_static("from_arrays", [](const VertArray& v, const FaceArray& f) { return MeshFromArrays(v, f); }, py::arg("vertices"), py::arg("faces"))
-	    .def("to_arrays", [](const Mesh& self) { return ArraysFromMesh(self); }, "Return (vertices float32 [N,3], faces uint32 [M,3]) copies.")
+	    .def("to_arrays", [](Mesh& self) { return ArraysFromMesh(self); }, "Return (vertices float32 [N,3], faces uint32 [M,3]) copies.")
 	    .def("load", [](Mesh& self, const std::string& path) {
 		    bool ok;
 		    {
@@ -195,9 +196,9 @@ PYBIND11_MODULE(_halfmesh, m)
 		    if (!ok)
 			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb (format from extension).")
 	    .def_property_readonly("n_vertices", [](const Mesh& self) { return self.vertices.size(); })
-	    .def_property_readonly("n_faces", [](const Mesh& self) { return self.faces.size(); })
+	    .def_property_readonly("n_faces", [](Mesh& self) { self.SyncFaces(); return self.faces.size(); })
 	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)
-	    .def("__repr__", [](const Mesh& self) { return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
+	    .def("__repr__", [](Mesh& self) { self.SyncFaces(); return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
 
 	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation) {
 		Mesh mesh;

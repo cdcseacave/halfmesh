@@ -1254,12 +1254,14 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
                           std::vector<std::vector<FIndex>>* holesFaces)
 {
-	if (faces.empty() || maxHoleEdges == 0)
+	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
+		return 0;
+	SyncFaces();
+	if (maxHoleEdges == 0)
 		return 0;
 
-	// Force a fresh half-edge build: ListHalfEdges() caches by vertex count, so a
-	// prior build with the same vertex count would otherwise be reused even if
-	// faces changed since.
+	// Keep the defensive fresh canonical build until the native harvest lands in
+	// T5; the parity-agnostic FAdd prerequisite is not in place yet.
 	halfMesh.Clear();
 	ListHalfEdges();
 	if (halfMesh.Empty())
@@ -1294,7 +1296,10 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
 
 unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves)
 {
-	if (vertices.empty() || faces.empty() || vertexRemoves.empty())
+	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
+		return 0;
+	SyncFaces();
+	if (vertexRemoves.empty())
 		return 0;
 	std::sort(vertexRemoves.begin(), vertexRemoves.end());
 	vertexRemoves.erase(std::unique(vertexRemoves.begin(), vertexRemoves.end()), vertexRemoves.end());

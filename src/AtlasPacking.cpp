@@ -633,6 +633,7 @@ AtlasResult PackAtlas(Mesh& mesh,
                       unsigned numCharts,
                       const AtlasParams& params)
 {
+	mesh.SyncFaces();
 	const size_t nf = mesh.faces.size();
 	AtlasResult result;
 	if (nf == 0 || numCharts == 0)

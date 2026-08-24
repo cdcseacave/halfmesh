@@ -117,6 +117,7 @@ inline void ConvertMesh(const MVS::Mesh& src, halfmesh::Mesh& dst)
 // per-face normals, per-corner UVs, and diffuse textures).
 inline void ConvertMesh(const halfmesh::Mesh& src, MVS::Mesh& dst)
 {
+	const_cast<halfmesh::Mesh&>(src).SyncFaces();
 	dst.Release();
 
 	dst.vertices.resize((MVS::Mesh::VIndex)src.vertices.size());

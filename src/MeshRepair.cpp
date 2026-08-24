@@ -35,6 +35,7 @@ namespace halfmesh {
 // ---------------------------------------------------------------------------
 void Mesh::ListHalfEdgesSafe()
 {
+	SyncFaces();
 	halfMesh.Clear();
 	// Make the mesh manifold so the (manifold-only) half-edge build succeeds.
 	// Order matters: weld coincident vertices first (recovers shared edges from
@@ -67,6 +68,7 @@ void Mesh::ListHalfEdgesSafe()
 // ---------------------------------------------------------------------------
 bool Mesh::IsManifold() const
 {
+	const_cast<Mesh*>(this)->SyncFaces();
 	// Edge-non-manifold iff: a self-edge face (a==b), a directed edge used by >1
 	// face (edge shared by >2 faces or a duplicate face). Necessary but NOT
 	// sufficient for HalfMesh::Build: Build additionally rejects non-manifold
@@ -92,6 +94,7 @@ bool Mesh::IsManifold() const
 // ---------------------------------------------------------------------------
 Mesh::VIndex Mesh::RemoveDuplicateVertices(Type epsilon)
 {
+	SyncFaces();
 	if (vertices.empty())
 		return 0;
 	const VIndex n = static_cast<VIndex>(vertices.size());
@@ -198,6 +201,7 @@ Mesh::VIndex Mesh::RemoveDuplicateVertices(Type epsilon)
 // ---------------------------------------------------------------------------
 Mesh::FIndex Mesh::RemoveDuplicateFaces(bool removeBothFaces)
 {
+	SyncFaces();
 	struct SortedFace
 	{
 		union {
@@ -262,6 +266,7 @@ Mesh::FIndex Mesh::RemoveDuplicateFaces(bool removeBothFaces)
 // ---------------------------------------------------------------------------
 Mesh::FIndex Mesh::RemoveDegenerateFaces(Type thArea)
 {
+	SyncFaces();
 	if (vertexFaces.size() != vertices.size())
 		ListVertexFaces();
 	const Type thDoubleAreaSq = SQUARE(thArea * 2);
@@ -390,6 +395,7 @@ Mesh::FIndex Mesh::RemoveDegenerateFaces(unsigned maxIterations, Type thArea)
 // ---------------------------------------------------------------------------
 unsigned Mesh::RemoveFacesOutside(const OBB& obb)
 {
+	SyncFaces();
 	ASSERT(!obb.IsEmpty());
 	std::vector<bool> insideVertices(vertices.size());
 	FOREACH (i, vertices)
@@ -409,6 +415,7 @@ unsigned Mesh::RemoveFacesOutside(const OBB& obb)
 // ---------------------------------------------------------------------------
 unsigned Mesh::FixNonManifold(float thMoveDuplicate, std::vector<VIndex>* duplicatedVertices)
 {
+	SyncFaces();
 	// graceful no-op on empty input in every build mode (matches the smoothers'
 	// early-return convention; an assert here diverged Debug from Release)
 	if (vertices.empty() || faces.empty())
@@ -528,6 +535,8 @@ unsigned Mesh::FixNonManifold(float thMoveDuplicate, std::vector<VIndex>* duplic
 		}
 	}
 	vertexFaces = std::vector<VertexFaces>();
+	if (numNonManifold > 0)
+		halfMesh.Clear();
 	REPORT_STATUS_NOW("Fixed {} non-manifold issues ({})",
 	                  numNonManifold, TIMER_STR());
 	return numNonManifold;
@@ -540,6 +549,7 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 {
 	TIMER_START("RemoveSmallComponents");
 	ListHalfEdges();
+	SyncFaces();
 	std::vector<FIndex> components;
 	const FIndex numComponents = halfMesh.ConnectedComponents(components);
 	if (numComponents <= 1)
@@ -557,9 +567,9 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 			faces.pop_back();
 		}
 	}
+	halfMesh.Clear();
 	RemoveUnreferencedVertices();
 	vertexFaces = std::vector<Mesh::VertexFaces>();
-	halfMesh.Clear();
 	REPORT_STATUS_NOW("Removed {} small components from {} total ({})",
 	                  numSmallComponents, numComponents, TIMER_STR());
 	return numSmallComponents;
@@ -567,7 +577,10 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 
 Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 {
-	if (factor <= 0.f || faces.empty())
+	SyncFaces();
+	if (factor <= 0.f)
+		return 0;
+	if (faces.empty())
 		return 0;
 	TIMER_START("RemoveSpuriousComponents");
 	const FIndex initialFaces = static_cast<FIndex>(faces.size());
@@ -643,6 +656,7 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 
 unsigned Mesh::RemoveSpikes(unsigned maxIterations)
 {
+	SyncFaces();
 	if (vertices.empty())
 		return 0;
 	TIMER_START("RemoveSpikes");
