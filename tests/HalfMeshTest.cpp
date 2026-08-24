@@ -313,6 +313,103 @@ TEST(HalfMeshTest, TwoTriangles_ConnectedComponents)
 	EXPECT_EQ(components[0], components[1]) << "both faces should have the same component ID";
 }
 
+TEST(HalfMeshTest, FAddAttachesIsolatedVertexAcrossBoundaryEdge)
+{
+	Mesh mesh = BuildMesh(3, {{0, 1, 2}});
+	mesh.halfMesh.Build(mesh);
+	mesh.halfMesh.vHalfedges.emplace_back(math::NO_ID);
+	mesh.vertices.emplace_back(HalfMesh::Vertex::Zero());
+
+	const HalfMesh::FIndex added = mesh.halfMesh.FAdd(HalfMesh::Face(1, 0, 3));
+	ASSERT_NE(added, math::NO_ID);
+	mesh.InvalidateFaces();
+	mesh.SyncFaces();
+	EXPECT_EQ(mesh.faces.size(), 2u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	std::vector<std::vector<HalfMesh::VIndex>> holes;
+	mesh.halfMesh.EnumerateHoles(holes);
+	ASSERT_EQ(holes.size(), 1u);
+	EXPECT_EQ(holes.front().size(), 4u);
+}
+
+TEST(HalfMeshTest, FAddDiskAttachesSteinerTriangulation)
+{
+	Mesh mesh;
+	mesh.vertices = {
+	    {-2.f, -2.f, 0.f}, {2.f, -2.f, 0.f}, {2.f, 2.f, 0.f}, {-2.f, 2.f, 0.f}, {-1.f, -1.f, 0.f}, {1.f, -1.f, 0.f}, {1.f, 1.f, 0.f}, {-1.f, 1.f, 0.f}};
+	mesh.faces = {
+	    {0, 1, 5}, {0, 5, 4}, {1, 2, 6}, {1, 6, 5}, {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7}};
+	mesh.ListHalfEdges();
+	std::vector<std::vector<HalfMesh::VIndex>> holes;
+	mesh.halfMesh.EnumerateHoles(holes);
+	ASSERT_EQ(holes.size(), 2u);
+
+	mesh.vertices.emplace_back(0.f, 0.f, 0.f);
+	mesh.halfMesh.vHalfedges.emplace_back(math::NO_ID);
+	const std::vector<HalfMesh::Face> patch = {
+	    {5, 6, 8}, {4, 5, 8}, {7, 4, 8}, {6, 7, 8}};
+	ASSERT_TRUE(mesh.halfMesh.FAddDisk(patch));
+	mesh.InvalidateFaces();
+	mesh.SyncFaces();
+	EXPECT_EQ(mesh.faces.size(), 12u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	holes.clear();
+	mesh.halfMesh.EnumerateHoles(holes);
+	ASSERT_EQ(holes.size(), 1u);
+	EXPECT_EQ(holes.front().size(), 4u);
+}
+
+TEST(HalfMeshTest, FAddDiskPathologicalPatchRestoresExactStructure)
+{
+	Mesh mesh = BuildMesh(3, {{0, 1, 2}});
+	mesh.ListHalfEdges();
+	mesh.vertices.emplace_back(HalfMesh::Vertex::Zero());
+	mesh.halfMesh.vHalfedges.emplace_back(math::NO_ID);
+	const HalfMesh before = mesh.halfMesh;
+	const std::vector<HalfMesh::Face> patch = {
+	    {1, 0, 3}, // attachable
+	    {0, 1, 2}, // permanently rejected: duplicates the existing face
+	};
+
+	EXPECT_FALSE(mesh.halfMesh.FAddDisk(patch));
+	EXPECT_EQ(mesh.halfMesh.vHalfedges, before.vHalfedges);
+	EXPECT_EQ(mesh.halfMesh.fHalfedges, before.fHalfedges);
+	EXPECT_EQ(mesh.halfMesh.heNexts, before.heNexts);
+	EXPECT_EQ(mesh.halfMesh.heVertices, before.heVertices);
+	EXPECT_EQ(mesh.halfMesh.heFaces, before.heFaces);
+	EXPECT_EQ(mesh.halfMesh.alwaysEven, before.alwaysEven);
+}
+
+TEST(HalfMeshTest, FAddDiskRetriesDependencyOrder)
+{
+	Mesh mesh;
+	mesh.vertices.resize(10, HalfMesh::Vertex::Zero());
+	for (HalfMesh::VIndex i = 0; i < 5; ++i) {
+		const HalfMesh::VIndex next = (i + 1) % 5;
+		mesh.faces.emplace_back(i, next, 5 + next);
+		mesh.faces.emplace_back(i, 5 + next, 5 + i);
+	}
+	mesh.ListHalfEdges();
+	const HalfMesh before = mesh.halfMesh;
+	const HalfMesh::Face middle(5, 7, 8);
+	EXPECT_EQ(mesh.halfMesh.FAdd(middle), math::NO_ID);
+	EXPECT_EQ(mesh.halfMesh.heNexts, before.heNexts);
+
+	const std::vector<HalfMesh::Face> patch = {
+	    middle, // one boundary edge only: deferred until the ears add diagonals
+	    {5, 6, 7},
+	    {5, 8, 9},
+	};
+	ASSERT_TRUE(mesh.halfMesh.FAddDisk(patch));
+	mesh.InvalidateFaces();
+	mesh.SyncFaces();
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	std::vector<std::vector<HalfMesh::VIndex>> holes;
+	mesh.halfMesh.EnumerateHoles(holes);
+	ASSERT_EQ(holes.size(), 1u);
+	EXPECT_EQ(holes.front().size(), 5u);
+}
+
 TEST(HalfMeshTest, TwoTriangles_EdgeFlip)
 {
 	// Build with unit-distance vertices so EIsFlipValid can check geometry

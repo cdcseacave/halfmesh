@@ -548,28 +548,37 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 	const unsigned numVertices = 3;
 	HIndex hedges[3];
 	unsigned numNewEdges[3] = {0, 0, 0};
+	bool isolated[3];
 #else
 	const unsigned numVertices = face.rows();
 	std::vector<HIndex> hedges(numVertices);
 	std::vector<unsigned> numNewEdges(numVertices);
+	std::vector<bool> isolated(numVertices);
 #endif
 	for (unsigned v = 0; v < numVertices; ++v) {
-		ASSERT(VIsBoundary(face[v]));
+		if (face[v] >= VSize())
+			return NO_ID;
+		isolated[v] = VHalfedge(face[v]) == NO_ID;
+		if (!isolated[v] && !VIsBoundary(face[v]))
+			return NO_ID;
 		const unsigned v1 = (v + 1) % numVertices;
-		const EIndex iE = EEdge(face[v], face[v1]);
+		if (face[v] == face[v1])
+			return NO_ID;
+		const EIndex iE = isolated[v] || VHalfedge(face[v1]) == NO_ID ? NO_ID : EEdge(face[v], face[v1]);
 		if (iE == NO_ID) {
 			hedges[v] = NO_ID;
 			++numNewEdges[v];
 			++numNewEdges[v1];
 		} else {
-			ASSERT(EIsBoundary(iE)); // duplicate edge
+			if (!EIsBoundary(iE))
+				return NO_ID; // duplicate/interior edge
 			hedges[v] = HeBack(EHalfedge(iE));
 			if (HeVertex(hedges[v]) != face[v])
 				return NO_ID; // non-manifold edge (opposite orientation)
 		}
 	}
 	for (unsigned v = 0; v < numVertices; ++v) {
-		if (numNewEdges[v] > 1)
+		if (numNewEdges[v] > (isolated[v] ? 2u : 1u))
 			return NO_ID; // non-manifold vertex
 	}
 	const std::size_t oldHeSize = heNexts.size();
@@ -657,6 +666,40 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 		}
 	}
 	return iF;
+}
+
+bool HalfMesh::FAddDisk(const std::vector<Face>& faces)
+{
+	if (faces.empty())
+		return true;
+	HalfMesh original(*this);
+	std::vector<Face> pending(faces);
+	std::vector<FIndex> addedFaces;
+	addedFaces.reserve(faces.size());
+	while (!pending.empty()) {
+		std::vector<Face> retry;
+		retry.reserve(pending.size());
+		for (const Face& face : pending) {
+			const FIndex added = FAdd(face);
+			if (added == NO_ID)
+				retry.emplace_back(face);
+			else
+				addedFaces.emplace_back(added);
+		}
+		if (retry.empty())
+			return true;
+		if (retry.size() == pending.size()) {
+			if (!addedFaces.empty()) {
+				std::vector<VIndex> removedVerts;
+				std::vector<VIndex> splitSrcVerts;
+				FRemoveBulk(addedFaces, removedVerts, splitSrcVerts);
+			}
+			*this = std::move(original);
+			return false;
+		}
+		pending.swap(retry);
+	}
+	return true;
 }
 
 #if HALFMESH_TRIS

@@ -606,8 +606,10 @@ class HalfMesh
 	// create a new face between the existing vertices defined by the given face;
 	// returns NO_ID if the face can not be added, as is the case if the face
 	// does not form a manifold connection with the mesh
-	//TODO(Dan): add support for creating new vertices
 	FIndex FAdd(const Face&);
+	// attach a pre-triangulated disk in dependency order; retries faces that are
+	// not yet attachable and restores the exact input structure on failure
+	bool FAddDisk(const std::vector<Face>& faces);
 #if HALFMESH_TRIS
 	// check if the face is a corner: triangle having two or three boundary edges
 	bool FIsCorner(FIndex) const;
