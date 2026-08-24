@@ -143,9 +143,15 @@ halfmesh_discover_tests(mesh_io_test)
 
 # mesh_repair_test: duplicate/degenerate/non-manifold/small-component/OBB-cull
 add_executable(mesh_repair_test MeshRepairTest.cpp)
+target_include_directories(mesh_repair_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/corpus
+    ${CMAKE_CURRENT_SOURCE_DIR}/metrics
+)
 target_link_libraries(mesh_repair_test PRIVATE
     GTest::gtest
     GTest::gtest_main
+    halfmesh_corpus
+    halfmesh_metrics
     halfmesh::halfmesh
 )
 halfmesh_discover_tests(mesh_repair_test)

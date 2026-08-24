@@ -17,6 +17,9 @@
 #include <halfmesh/HalfMesh.h>
 #include <halfmesh/OrientedBoundingBox.h>
 
+#include "Corpus.h"
+#include "Metrics.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -245,6 +248,79 @@ TEST(MeshRepairTest, RemoveDegenerateFacesHealthyFaceKept)
 	const Mesh::FIndex removed = m.RemoveDegenerateFaces(1e-5f);
 	EXPECT_EQ(removed, 0u);
 	EXPECT_EQ(m.faces.size(), 4u);
+}
+
+TEST(MeshRepairTest, RemoveDegenerateFacesHalfEdgeCollapsesNeedleWithoutBuild)
+{
+	Mesh m = hmtest::corpus::GridPlane(8);
+	m.ListHalfEdges();
+	Mesh::EIndex shortEdge = math::NO_ID;
+	Mesh::Vertex midpoint;
+	for (Mesh::EIndex edge = 0; edge < m.halfMesh.ESize(); ++edge) {
+		if (m.halfMesh.EIsBoundary(edge) || !m.halfMesh.EIsCollapseValidTopologically(edge))
+			continue;
+		const auto edgeVertices = m.halfMesh.EVertices(edge);
+		const Mesh::Vertex candidate = (m.vertices[edgeVertices.first] + m.vertices[edgeVertices.second]) * 0.5f;
+		if (m.halfMesh.EIsCollapseValidGeometrically(edge, candidate, m.vertices)) {
+			shortEdge = edge;
+			midpoint = candidate;
+			break;
+		}
+	}
+	ASSERT_NE(shortEdge, math::NO_ID);
+	const auto edgeVertices = m.halfMesh.EVertices(shortEdge);
+	const Mesh::Vertex direction = (m.vertices[edgeVertices.second] - m.vertices[edgeVertices.first]).normalized();
+	m.vertices[edgeVertices.first] = midpoint - direction * 5e-7f;
+	m.vertices[edgeVertices.second] = midpoint + direction * 5e-7f;
+	ASSERT_TRUE(m.halfMesh.EIsCollapseValidGeometrically(shortEdge, midpoint, m.vertices));
+	const Mesh input = m;
+	Mesh arrays = input;
+	arrays.InvalidateHalfMesh();
+	EXPECT_GT(arrays.RemoveDegenerateFacesArrays(1e-5f), 0u);
+	arrays.RemoveUnreferencedVerticesArrays();
+	const std::size_t initialFaces = m.faces.size();
+	const std::size_t initialVertices = m.vertices.size();
+
+	HalfMesh::ResetBuildCount();
+	EXPECT_EQ(m.RemoveDegenerateFaces(1e-5f), 2u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(m.faces.size(), initialFaces - 2u);
+	EXPECT_EQ(m.vertices.size(), initialVertices - 1u);
+	EXPECT_TRUE(m.ValidateHalfMesh());
+	EXPECT_LT(hmtest::metrics::ComputeDistanceKdTree(input, arrays).hausdorffSymmetric, 2e-6);
+	EXPECT_LT(hmtest::metrics::ComputeDistanceKdTree(input, m).hausdorffSymmetric, 2e-6);
+	for (const Mesh::Face& face : m.faces) {
+		const auto cross = (m.vertices[face[1]] - m.vertices[face[0]]).cross(m.vertices[face[2]] - m.vertices[face[0]]);
+		EXPECT_GT(cross.squaredNorm(), 4e-10f);
+	}
+}
+
+TEST(MeshRepairTest, RemoveDegenerateFacesHalfEdgeFlipsCapWithoutBuild)
+{
+	Mesh m;
+	m.vertices = {
+	    {0.f, 0.f, 0.f},
+	    {2.f, 0.f, 0.f},
+	    {1.f, 1e-6f, 0.f},
+	    {1.f, -1.f, 0.f},
+	};
+	m.faces = {{0, 1, 2}, {1, 0, 3}};
+	m.ListHalfEdges();
+	ASSERT_NE(m.halfMesh.EEdge(0, 1), math::NO_ID);
+
+	HalfMesh::ResetBuildCount();
+	// A flip repairs both triangles without removing either face.
+	EXPECT_EQ(m.RemoveDegenerateFaces(1e-5f), 0u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(m.faces.size(), 2u);
+	EXPECT_EQ(m.vertices.size(), 4u);
+	EXPECT_EQ(m.halfMesh.EEdge(0, 1), math::NO_ID);
+	EXPECT_NE(m.halfMesh.EEdge(2, 3), math::NO_ID);
+	EXPECT_TRUE(m.ValidateHalfMesh());
+	for (const Mesh::Face& face : m.faces) {
+		const auto cross = (m.vertices[face[1]] - m.vertices[face[0]]).cross(m.vertices[face[2]] - m.vertices[face[0]]);
+		EXPECT_GT(cross.squaredNorm(), 4e-10f);
+	}
 }
 
 // The iterated overload must actually iterate: removing the nearly-collinear
@@ -586,6 +662,31 @@ TEST(MeshRepairTest, FixNonManifoldManifoldMeshUnchanged)
 	EXPECT_EQ(fixed, 0u);
 	EXPECT_EQ(m.vertices.size(), 4u);
 	EXPECT_EQ(m.faces.size(), 4u);
+}
+
+TEST(MeshRepairTest, FixNonManifoldPrebuiltMeshIsUntouchedWithoutBuild)
+{
+	Mesh m = MakeTetra();
+	m.ListHalfEdges();
+	const auto vertices = m.vertices;
+	const auto faces = m.faces;
+	const auto heNexts = m.halfMesh.heNexts;
+	const auto heVertices = m.halfMesh.heVertices;
+	const auto heFaces = m.halfMesh.heFaces;
+	const auto vHalfedges = m.halfMesh.vHalfedges;
+	const auto fHalfedges = m.halfMesh.fHalfedges;
+
+	HalfMesh::ResetBuildCount();
+	EXPECT_EQ(m.FixNonManifold(), 0u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(m.vertices, vertices);
+	EXPECT_EQ(m.faces, faces);
+	EXPECT_EQ(m.halfMesh.heNexts, heNexts);
+	EXPECT_EQ(m.halfMesh.heVertices, heVertices);
+	EXPECT_EQ(m.halfMesh.heFaces, heFaces);
+	EXPECT_EQ(m.halfMesh.vHalfedges, vHalfedges);
+	EXPECT_EQ(m.halfMesh.fHalfedges, fHalfedges);
+	EXPECT_TRUE(m.ValidateHalfMesh());
 }
 
 // ---------------------------------------------------------------------------

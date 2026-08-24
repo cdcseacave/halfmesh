@@ -495,6 +495,35 @@ TEST(MeshCore, RemoveUnreferencedVerticesRemapsVertexColors)
 		    << "color/vertex desync at slot " << i;
 }
 
+TEST(MeshCore, RemoveUnreferencedVerticesHalfEdgeMatchesArraysWithoutBuild)
+{
+	Mesh arrays = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {3.f, 0.f, 0.f}, {4.f, 0.f, 0.f}},
+	    {{0, 1, 2}});
+	for (uint8_t i = 0; i < 5; ++i)
+		arrays.vertexColors.emplace_back(i, i, i);
+	Mesh native = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}});
+	for (uint8_t i = 0; i < 3; ++i)
+		native.vertexColors.emplace_back(i, i, i);
+	native.ListHalfEdges();
+	for (uint8_t i = 3; i < 5; ++i) {
+		native.vertices.emplace_back(static_cast<float>(i), 0.f, 0.f);
+		native.vertexColors.emplace_back(i, i, i);
+		native.halfMesh.vHalfedges.emplace_back(math::NO_ID);
+	}
+
+	EXPECT_EQ(arrays.RemoveUnreferencedVerticesArrays(), 2u);
+	HalfMesh::ResetBuildCount();
+	EXPECT_EQ(native.RemoveUnreferencedVertices(), 2u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_EQ(native.vertexColors, arrays.vertexColors);
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
 // RemoveVertices' documented contract is "remove specified vertices along with
 // all faces referencing them"; the old default (updateLists=false) silently
 // skipped the face removal, leaving faces pointing at whatever vertex was

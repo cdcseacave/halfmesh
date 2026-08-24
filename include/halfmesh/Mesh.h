@@ -234,8 +234,10 @@ class Mesh
 	// collapse the given edge, remove it, remove one of its vertices, and remove both adjacent faces
 	void ECollapse(EIndex);
 
-	// remove unreferenced vertices
+	// remove unreferenced vertices; the public name dispatches by representation
 	VIndex RemoveUnreferencedVertices();
+	VIndex RemoveUnreferencedVerticesArrays();
+	VIndex RemoveUnreferencedVerticesHalfEdge();
 	// merge spatially-coincident vertices into one and remap the faces to the
 	// surviving representative (per-corner faceTexcoords are unaffected;
 	// per-vertex colors are remapped).  This recovers shared connectivity from
@@ -268,9 +270,13 @@ class Mesh
 	FIndex RemoveDuplicateFaces(bool removeBothFaces = true);
 	// remove degenerate faces (with one or more identical vertices,
 	// or very close vertices - disabled if thArea == 0)
-	// unreferenced vertices and non-manifold edges/vertices can be created,
-	// so should be followed by RemoveUnreferencedVertices() and FixNonManifold()
+	// The public name dispatches by representation. The array arm keeps the
+	// ingest-compatible welding behavior and can create unreferenced or
+	// non-manifold topology; the half-edge arm applies only validity-preserving
+	// cap flips/collapses, so its removed count can differ.
 	FIndex RemoveDegenerateFaces(Type thArea = 1e-5f);
+	FIndex RemoveDegenerateFacesArrays(Type thArea = 1e-5f);
+	FIndex RemoveDegenerateFacesHalfEdge(Type thArea = 1e-5f);
 	// removing zero-area-faces can generate some new zero-area-faces,
 	// so iterate till no zero-area faces are encountered or max number of iterations is reached
 	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea = 1e-5f);

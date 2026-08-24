@@ -296,6 +296,8 @@ TEST(PerfHarness, PrebuiltRepairPipelinePerformsZeroBuilds)
 	halfmesh::HalfMesh::ResetBuildCount();
 	mesh.RemoveSpuriousComponents(100.f);
 	mesh.RemoveSpikes();
+	mesh.RemoveDegenerateFaces();
+	mesh.RemoveUnreferencedVertices();
 	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 0u);
 	EXPECT_FALSE(mesh.halfMesh.Empty());
 }

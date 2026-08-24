@@ -497,6 +497,11 @@ void Mesh::ECollapse(EIndex iE)
 
 Mesh::VIndex Mesh::RemoveUnreferencedVertices()
 {
+	return halfMesh.Empty() ? RemoveUnreferencedVerticesArrays() : RemoveUnreferencedVerticesHalfEdge();
+}
+
+Mesh::VIndex Mesh::RemoveUnreferencedVerticesArrays()
+{
 	if (vertexFaces.size() != vertices.size())
 		ListVertexFaces();
 	VIndex numVerticesRemoved = 0;
@@ -524,6 +529,27 @@ Mesh::VIndex Mesh::RemoveUnreferencedVertices()
 	if (numVerticesRemoved > 0)
 		halfMesh.Clear();
 	return numVerticesRemoved;
+}
+
+Mesh::VIndex Mesh::RemoveUnreferencedVerticesHalfEdge()
+{
+	ASSERT(!halfMesh.Empty());
+	ASSERT(halfMesh.VSize() == vertices.size());
+	std::vector<VIndex> removedVerts;
+	halfMesh.VRemoveUnreferenced(removedVerts);
+	for (VIndex removed : removedVerts) {
+		vertices[removed] = vertices.back();
+		vertices.pop_back();
+		if (!vertexColors.empty()) {
+			vertexColors[removed] = vertexColors.back();
+			vertexColors.pop_back();
+		}
+	}
+	if (!removedVerts.empty())
+		InvalidateFaces();
+	SyncFaces();
+	ASSERT(ValidateHalfMesh());
+	return static_cast<VIndex>(removedVerts.size());
 }
 
 void Mesh::RemoveVertices(std::vector<VIndex>& vertexRemoves, bool updateLists)

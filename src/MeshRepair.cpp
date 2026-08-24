@@ -266,6 +266,11 @@ Mesh::FIndex Mesh::RemoveDuplicateFaces(bool removeBothFaces)
 // ---------------------------------------------------------------------------
 Mesh::FIndex Mesh::RemoveDegenerateFaces(Type thArea)
 {
+	return halfMesh.Empty() ? RemoveDegenerateFacesArrays(thArea) : RemoveDegenerateFacesHalfEdge(thArea);
+}
+
+Mesh::FIndex Mesh::RemoveDegenerateFacesArrays(Type thArea)
+{
 	SyncFaces();
 	if (vertexFaces.size() != vertices.size())
 		ListVertexFaces();
@@ -370,8 +375,107 @@ Mesh::FIndex Mesh::RemoveDegenerateFaces(Type thArea)
 		firstVfs.clear();
 		mapRemovedVerts[p.first] = p.second;
 	}
-	const size_t numRemovedFaces = faceRemoves.size() + RemoveDegenerateFaces(0.f);
+	const size_t numRemovedFaces = faceRemoves.size() + RemoveDegenerateFacesArrays(0.f);
 	REPORT_STATUS_NOW("Removed {} zero-area faces", numRemovedFaces);
+	return numRemovedFaces;
+}
+
+Mesh::FIndex Mesh::RemoveDegenerateFacesHalfEdge(Type thArea)
+{
+	ASSERT(!halfMesh.Empty());
+	ASSERT(halfMesh.VSize() == vertices.size());
+	if (thArea <= 0) {
+		SyncFaces();
+		return 0;
+	}
+
+	const Type thDoubleAreaSq = SQUARE(thArea * 2);
+	const FIndex initialFaces = halfMesh.FSize();
+	FIndex numCollapses = 0;
+	FIndex numFlips = 0;
+	bool topologyChanged = false;
+	for (;;) {
+		bool repaired = false;
+		for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace) {
+			const HIndex firstHalfedge = halfMesh.FHalfedge(idxFace);
+			HIndex halfedges[3];
+			Type lengthsSq[3];
+			HIndex halfedge = firstHalfedge;
+			for (int i = 0; i < 3; ++i) {
+				halfedges[i] = halfedge;
+				const auto edgeVertices = halfMesh.EVertices(halfMesh.HeEdge(halfedge));
+				lengthsSq[i] = (vertices[edgeVertices.first] - vertices[edgeVertices.second]).squaredNorm();
+				halfedge = halfMesh.HeNext(halfedge);
+			}
+			const Face face = halfMesh.F(idxFace);
+			const Type doubleAreaSq = (vertices[face[1]] - vertices[face[0]]).cross(vertices[face[2]] - vertices[face[0]]).squaredNorm();
+			if (doubleAreaSq > thDoubleAreaSq)
+				continue;
+
+			int shortest = 0;
+			int longest = 0;
+			for (int i = 1; i < 3; ++i) {
+				if (lengthsSq[i] < lengthsSq[shortest])
+					shortest = i;
+				if (lengthsSq[i] > lengthsSq[longest])
+					longest = i;
+			}
+
+			// A cap has no threshold-short edge: try replacing its long diagonal
+			// before falling back to the same shortest-edge collapse as a needle.
+			if (lengthsSq[shortest] > thArea) {
+				const EIndex longEdge = halfMesh.HeEdge(halfedges[longest]);
+				if (halfMesh.EIsFlipValid(longEdge, vertices)) {
+					const HIndex hA0 = halfMesh.EHalfedge(longEdge);
+					const HIndex hB0 = halfMesh.HeTwin(hA0);
+					const VIndex v0 = halfMesh.HeVertex(hA0);
+					const VIndex v2 = halfMesh.HeVertex(hB0);
+					const VIndex v1 = halfMesh.HeVertex(halfMesh.HeNext(halfMesh.HeNext(hA0)));
+					const VIndex v3 = halfMesh.HeVertex(halfMesh.HeNext(halfMesh.HeNext(hB0)));
+					const Type newAreaSq0 = (vertices[v3] - vertices[v0]).cross(vertices[v1] - vertices[v0]).squaredNorm();
+					const Type newAreaSq1 = (vertices[v1] - vertices[v2]).cross(vertices[v3] - vertices[v2]).squaredNorm();
+					if (newAreaSq0 > thDoubleAreaSq && newAreaSq1 > thDoubleAreaSq) {
+						halfMesh.EFlip(longEdge);
+						++numFlips;
+						topologyChanged = repaired = true;
+						break;
+					}
+				}
+			}
+
+			const EIndex shortEdge = halfMesh.HeEdge(halfedges[shortest]);
+			if (!halfMesh.EIsCollapseValidTopologically(shortEdge))
+				continue;
+			const auto edgeVertices = halfMesh.EVertices(shortEdge);
+			const Vertex midpoint = (vertices[edgeVertices.first] + vertices[edgeVertices.second]) * Type(0.5);
+			if (!halfMesh.EIsCollapseValidGeometrically(shortEdge, midpoint, vertices))
+				continue;
+
+			HalfMesh::RemovedData removedData;
+			const VIndex vertexMoved = halfMesh.ERemove(shortEdge, removedData);
+			ASSERT(removedData.numVerts == 1);
+			vertices[removedData.verts[0]] = vertices.back();
+			vertices.pop_back();
+			if (!vertexColors.empty()) {
+				vertexColors[removedData.verts[0]] = vertexColors.back();
+				vertexColors.pop_back();
+			}
+			vertices[vertexMoved] = midpoint;
+			++numCollapses;
+			topologyChanged = repaired = true;
+			break;
+		}
+		if (!repaired)
+			break;
+	}
+
+	const FIndex numRemovedFaces = initialFaces - halfMesh.FSize();
+	if (topologyChanged)
+		InvalidateFaces();
+	SyncFaces();
+	ASSERT(ValidateHalfMesh());
+	if (numRemovedFaces > 0 || numFlips > 0)
+		REPORT_STATUS_NOW("Repaired degenerate topology ({} faces removed by {} collapses, {} cap flips)", numRemovedFaces, numCollapses, numFlips);
 	return numRemovedFaces;
 }
 
@@ -415,6 +519,8 @@ unsigned Mesh::RemoveFacesOutside(const OBB& obb)
 // ---------------------------------------------------------------------------
 unsigned Mesh::FixNonManifold(float thMoveDuplicate, std::vector<VIndex>* duplicatedVertices)
 {
+	if (!halfMesh.Empty())
+		return 0;
 	SyncFaces();
 	// graceful no-op on empty input in every build mode (matches the smoothers'
 	// early-return convention; an assert here diverged Debug from Release)
