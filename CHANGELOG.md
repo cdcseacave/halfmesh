@@ -100,6 +100,12 @@ harvest; `tests/perf` asserts both counts.
   per-call harvest.
 - Atlas packing: `PackAtlas` and the fit-to-resolution probe run through the
   shared packer; behavior matches 0.2.0.
+- **vcpkg `builtin-baseline` advanced** to `0ac8df3b98e3afcd8bf075fa74a6bd2c32613345`
+  (2026-08-24), which carries the corrected `tinygltf` 3.0.0#1 archive hash.
+  `vcpkg-overlay-ports/` (the tinygltf hotfix plus a local-source `halfmesh`
+  port) and `vcpkg-configuration.json` are removed — a cold-cache build now
+  resolves every dependency straight from the registry, and the halfmesh port
+  lives only in the consumer that needs it.
 - **Not ABI-compatible with 0.2.0** — recompile against the new headers.
 
 ## [0.2.0]

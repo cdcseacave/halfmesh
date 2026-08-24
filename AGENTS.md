@@ -48,6 +48,9 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 - `include/halfmesh/InteropOpenMVS.h` — opt-in converters to/from
   [openMVS](https://github.com/cdcseacave/openMVS)'s `MVS::Mesh`, guarded by
   `#if __has_include(<MVS/Mesh.h>)` (no hard dependency).
+- This repo ships no vcpkg port of itself. A consumer (e.g. openMVS) carries its
+  own `ports/halfmesh/` pinned to a released tag; that port must never patch the
+  library — a fix lands as a commit here, then a tag, then a port bump there.
 
 ## Core types
 - `halfmesh::Mesh` (`Mesh.h`) — geometry container: public `vertices`, `faces`,

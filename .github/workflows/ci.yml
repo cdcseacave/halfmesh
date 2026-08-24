@@ -17,7 +17,7 @@ concurrency:
 
 env:
   # Shared vcpkg commit pin — must match the "builtin-baseline" in vcpkg.json.
-  VCPKG_COMMIT: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+  VCPKG_COMMIT: 0ac8df3b98e3afcd8bf075fa74a6bd2c32613345
   # The 9 golden fixtures classified CompareMode::CANONICAL_EXACT in
   # tests/golden/GoldenSpecs.h (exact canonical-mesh equality against a frozen
   # fixture) — excluded on the -march legs of opt-in-build-flags, which are free
