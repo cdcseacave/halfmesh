@@ -83,7 +83,7 @@ readable/writable:
 ```cpp
 std::vector<Vertex>   vertices;       // Eigen::Vector3f
 std::vector<Face>     faces;          // Eigen::Matrix<uint32_t,3,1>
-std::vector<Pixel>    vertexColors;   // BGR uint8, per vertex (optional)
+std::vector<Pixel>    vertexColors;   // BGR uint8, per vertex (optional, see below)
 std::vector<Normal>   faceNormals;    // per-face cache (optional)
 std::vector<TexCoord> faceTexcoords;  // per corner (faces*3) or per vertex
 std::vector<FIndex>   faceTexblobs;   // per-face texture id (optional)
@@ -98,6 +98,14 @@ buffers is a single copy in each direction. Geometry helpers include
 `ComputeArea`, `ComputeAABBox`, and per-face/per-edge queries. Texture-layout
 conversions: `ToTexCoordPerVertex()`, `ToTexCoordPerVertexUVOnly()`,
 `ToOneMeshPerTexblob()`.
+
+`vertexColors` is a *parallel* array: either empty, or exactly as long as
+`vertices`, indexed identically. Any mutator that grows or renumbers the vertex
+set maintains it — duplicating the source entry on a vertex split, mirroring
+the swap-pop on a removal, interpolating at an edge split — or clears it
+outright when it has no mapping to offer (`Simplify`'s arbitrary pair
+collapses). `Mesh::ValidateInvariants()` enforces the length relation, so a
+desync trips the assertions the mutators already carry.
 
 Topology has three valid representation states: arrays-only, half-edge-only,
 or both-and-consistent. Once `halfMesh` has been built it is authoritative and

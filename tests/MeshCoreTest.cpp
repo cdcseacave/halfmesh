@@ -343,6 +343,31 @@ TEST(MeshCore, RepresentationInvariantAndHalfMeshValidation)
 	EXPECT_TRUE(m.ValidateInvariants());
 }
 
+// vertexColors is parallel to `vertices`: empty, or the same length. This is
+// what makes the ASSERT(ValidateInvariants()) already sprinkled through the
+// mutators catch a colour/vertex desync at the point it happens, rather than
+// as an out-of-bounds read somewhere downstream.
+TEST(MeshCore, RepresentationInvariantCoversVertexColors)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}},
+	    {{0, 1, 2}});
+	EXPECT_TRUE(m.ValidateInvariants()) << "an empty colors array is always valid";
+
+	m.vertexColors.assign(m.vertices.size(), Mesh::Pixel(1, 2, 3));
+	EXPECT_TRUE(m.ValidateInvariants());
+
+	m.vertexColors.pop_back(); // short: the desync a growing mutator would leave
+	EXPECT_FALSE(m.ValidateInvariants());
+
+	m.vertexColors.emplace_back(1, 2, 3);
+	m.vertexColors.emplace_back(1, 2, 3); // long
+	EXPECT_FALSE(m.ValidateInvariants());
+
+	m.vertexColors.pop_back();
+	EXPECT_TRUE(m.ValidateInvariants());
+}
+
 TEST(MeshCore, HalfEdgePipelineBuildsAndHarvestsOnce)
 {
 	Mesh mesh = BuildMesh(

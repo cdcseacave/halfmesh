@@ -51,6 +51,12 @@ class Mesh
 	std::vector<Face> faces;
 
 	// optional data
+	// Per-vertex attribute: either empty, or exactly parallel to `vertices`.
+	// A mutator that grows or renumbers `vertices` must do the same here --
+	// duplicating the source entry on a vertex split, mirroring the swap-pop on
+	// a removal, interpolating on an edge split -- or clear the array outright
+	// when it has no mapping to offer (Simplify's arbitrary pair collapses).
+	// ValidateInvariants() enforces this.
 	std::vector<Pixel> vertexColors; // color for each vertex
 	std::vector<Normal> faceNormals; // normal for each face
 	std::vector<TexCoord> faceTexcoords; // absolute texture-coordinates for each face vertex (no.faces*3)

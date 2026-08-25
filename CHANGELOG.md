@@ -95,9 +95,16 @@ harvest; `tests/perf` asserts both counts.
   valid, by contract) instead of a vertex/face count heuristic. **A caller that
   hand-edits the public `faces` array must call `Mesh::InvalidateHalfMesh()`**;
   the old heuristic happened to catch count-changing edits.
-- `Mesh::ECollapse` keeps `vertexColors` in lockstep and refreshes the face
-  snapshot; scope a collapse loop in `BeginHalfEdgePipeline` to avoid the
-  per-call harvest.
+- **`vertexColors` is a contractual parallel array** — either empty, or exactly
+  as long as `vertices` — and `Mesh::ValidateInvariants()` now enforces it, so
+  every mutator's existing assertions catch a desync at its source. Mutators
+  that change the vertex set maintain it: `ECollapse` and `RemeshIsotropic`
+  mirror the swap-pop (and interpolate at an edge split), `FixNonManifold` and
+  `FRemoveBulk` duplicate the source colour on a vertex split, `CloseHoles`
+  gives patch interiors the mean colour of the loop they span, and `Simplify`
+  clears the array up front because its collapses have no mapping to offer.
+  `ECollapse` also refreshes the face snapshot; scope a collapse loop in
+  `BeginHalfEdgePipeline` to avoid the per-call harvest.
 - Atlas packing: `PackAtlas` and the fit-to-resolution probe run through the
   shared packer; behavior matches 0.2.0.
 - **vcpkg `builtin-baseline` advanced** to `0ac8df3b98e3afcd8bf075fa74a6bd2c32613345`

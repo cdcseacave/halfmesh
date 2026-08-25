@@ -984,6 +984,33 @@ TEST(MeshRemesh, StatsAndToggles)
 	}
 }
 
+// Remesh splits edges (appending a midpoint vertex) and collapses them (swap-pop
+// on the vertex array). It already mirrored both onto its own `sizing` and
+// `projectHint` arrays but not onto Mesh::vertexColors, which is subject to the
+// same parallel-array contract -- so a colored mesh came out with a colors array
+// of the wrong length and stale entries at swapped slots.
+TEST(MeshRemesh, KeepsVertexColorsInLockstep)
+{
+	Mesh m = hmtest::corpus::UVSphere(8, 12);
+	m.vertexColors.assign(m.vertices.size(), Mesh::Pixel(60, 60, 60));
+	Mesh::RemeshParams params;
+	// half the mean edge length, so the pass does real splitting and collapsing
+	const float meanLen = m.ComputeMeanEdgeLength();
+	ASSERT_GT(meanLen, 0.f);
+	params.SetEdgeLength(meanLen * 0.5f);
+	params.iterations = 2;
+	Mesh::RemeshStats stats;
+
+	m.RemeshIsotropic(params, &stats);
+
+	EXPECT_GT(stats.splitCount, 0u);
+	ASSERT_EQ(m.vertexColors.size(), m.vertices.size());
+	EXPECT_TRUE(m.ValidateInvariants());
+	// every source colour was the same, so every interpolated/moved one must be too
+	for (size_t i = 0; i < m.vertexColors.size(); ++i)
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].x()), 60) << "at slot " << i;
+}
+
 TEST(MeshRemesh, HalfEdgeOnlyEntryMatchesPopulatedEntryWithoutBuild)
 {
 	Mesh populated = hmtest::corpus::UVSphere(8, 12);

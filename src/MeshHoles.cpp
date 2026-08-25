@@ -1190,15 +1190,29 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 			continue;
 		HoleFilling& hf = hfs[j];
 
+		const int nb = hf.NumBoundary();
+
+		// Interior points are new geometry with no source vertex, so give them the
+		// mean colour of the loop they patch -- vertexColors is a per-vertex array
+		// and must stay parallel to `vertices` (see Mesh::vertexColors).
+		Mesh::Pixel interiorColor(0, 0, 0);
+		if (!mesh.vertexColors.empty() && nb > 0) {
+			Eigen::Vector3i sum = Eigen::Vector3i::Zero();
+			for (int k = 0; k < nb; ++k)
+				sum += mesh.vertexColors[hf.ParentVertex(k)].cast<int>();
+			interiorColor = (sum / nb).cast<uint8_t>();
+		}
+
 		const std::size_t vertexStart = mesh.vertices.size();
 		std::vector<Mesh::VIndex> interiorParent(hf.NumInterior());
 		for (int k = 0; k < hf.NumInterior(); ++k) {
 			interiorParent[k] = static_cast<Mesh::VIndex>(mesh.vertices.size());
 			mesh.vertices.emplace_back(hf.InteriorPoint(k));
 			mesh.halfMesh.vHalfedges.emplace_back(math::NO_ID);
+			if (!mesh.vertexColors.empty())
+				mesh.vertexColors.emplace_back(interiorColor);
 		}
 
-		const int nb = hf.NumBoundary();
 		auto LocalToParent = [&](int local) -> Mesh::VIndex {
 			return (local < nb) ? hf.ParentVertex(local) : interiorParent[local - nb];
 		};
@@ -1217,12 +1231,16 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 		if (patchFaces.empty()) {
 			mesh.vertices.resize(vertexStart);
 			mesh.halfMesh.vHalfedges.resize(vertexStart);
+			if (!mesh.vertexColors.empty())
+				mesh.vertexColors.resize(vertexStart);
 			continue;
 		}
 		const Mesh::FIndex faceStart = mesh.halfMesh.FSize();
 		if (!mesh.halfMesh.FAddDisk(patchFaces)) {
 			mesh.vertices.resize(vertexStart);
 			mesh.halfMesh.vHalfedges.resize(vertexStart);
+			if (!mesh.vertexColors.empty())
+				mesh.vertexColors.resize(vertexStart);
 			continue;
 		}
 		ASSERT([&]() {

@@ -189,6 +189,30 @@ TEST(MeshHolesTest, FillsSyntheticPolygonHole)
 		EXPECT_NEAR(m.vertices[v].z(), 0.f, 1e-3f);
 }
 
+// vertexColors is a per-vertex array that must stay parallel to `vertices`
+// (Mesh::vertexColors). Hole filling appends interior patch vertices, so it has
+// to append colors too -- pre-fix it grew `vertices` alone, leaving the colors
+// array short and every later index-based per-vertex op reading out of bounds.
+TEST(MeshHolesTest, CloseHolesKeepsVertexColorsInLockstep)
+{
+	Mesh m = MakeGridWithInteriorHole(6, 6);
+	for (size_t i = 0; i < m.vertices.size(); ++i)
+		m.vertexColors.emplace_back(uint8_t(7), uint8_t(9), uint8_t(11));
+	const size_t vertsBefore = m.vertices.size();
+
+	ASSERT_EQ(m.CloseHoles(SmallestHoleEdges(m)), 1u);
+
+	ASSERT_GT(m.vertices.size(), vertsBefore) << "fill must have added interior vertices";
+	ASSERT_EQ(m.vertexColors.size(), m.vertices.size());
+	EXPECT_TRUE(m.ValidateInvariants());
+	// pre-existing colors survive untouched; the patch takes the loop's mean
+	for (size_t i = 0; i < m.vertexColors.size(); ++i) {
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].x()), 7) << "at slot " << i;
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].y()), 9) << "at slot " << i;
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].z()), 11) << "at slot " << i;
+	}
+}
+
 TEST(MeshHolesTest, RemoveVerticesAndFillLeavesPreExistingHoles)
 {
 	Mesh m;

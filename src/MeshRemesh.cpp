@@ -410,6 +410,12 @@ unsigned RemeshData::SplitLongEdges()
 			[[maybe_unused]] const HalfMesh::VIndex mNew = m.ESplit(iE);
 			ASSERT(mNew == static_cast<HalfMesh::VIndex>(mesh.vertices.size()));
 			mesh.vertices.push_back((mesh.vertices[a] + mesh.vertices[b]) * Mesh::Type(0.5));
+			if (!mesh.vertexColors.empty()) {
+				// the split vertex sits at the edge midpoint; its colour interpolates
+				// the same way the position does
+				const Eigen::Vector3i sum = mesh.vertexColors[a].cast<int>() + mesh.vertexColors[b].cast<int>();
+				mesh.vertexColors.emplace_back((sum / 2).cast<uint8_t>());
+			}
 			if (maintainSizing)
 				sizing.push_back(Mesh::Type(0.5) * (sizing[a] + sizing[b]));
 			if (maintainHint)
@@ -711,6 +717,10 @@ unsigned RemeshData::CollapseShortEdges()
 		// mirror the half-edge swap-pop on the parallel per-vertex arrays
 		mesh.vertices[newIdxVertex] = mesh.vertices.back();
 		mesh.vertices.pop_back();
+		if (!mesh.vertexColors.empty()) {
+			mesh.vertexColors[newIdxVertex] = mesh.vertexColors.back();
+			mesh.vertexColors.pop_back();
+		}
 		if (!sizing.empty()) {
 			sizing[newIdxVertex] = sizing.back();
 			sizing.pop_back();

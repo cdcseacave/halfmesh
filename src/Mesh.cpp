@@ -99,7 +99,8 @@ void Mesh::InvalidateHalfMesh()
 
 bool Mesh::ValidateInvariants() const
 {
-	return (faces.empty() || halfMesh.Empty() || faces.size() == halfMesh.FSize()) && (halfMesh.Empty() || vertices.size() == halfMesh.VSize());
+	return (faces.empty() || halfMesh.Empty() || faces.size() == halfMesh.FSize()) && (halfMesh.Empty() || vertices.size() == halfMesh.VSize())
+	       && (vertexColors.empty() || vertexColors.size() == vertices.size());
 }
 
 bool Mesh::ValidateHalfMesh() const

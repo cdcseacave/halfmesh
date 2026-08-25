@@ -683,6 +683,34 @@ TEST(MeshRepairTest, FixNonManifoldBowtieSplitsVertex)
 	EXPECT_TRUE(m.halfMesh.Build(m));
 }
 
+// Splitting the bowtie vertex appends a duplicate of it; vertexColors is
+// parallel to `vertices` (Mesh::vertexColors), so the copy has to carry the
+// source colour -- exactly as RemoveFacesHalfEdgeImpl does for pinch splits.
+TEST(MeshRepairTest, FixNonManifoldKeepsVertexColorsInLockstep)
+{
+	Mesh m;
+	m.vertices = {
+	    {0.f, 0.f, 0.f}, // v0: bowtie centre
+	    {1.f, 1.f, 0.f},
+	    {-1.f, 1.f, 0.f},
+	    {1.f, -1.f, 0.f},
+	    {-1.f, -1.f, 0.f},
+	};
+	m.faces = {{0, 1, 2}, {0, 3, 4}};
+	for (uint8_t i = 0; i < 5; ++i)
+		m.vertexColors.emplace_back(i, i, i); // vertex i tagged colour i
+
+	ASSERT_GE(m.FixNonManifold(/*thMoveDuplicate=*/0.01f), 1u);
+
+	ASSERT_EQ(m.vertexColors.size(), m.vertices.size());
+	EXPECT_TRUE(m.ValidateInvariants());
+	// the originals keep their tags, and the split copies inherit v0's
+	for (uint8_t i = 0; i < 5; ++i)
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].x()), i) << "original at slot " << unsigned(i);
+	for (size_t i = 5; i < m.vertexColors.size(); ++i)
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].x()), 0) << "split copy of v0 at slot " << i;
+}
+
 TEST(MeshRepairTest, FixNonManifoldManifoldMeshUnchanged)
 {
 	Mesh m = MakeTetra();

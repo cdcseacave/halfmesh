@@ -613,6 +613,10 @@ unsigned Mesh::FixNonManifold(float thMoveDuplicate, std::vector<VIndex>* duplic
 			const VIndex idxVertNew = static_cast<VIndex>(vertices.size());
 			const Vertex v = vertices[idxVert];
 			vertices.emplace_back(v);
+			// the split copy carries the source vertex's colour, as in
+			// RemoveFacesHalfEdgeImpl's pinch splits
+			if (!vertexColors.empty())
+				vertexColors.emplace_back(vertexColors[idxVert]);
 			if (duplicatedVertices)
 				duplicatedVertices->emplace_back(idxVert);
 			// update the face indices of the current component
