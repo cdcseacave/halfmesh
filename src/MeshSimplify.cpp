@@ -63,12 +63,15 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	// early-return convention of the smoothers and CloseHoles.
 	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
 		return;
-	ListHalfEdges();
-	ASSERT(ValidateInvariants());
+	// The identity guard precedes ListHalfEdges(): a build is not free, and on
+	// non-manifold input the safe path repairs/manifoldizes in place, so probing
+	// connectivity first would let an identity call mutate topology.
 	if (minEdgeLength <= 0 && decimateRatio == 1.f) {
 		SyncFacesOnPublicExit();
 		return; // identity: nothing to decimate
 	}
+	ListHalfEdges();
+	ASSERT(ValidateInvariants());
 	ASSERT(decimateRatio > 0);
 	ASSERT(minEdgeLength <= 0 || decimateRatio == 1.f);
 	TIMER_START("Simplify");

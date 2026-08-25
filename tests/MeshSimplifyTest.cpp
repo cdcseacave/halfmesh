@@ -604,6 +604,29 @@ TEST(MeshSimplifyTest, IdentityRatioIsNoOp)
 	EXPECT_EQ(mesh.faces.size(), numFaces);
 }
 
+// "No-op" has to mean no-op on non-manifold input too. The identity guard sits
+// ahead of ListHalfEdges() precisely because the safe path repairs and
+// manifoldizes in place: probing connectivity first turned an identity Simplify
+// into a silent topology edit, and paid a full Build for it.
+TEST(MeshSimplifyTest, IdentityRatioLeavesNonManifoldInputAloneWithoutBuild)
+{
+	// bowtie: two triangles meeting at v0 only -- non-manifold, so a build would
+	// fall back to the repairing path
+	Mesh mesh;
+	mesh.vertices = {
+	    {0.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {-1.f, 1.f, 0.f}, {1.f, -1.f, 0.f}, {-1.f, -1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}, {0, 3, 4}};
+	const auto vertices = mesh.vertices;
+	const auto faces = mesh.faces;
+
+	HalfMesh::ResetBuildCount();
+	mesh.Simplify(1.f);
+
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u) << "an identity call must not pay a build";
+	EXPECT_EQ(mesh.vertices, vertices);
+	EXPECT_EQ(mesh.faces, faces) << "an identity call must not manifoldize";
+}
+
 TEST(MeshSimplifyTest, HalfEdgeOnlyEntryMatchesPopulatedEntryWithoutBuild)
 {
 	Mesh populated = hmtest::corpus::UVSphere(8, 12);

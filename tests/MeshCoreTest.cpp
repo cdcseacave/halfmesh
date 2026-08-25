@@ -366,6 +366,62 @@ TEST(MeshCore, HalfEdgePipelineBuildsAndHarvestsOnce)
 	EXPECT_EQ(HalfMesh::FFacesCount(), 1u);
 }
 
+// Public half-edge mutators harvest on exit, but must route it through
+// SyncFacesOnPublicExit() so an enclosing pipeline scope keeps its "one harvest
+// at End" budget. RemoveFacesHalfEdge called SyncFaces() outright, forcing a
+// snapshot mid-pipeline.
+TEST(MeshCore, RemoveFacesHalfEdgeDefersHarvestInsidePipeline)
+{
+	Mesh mesh = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {2, 1, 3}});
+	mesh.BeginHalfEdgePipeline();
+	HalfMesh::ResetFFacesCount();
+
+	std::vector<Mesh::FIndex> removes = {0};
+	mesh.RemoveFacesHalfEdge(removes);
+	EXPECT_EQ(HalfMesh::FFacesCount(), 0u) << "no harvest may happen inside the scope";
+	EXPECT_TRUE(mesh.faces.empty());
+
+	mesh.EndHalfEdgePipeline();
+	EXPECT_EQ(HalfMesh::FFacesCount(), 1u);
+	EXPECT_EQ(mesh.faces.size(), 1u);
+}
+
+// Outside a pipeline the same call is a public exit: it must leave faces synced
+// whether or not anything was actually removed.
+TEST(MeshCore, RemoveFacesHalfEdgeSyncsFacesEvenWhenNothingRemoved)
+{
+	Mesh mesh = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {2, 1, 3}});
+	mesh.ListHalfEdges();
+	mesh.InvalidateFaces(); // half-edge-only entry
+	ASSERT_TRUE(mesh.faces.empty());
+
+	std::vector<Mesh::FIndex> noRemoves;
+	mesh.RemoveFacesHalfEdge(noRemoves);
+
+	EXPECT_EQ(mesh.faces.size(), 2u) << "a public exit always leaves a face snapshot";
+	EXPECT_TRUE(mesh.ValidateInvariants());
+}
+
+// ComputeMeanEdgeLength is a utility, so it has to tolerate a mesh with no
+// connectivity: ListHalfEdges() asserts when vertices are present without
+// faces, so the empty-edge guard belongs ahead of it, not after.
+TEST(MeshCore, ComputeMeanEdgeLengthOnMeshWithoutFacesReturnsZero)
+{
+	Mesh mesh;
+	mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	ASSERT_TRUE(mesh.faces.empty());
+	ASSERT_TRUE(mesh.halfMesh.Empty());
+
+	EXPECT_EQ(mesh.ComputeMeanEdgeLength(), 0.f);
+
+	Mesh empty;
+	EXPECT_EQ(empty.ComputeMeanEdgeLength(), 0.f);
+}
+
 // Building a scratch HalfMesh from a half-edge-only Mesh must harvest into its
 // own snapshot, not materialize the source's derived `faces` array behind the
 // caller's back (the source is taken by const reference).

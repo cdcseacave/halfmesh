@@ -177,6 +177,15 @@ struct SkylineBin
 	}
 };
 
+// A rect's extent plus the gutter kept on both sides, widened to int64_t so the
+// sum cannot overflow whatever int-sized extent the caller handed in. Every
+// padded-size decision goes through this one place; computing it in int at any
+// of them is undefined behaviour for extents near INT_MAX.
+inline int64_t PaddedExtent(int extent, unsigned padding)
+{
+	return static_cast<int64_t>(extent) + 2 * static_cast<int64_t>(padding);
+}
+
 // Round up to next power-of-two >= v.
 inline unsigned NextPow2(unsigned v)
 {
@@ -506,12 +515,19 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 		int pageW = std::max(params.pageSize.width, 1);
 		int pageH = std::max(params.pageSize.height, 1);
 		unsigned targetCount = 0;
+		// Grow in int64_t and saturate on the way back: a rect near INT_MAX plus
+		// its gutter does not fit an int, and the `impossible` test that would
+		// reject it runs further down.
+		const auto GrowToFit = [](int& page, int64_t padded) {
+			page = static_cast<int>(std::min<int64_t>(std::max<int64_t>(page, padded),
+			                                          std::numeric_limits<int>::max()));
+		};
 		for (const cv::Rect& rect : rects) {
 			if (rect.width <= 0 || rect.height <= 0)
 				continue;
 			++targetCount;
-			pageW = std::max(pageW, rect.width + 2 * static_cast<int>(params.padding));
-			pageH = std::max(pageH, rect.height + 2 * static_cast<int>(params.padding));
+			GrowToFit(pageW, PaddedExtent(rect.width, params.padding));
+			GrowToFit(pageH, PaddedExtent(rect.height, params.padding));
 		}
 		const auto NormalizePageSize = [&](int& width, int& height) {
 			if (params.powerOfTwo) {
@@ -535,8 +551,8 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 		const bool impossible = std::any_of(rects.begin(), rects.end(), [&](const cv::Rect& rect) {
 			if (rect.width <= 0 || rect.height <= 0)
 				return false;
-			const int64_t paddedW = static_cast<int64_t>(rect.width) + 2 * static_cast<int64_t>(params.padding);
-			const int64_t paddedH = static_cast<int64_t>(rect.height) + 2 * static_cast<int64_t>(params.padding);
+			const int64_t paddedW = PaddedExtent(rect.width, params.padding);
+			const int64_t paddedH = PaddedExtent(rect.height, params.padding);
 			return !((paddedW <= maxPageW && paddedH <= maxPageH)
 			         || (params.allowRotation && paddedH <= maxPageW && paddedW <= maxPageH));
 		});

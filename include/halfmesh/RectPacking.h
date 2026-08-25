@@ -43,8 +43,7 @@ struct RectPlacement
 	bool packed = false;
 };
 
-enum class RectPackMode
-{
+enum class RectPackMode {
 	// Repack from scratch while doubling page dimensions until every input fits
 	// one page (or maxPageSize is reached).
 	GrowSinglePage,

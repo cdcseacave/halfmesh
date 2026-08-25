@@ -28,6 +28,7 @@
 
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <string>
@@ -1529,6 +1530,51 @@ TEST(RectPacking, GrowSinglePageHonorsMaximumSize)
 	const RectPackResult result = PackRectangles(rects, params, placements);
 	EXPECT_EQ(result.pageSize, cv::Size(8, 8));
 	EXPECT_EQ(result.numPacked, 1u);
+}
+
+// GrowSinglePage sized its page with `rect.width + 2*padding` in int, which is
+// signed overflow -- UB -- for an extent near INT_MAX, and it ran before the
+// int64_t `impossible` test that rejects such a rect. Sizing now widens to
+// int64_t and saturates, so this is a well-defined "does not fit" instead.
+// Under UBSan a regression here trips the signed-overflow check.
+TEST(RectPacking, GrowSinglePageDoesNotOverflowOnHugeRects)
+{
+	const std::vector<cv::Rect> rects{
+	    cv::Rect(0, 0, std::numeric_limits<int>::max(), 4),
+	    cv::Rect(0, 0, 8, 8)};
+	RectPackParams params;
+	params.pageSize = cv::Size(16, 16);
+	params.maxPageSize = cv::Size(64, 64);
+	params.padding = 4;
+	params.allowRotation = false;
+	params.mode = RectPackMode::GrowSinglePage;
+	std::vector<RectPlacement> placements;
+
+	const RectPackResult result = PackRectangles(rects, params, placements);
+
+	ASSERT_EQ(placements.size(), rects.size());
+	EXPECT_FALSE(placements[0].packed) << "an INT_MAX-wide rect cannot fit a 64px cap";
+	EXPECT_LE(result.pageSize.width, 64);
+	EXPECT_GT(result.pageSize.width, 0) << "page width must not wrap negative";
+	EXPECT_GT(result.pageSize.height, 0);
+}
+
+// Same arithmetic, but uncapped: growth must saturate at INT_MAX rather than
+// wrap, and the call must terminate.
+TEST(RectPacking, GrowSinglePageSaturatesUncappedGrowth)
+{
+	const std::vector<cv::Rect> rects{cv::Rect(0, 0, std::numeric_limits<int>::max(), 2)};
+	RectPackParams params;
+	params.pageSize = cv::Size(8, 8);
+	params.padding = 2;
+	params.mode = RectPackMode::GrowSinglePage;
+	std::vector<RectPlacement> placements;
+
+	const RectPackResult result = PackRectangles(rects, params, placements);
+
+	ASSERT_EQ(placements.size(), 1u);
+	EXPECT_GT(result.pageSize.width, 0) << "page width must not wrap negative";
+	EXPECT_GT(result.pageSize.height, 0);
 }
 
 TEST(RectPacking, GrowSinglePageStopsWhenAxisCapMakesInputImpossible)

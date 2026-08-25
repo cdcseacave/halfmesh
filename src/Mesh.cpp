@@ -349,6 +349,10 @@ real Mesh::ComputeArea(const std::vector<FIndex>& indices) const
 
 Mesh::Type Mesh::ComputeMeanEdgeLength()
 {
+	// A mesh with no connectivity has no edges to average; guard before
+	// ListHalfEdges(), which requires faces when vertices are present.
+	if (faces.empty() && halfMesh.Empty())
+		return 0;
 	ListHalfEdges();
 	if (halfMesh.ESize() == 0)
 		return 0;
@@ -776,8 +780,11 @@ void Mesh::RemoveFacesHalfEdge(std::vector<FIndex>& faceRemoves)
 {
 	std::vector<VIndex> removedVerts;
 	std::vector<VIndex> splitSrcVerts;
-	if (RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts))
-		SyncFaces();
+	RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts);
+	// Public exit: harvest unless a BeginHalfEdgePipeline scope owns the single
+	// final harvest. Unconditional, so a half-edge-only entry that removed
+	// nothing still leaves the caller with a face snapshot.
+	SyncFacesOnPublicExit();
 }
 
 } // namespace halfmesh
