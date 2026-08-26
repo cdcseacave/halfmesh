@@ -94,7 +94,7 @@ struct BakeResult
 // corresponding blobDims entry -- including the single entry produced for
 // an empty blobDims -- are classified against the bare floor threshold of 2. Always returns max(blobDims.size(), 1) entries.
 std::vector<bool> UVBlobsAreNormalized(const std::vector<Mesh::TexCoord>& uv,
-                                       const std::vector<Mesh::FIndex>& faceBlobs,
+                                       const std::vector<Mesh::TexIndex>& faceBlobs,
                                        const std::vector<Eigen::Vector2i>& blobDims);
 
 // (cols,rows) of each m.texturesDiffuse image: the per-blob dims the
@@ -133,7 +133,7 @@ class SameUVResolver : public SourceResolver
 {
 	public:
 	SameUVResolver(std::vector<Mesh::TexCoord> origTexcoords,
-	               std::vector<Mesh::FIndex> origBlobs,
+	               std::vector<Mesh::TexIndex> origBlobs,
 	               std::vector<Eigen::Vector2i> blobDims);
 	bool Resolve(Mesh::FIndex tgtFace, const Vector3& bary,
 	             const Vector3& pos, const Mesh::Normal& nrm,
@@ -143,7 +143,7 @@ class SameUVResolver : public SourceResolver
 
 	private:
 	std::vector<Mesh::TexCoord> texcoords; // per-corner (faces*3)
-	std::vector<Mesh::FIndex> blobs; // per-face, or empty (single blob)
+	std::vector<Mesh::TexIndex> blobs; // per-face, or empty (single blob)
 	std::vector<Eigen::Vector2i> dims; // (cols,rows) per blob
 	std::vector<bool> normalized; // per blob: snapshot UVs are [0,1]
 };

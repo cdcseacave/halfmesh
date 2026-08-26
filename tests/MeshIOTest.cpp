@@ -312,6 +312,111 @@ TEST(MeshIoTest, GLBTexturedPathPreserved)
 }
 
 // ---------------------------------------------------------------------------
+// SaveGLTF's imageFormat / embedImages parameters.
+//
+// tinygltf chooses its encoder from the image filename extension, which it
+// derives from the glTF mimeType -- so asserting on the emitted URI is what
+// actually proves the format reached the encoder.  Saved as .gltf (not .glb)
+// so the JSON, and with it the URI, is readable straight out of the file.
+// ---------------------------------------------------------------------------
+namespace {
+// Two disjoint triangles, one per texture blob.
+halfmesh::Mesh TwoBlobTexturedMesh()
+{
+	halfmesh::Mesh mesh;
+	mesh.vertices = {
+	    halfmesh::Mesh::Vertex(0.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(1.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(0.f, 1.f, 0.f),
+	    halfmesh::Mesh::Vertex(2.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(3.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(2.f, 1.f, 0.f),
+	};
+	mesh.faces = {halfmesh::Mesh::Face(0, 1, 2), halfmesh::Mesh::Face(3, 4, 5)};
+	mesh.faceTexcoords = {
+	    {0.f, 0.f},
+	    {2.f, 0.f},
+	    {0.f, 2.f},
+	    {0.f, 0.f},
+	    {2.f, 0.f},
+	    {0.f, 2.f},
+	};
+	mesh.faceTexblobs = {0, 1}; // face-indexed on input
+	mesh.texturesDiffuse.emplace_back(cv::Mat(2, 2, CV_8UC3, cv::Scalar(200, 100, 50)));
+	mesh.texturesDiffuse.emplace_back(cv::Mat(2, 2, CV_8UC3, cv::Scalar(10, 220, 30)));
+	return mesh;
+}
+
+std::string ReadWholeFile(const std::string& path)
+{
+	std::ifstream f(path, std::ios::binary);
+	return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+} // anonymous namespace
+
+TEST(MeshIoTest, SaveGLTFEmbeddedImageFormat)
+{
+	halfmesh::Mesh mesh = TwoBlobTexturedMesh();
+	ASSERT_TRUE(mesh.HasTexture());
+
+	const std::string jpgPath =
+	    (std::filesystem::temp_directory_path() / "halfmesh_fmt_jpg.gltf").string();
+	ASSERT_TRUE(mesh.SaveGLTF(jpgPath, /*binary=*/false, halfmesh::Mesh::ImageFormat::JPG,
+	                          /*embedImages=*/true));
+	const std::string jpgJson = ReadWholeFile(jpgPath);
+	EXPECT_NE(jpgJson.find("data:image/jpeg;base64,"), std::string::npos)
+	    << "JPG + embedImages must inline a JPEG data URI";
+	EXPECT_EQ(jpgJson.find("data:image/png;base64,"), std::string::npos);
+
+	const std::string pngPath =
+	    (std::filesystem::temp_directory_path() / "halfmesh_fmt_png.gltf").string();
+	ASSERT_TRUE(mesh.SaveGLTF(pngPath, /*binary=*/false, halfmesh::Mesh::ImageFormat::PNG,
+	                          /*embedImages=*/true));
+	const std::string pngJson = ReadWholeFile(pngPath);
+	EXPECT_NE(pngJson.find("data:image/png;base64,"), std::string::npos)
+	    << "PNG + embedImages must inline a PNG data URI";
+	EXPECT_EQ(pngJson.find("data:image/jpeg;base64,"), std::string::npos);
+
+	// The default still embeds JPEG, so existing callers are unaffected.
+	const std::string defPath =
+	    (std::filesystem::temp_directory_path() / "halfmesh_fmt_default.gltf").string();
+	ASSERT_TRUE(mesh.SaveGLTF(defPath, /*binary=*/false));
+	EXPECT_NE(ReadWholeFile(defPath).find("data:image/jpeg;base64,"), std::string::npos);
+}
+
+// Each blob must land in its OWN sidecar: the images are named per blob, and a
+// shared name would have every blob overwrite, and then reference, one file.
+TEST(MeshIoTest, SaveGLTFExternalImagesArePerBlob)
+{
+	halfmesh::Mesh mesh = TwoBlobTexturedMesh();
+	ASSERT_TRUE(mesh.HasTexture());
+
+	const std::filesystem::path dir =
+	    std::filesystem::temp_directory_path() / "halfmesh_gltf_external";
+	std::filesystem::remove_all(dir);
+	std::filesystem::create_directories(dir);
+	const std::string outPath = (dir / "scene.gltf").string();
+
+	ASSERT_TRUE(mesh.SaveGLTF(outPath, /*binary=*/false, halfmesh::Mesh::ImageFormat::PNG,
+	                          /*embedImages=*/false));
+
+	const std::filesystem::path tex0 = dir / "scene_diffuse00.png";
+	const std::filesystem::path tex1 = dir / "scene_diffuse01.png";
+	EXPECT_TRUE(std::filesystem::exists(tex0)) << "missing sidecar: " << tex0;
+	EXPECT_TRUE(std::filesystem::exists(tex1)) << "missing sidecar: " << tex1;
+	EXPECT_GT(std::filesystem::file_size(tex0), 0u);
+
+	// Nothing inlined, and both sidecars referenced.
+	const std::string json = ReadWholeFile(outPath);
+	EXPECT_EQ(json.find("data:image/"), std::string::npos)
+	    << "embedImages=false must not inline any image";
+	EXPECT_NE(json.find("scene_diffuse00.png"), std::string::npos);
+	EXPECT_NE(json.find("scene_diffuse01.png"), std::string::npos);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
 // glTF geometry round-trip: Save(.glb) -> Load(.glb).
 //
 // SaveGLTF bakes a z-up->y-up node matrix into the scene, so the reloaded mesh

@@ -83,7 +83,7 @@ Mesh::TexCoord InterpUV(const Mesh::TexCoord& t0, const Mesh::TexCoord& t1,
 // (caught by SliverSourceUVStaysInChart: mx=8 on a 16px texture, threshold
 // max(2,8)=8).
 std::vector<bool> UVBlobsAreNormalized(const std::vector<Mesh::TexCoord>& uv,
-                                       const std::vector<Mesh::FIndex>& faceBlobs,
+                                       const std::vector<Mesh::TexIndex>& faceBlobs,
                                        const std::vector<Eigen::Vector2i>& blobDims)
 {
 	const size_t numBlobs = std::max<size_t>(blobDims.size(), 1);
@@ -263,7 +263,7 @@ bool TriangleCoversAnyPixel(const Point2& v1, const Point2& v2, const Point2& v3
 // SameUVResolver
 // -------------------------------------------------------------------------
 SameUVResolver::SameUVResolver(std::vector<Mesh::TexCoord> origTexcoords,
-                               std::vector<Mesh::FIndex> origBlobs,
+                               std::vector<Mesh::TexIndex> origBlobs,
                                std::vector<Eigen::Vector2i> blobDims) :
     texcoords(std::move(origTexcoords)), blobs(std::move(origBlobs)),
     dims(std::move(blobDims)), normalized(UVBlobsAreNormalized(texcoords, blobs, dims))
@@ -864,7 +864,7 @@ BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 	// Snapshot the original layout + textures BEFORE any modification, so the
 	// SameUV resolver can map each (unchanged) face back to its original texture.
 	std::vector<Mesh::TexCoord> origUv = mesh.faceTexcoords;
-	std::vector<Mesh::FIndex> origBlob = mesh.faceTexblobs;
+	std::vector<Mesh::TexIndex> origBlob = mesh.faceTexblobs;
 	const std::vector<Image3u> origTex = mesh.texturesDiffuse;
 
 	// Decide the layout from the ORIGINAL (pre-relayout) UV/texture budget.

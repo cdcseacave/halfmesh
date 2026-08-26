@@ -15,9 +15,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# packages:write lets the vcpkg binary cache push to this owner's GitHub Packages
+# NuGet feed; actions:read is what actions/download-artifact@v4 needs in
+# python-crosscheck. Naming any permission here drops the token to exactly this
+# set, so both must be spelled out alongside contents:read.
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
 env:
   # Shared vcpkg commit pin — must match the "builtin-baseline" in vcpkg.json.
   VCPKG_COMMIT: 0ac8df3b98e3afcd8bf075fa74a6bd2c32613345
+  VCPKG_FEATURE_FLAGS: manifests,binarycaching,registries
   # The 9 golden fixtures classified CompareMode::CANONICAL_EXACT in
   # tests/golden/GoldenSpecs.h (exact canonical-mesh equality against a frozen
   # fixture) — excluded on the -march legs of opt-in-build-flags, which are free
@@ -47,6 +57,69 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      # macOS uses the `files` backend (see below); persist that folder between runs.
+      - name: Cache vcpkg binary packages (macOS only)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-cache
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-
+
+      - &vcpkg-cache-step
+        name: Configure vcpkg binary cache
+        # lukka/run-vcpkg@v11 defaults VCPKG_BINARY_SOURCES to "clear;x-gha,readwrite",
+        # and Microsoft REMOVED the x-gha backend in April 2025 (vcpkg-tool #1662)
+        # after GitHub asked them to stop consuming the Actions Cache internal API.
+        # vcpkg only warns about it, so every job here has silently been building
+        # all of opencv4/eigen/gtest from source -- ~10-13 min per job, 10 jobs.
+        # A NuGet feed on GitHub Packages is the migration path Microsoft
+        # recommends, and the one openMVS already uses: each port is its own
+        # package keyed by its ABI hash, so touching one dependency invalidates
+        # only that port rather than the whole tree.
+        env:
+          # GITHUB_TOKEN carries packages:write for in-repo events. On a PR from a
+          # fork it is read-only, so read the cache (forks still skip the rebuild)
+          # but skip the push path rather than failing the run.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUGET_FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true }}
+        # build-test also runs this on windows, where the default shell is pwsh.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # nuget.exe needs mono, and mono on Apple Silicon is unreliable. The
+            # macOS leg is a single short job, so fall back to the plain `files`
+            # backend over a workspace folder that actions/cache tarballs.
+            mkdir -p "${GITHUB_WORKSPACE}/vcpkg-cache"
+            echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-cache,readwrite" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # nuget.exe is a .NET assembly; on Linux vcpkg invokes it through mono.
+            sudo apt-get update -y
+            sudo apt-get install -y mono-complete
+          fi
+          if [ "$IS_FORK_PR" = "true" ]; then
+            NUGET_MODE=read
+            echo "Fork PR: vcpkg NuGet cache is READ-ONLY (its token cannot push to GitHub Packages)."
+          else
+            NUGET_MODE=readwrite
+          fi
+          NUGET="$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)"
+          run_nuget() {
+            if [ "$RUNNER_OS" = "Windows" ]; then "$NUGET" "$@"; else mono "$NUGET" "$@"; fi
+          }
+          # The GH Packages endpoint demands auth even to read, so register the
+          # source in both modes; only setapikey is gated on being able to push.
+          run_nuget sources add -Source "$NUGET_FEED" -StorePasswordInClearText             -Name GitHubPackages -UserName "${{ github.repository_owner }}" -Password "$GH_TOKEN"
+          if [ "$NUGET_MODE" = "readwrite" ]; then
+            run_nuget setapikey "$GH_TOKEN" -Source "$NUGET_FEED"
+          fi
+          echo "VCPKG_BINARY_SOURCES=clear;nuget,$NUGET_FEED,$NUGET_MODE" >> "$GITHUB_ENV"
 
       - name: Configure
         run: >
@@ -97,6 +170,8 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
+      - *vcpkg-cache-step
+
       - name: Configure (ASan + UBSan Debug)
         run: >
           cmake -S . -B build-san
@@ -136,6 +211,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (TSan RelWithDebInfo)
         run: >
@@ -188,6 +265,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (RelWithDebInfo)
         run: >
@@ -303,6 +382,8 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
+      - *vcpkg-cache-step
+
       - name: Configure (with libigl crosschecks)
         run: >
           cmake -S . -B build-xc
@@ -335,6 +416,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (perf harness)
         run: >
@@ -369,6 +452,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (bench harness)
         run: >
@@ -471,6 +556,8 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
+      - *vcpkg-cache-step
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -520,6 +607,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (${{ matrix.name }})
         run: >
@@ -590,6 +679,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (export compile commands)
         run: >

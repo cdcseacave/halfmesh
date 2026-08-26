@@ -1046,7 +1046,7 @@ TEST(TextureBakeTest, ClassifierSkipsOutOfRangeBlobIndices)
 	const std::vector<Mesh::TexCoord> uv = {
 	    Mesh::TexCoord(0.1f, 0.2f), Mesh::TexCoord(0.9f, 0.1f), Mesh::TexCoord(0.5f, 0.8f),
 	    Mesh::TexCoord(300, 300), Mesh::TexCoord(400, 300), Mesh::TexCoord(350, 400)};
-	const std::vector<Mesh::FIndex> blobs = {0, 7};
+	const std::vector<Mesh::TexIndex> blobs = {0, 7};
 	const std::vector<Eigen::Vector2i> dims = {Eigen::Vector2i(256, 256)};
 	const std::vector<bool> norm = UVBlobsAreNormalized(uv, blobs, dims);
 	ASSERT_EQ(norm.size(), 1u);
@@ -1067,7 +1067,7 @@ TEST(TextureBakeTest, ClassifierGuardsMismatchedBlobListSize)
 	const std::vector<Mesh::TexCoord> uv = {
 	    Mesh::TexCoord(0.1f, 0.2f), Mesh::TexCoord(0.9f, 0.1f), Mesh::TexCoord(0.5f, 0.8f),
 	    Mesh::TexCoord(0.2f, 0.3f), Mesh::TexCoord(0.8f, 0.2f), Mesh::TexCoord(0.4f, 0.7f)};
-	const std::vector<Mesh::FIndex> blobs = {1};
+	const std::vector<Mesh::TexIndex> blobs = {1};
 	const std::vector<Eigen::Vector2i> dims = {Eigen::Vector2i(64, 64),
 	                                           Eigen::Vector2i(64, 64)};
 	const std::vector<bool> norm = UVBlobsAreNormalized(uv, blobs, dims);

@@ -38,7 +38,7 @@ void Mesh::ReleaseOptional()
 	vertexColors = std::vector<Pixel>();
 	faceNormals = std::vector<Normal>();
 	faceTexcoords = std::vector<TexCoord>();
-	faceTexblobs = std::vector<FIndex>();
+	faceTexblobs = std::vector<TexIndex>();
 	texturesDiffuse = std::vector<Image3u>();
 	vertexFaces = std::vector<VertexFaces>();
 }

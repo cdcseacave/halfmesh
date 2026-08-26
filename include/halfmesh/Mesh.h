@@ -34,6 +34,9 @@ class Mesh
 
 	typedef Eigen::Matrix<Type, 3, 1> Normal;
 	typedef Eigen::Matrix<Type, 2, 1> TexCoord;
+	// Per-face texture-blob id. uint8 to match openMVS's MVS::Mesh::TexIndex
+	// byte for byte, so ConvertMesh is a straight copy in both directions.
+	typedef uint8_t TexIndex;
 
 	typedef std::vector<FIndex> VertexFaces;
 	typedef Eigen::Matrix<FIndex, 3, 1> FaceFaces;
@@ -60,8 +63,17 @@ class Mesh
 	std::vector<Pixel> vertexColors; // color for each vertex
 	std::vector<Normal> faceNormals; // normal for each face
 	std::vector<TexCoord> faceTexcoords; // absolute texture-coordinates for each face vertex (no.faces*3)
-	std::vector<FIndex> faceTexblobs; // for each face, the corresponding texture ID, or empty if only one blob (no.faces or 0)
+	// For each face, the corresponding texture ID, or empty if only one blob
+	// (no.faces or 0). Capped at MAX_TEXBLOBS -- see the note on TexIndex.
+	std::vector<TexIndex> faceTexblobs;
 	std::vector<Image3u> texturesDiffuse; // diffuse color images, one for each texture blob (no.blobs)
+
+	// Largest texture-blob count a mesh may carry. openMVS holds its texture
+	// array as cList<Image8U3,...,TexIndex>, whose size field is that same
+	// uint8, so 255 is the largest count both sides can address faithfully
+	// (a 256th entry would wrap its size to 0). Valid ids are 0..254.
+	static constexpr size_t MAX_TEXBLOBS = 255;
+	static constexpr TexIndex MAX_TEXBLOB_ID = (TexIndex)(MAX_TEXBLOBS - 1);
 
 	// optional tools
 	std::vector<VertexFaces> vertexFaces; // list of incident faces for each vertex (in increasing order)
@@ -118,6 +130,14 @@ class Mesh
 	// split a textured mesh in multiple meshes, one per texture
 	std::vector<Mesh> ToOneMeshPerTexblob() const;
 
+	// Image encoding SaveGLTF uses for the diffuse textures. tinygltf selects
+	// its encoder from the image's file extension, which it derives from the
+	// glTF mimeType -- so this maps directly onto that mimeType.
+	enum class ImageFormat : uint8_t {
+		JPG, // lossy but compact; what a textured mesh normally wants
+		PNG, // lossless, several times larger
+	};
+
 	// import/export PLY/GLTF mesh
 	// Load dispatches on the file extension: .ply -> LoadPLY, .glb/.gltf -> LoadGLTF
 	bool Load(const std::string& fileName);
@@ -125,7 +145,12 @@ class Mesh
 	bool LoadGLTF(const std::string& fileName);
 	bool Save(const std::string& fileName, bool binary = true) const;
 	bool SavePLY(const std::string& fileName, bool binary = true) const;
-	bool SaveGLTF(const std::string& fileName, bool binary = true) const;
+	// imageFormat and embedImages apply only to the diffuse textures. Embedded
+	// images ride inside the file as base64 data URIs, which is the only
+	// self-contained option; otherwise they are written beside `fileName` as
+	// <stem>_diffuse<NN>.<ext> and referenced by relative URI.
+	bool SaveGLTF(const std::string& fileName, bool binary = true,
+	              ImageFormat imageFormat = ImageFormat::JPG, bool embedImages = true) const;
 	bool ExportSeamEdges(std::vector<std::pair<VIndex, VIndex>> seamEdges, const std::string& fileName, bool binary = true) const;
 	bool ExportSeamEdges(const std::string& fileName, bool binary = true) const;
 
@@ -254,7 +279,7 @@ class Mesh
 	// unnormalize and flip Y axis texture coordinates
 	std::vector<TexCoord> FTexcoordsUnNormalizeFlipY() const;
 	// get the texture blob corresponding to the given face
-	FIndex FTexblob(FIndex i) const
+	TexIndex FTexblob(FIndex i) const
 	{
 		ASSERT(HasTextureCoordinates());
 		return faceTexblobs.empty() ? 0 : faceTexblobs[i];
