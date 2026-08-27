@@ -1,5 +1,5 @@
 # halfmesh formatting rules: tabs for indentation, no column limit, opening
-# brace on its own line for classes/structs/functions.
+# brace on its own line for classes/structs/functions. These are OpenMVS rules.
 ---
 Language: Cpp
 BasedOnStyle: LLVM
@@ -14,7 +14,7 @@ NamespaceIndentation: None
 IndentPPDirectives: BeforeHash
 
 # Line breaking
-ColumnLimit: 0
+ColumnLimit: 0  # preserve long lines; project has many >120
 ReflowComments: false
 KeepEmptyLinesAtTheStartOfBlocks: false
 
@@ -35,7 +35,7 @@ BraceWrapping:
 
 # Pointers/references
 DerivePointerAlignment: false
-PointerAlignment: Left
+PointerAlignment: Left   # Type*& var, const Type& name
 
 # Short constructs on one line
 AllowShortBlocksOnASingleLine: Empty

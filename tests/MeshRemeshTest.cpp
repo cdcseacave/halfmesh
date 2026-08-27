@@ -984,6 +984,59 @@ TEST(MeshRemesh, StatsAndToggles)
 	}
 }
 
+// Remesh splits edges (appending a midpoint vertex) and collapses them (swap-pop
+// on the vertex array). It already mirrored both onto its own `sizing` and
+// `projectHint` arrays but not onto Mesh::vertexColors, which is subject to the
+// same parallel-array contract -- so a colored mesh came out with a colors array
+// of the wrong length and stale entries at swapped slots.
+TEST(MeshRemesh, KeepsVertexColorsInLockstep)
+{
+	Mesh m = hmtest::corpus::UVSphere(8, 12);
+	m.vertexColors.assign(m.vertices.size(), Mesh::Pixel(60, 60, 60));
+	Mesh::RemeshParams params;
+	// half the mean edge length, so the pass does real splitting and collapsing
+	const float meanLen = m.ComputeMeanEdgeLength();
+	ASSERT_GT(meanLen, 0.f);
+	params.SetEdgeLength(meanLen * 0.5f);
+	params.iterations = 2;
+	Mesh::RemeshStats stats;
+
+	m.RemeshIsotropic(params, &stats);
+
+	EXPECT_GT(stats.splitCount, 0u);
+	ASSERT_EQ(m.vertexColors.size(), m.vertices.size());
+	EXPECT_TRUE(m.ValidateInvariants());
+	// every source colour was the same, so every interpolated/moved one must be too
+	for (size_t i = 0; i < m.vertexColors.size(); ++i)
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].x()), 60) << "at slot " << i;
+}
+
+TEST(MeshRemesh, HalfEdgeOnlyEntryMatchesPopulatedEntryWithoutBuild)
+{
+	Mesh populated = hmtest::corpus::UVSphere(8, 12);
+	Mesh native = populated;
+	populated.ListHalfEdges();
+	native.ListHalfEdges();
+	const float target = static_cast<float>(ComputeEdgeStats(populated).meanLen);
+	native.InvalidateFaces();
+	Mesh::RemeshParams params;
+	params.SetEdgeLength(target);
+	params.iterations = 1;
+	Mesh::RemeshStats populatedStats;
+	Mesh::RemeshStats nativeStats;
+
+	populated.RemeshIsotropic(params, &populatedStats);
+	HalfMesh::ResetBuildCount();
+	native.RemeshIsotropic(params, &nativeStats);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(native.vertices, populated.vertices);
+	EXPECT_EQ(native.faces, populated.faces);
+	EXPECT_EQ(nativeStats.splitCount, populatedStats.splitCount);
+	EXPECT_EQ(nativeStats.collapseCount, populatedStats.collapseCount);
+	EXPECT_EQ(nativeStats.flipCount, populatedStats.flipCount);
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
 // RemeshParams' edge lengths were the only fields without default
 // initializers — a default-constructed struct read indeterminate values, and
 // SplitLongEdges has no floor, so a garbage/non-positive edgeMaxLength
@@ -1025,6 +1078,23 @@ TEST(MeshRemesh, RemeshIsotropicRejectsInvalidEdgeLengths)
 		mesh.RemeshIsotropic(p);
 		EXPECT_EQ(mesh.faces.size(), 2u) << "NaN edge_max_length must be a no-op";
 	}
+}
+
+// Remeshing splits, collapses and tangentially relaxes vertices, so no authored
+// per-vertex normal survives it; the array is dropped rather than left stale, and
+// the invariant holds against the vertex set the pass ends with.
+TEST(MeshRemesh, ClearsAuthoredVertexNormals)
+{
+	Mesh m = hmtest::corpus::GridPlane(8); // 8x8 quads, side 1
+	m.vertexNormals.assign(m.vertices.size(), Mesh::Normal(0.f, 0.f, 1.f));
+
+	Mesh::RemeshParams p;
+	p.SetEdgeLength(0.25f); // coarsen: 2x the grid edge
+	p.iterations = 2;
+	m.RemeshIsotropic(p);
+
+	EXPECT_TRUE(m.vertexNormals.empty());
+	EXPECT_TRUE(m.ValidateInvariants());
 }
 
 } // namespace

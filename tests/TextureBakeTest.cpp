@@ -1046,7 +1046,7 @@ TEST(TextureBakeTest, ClassifierSkipsOutOfRangeBlobIndices)
 	const std::vector<Mesh::TexCoord> uv = {
 	    Mesh::TexCoord(0.1f, 0.2f), Mesh::TexCoord(0.9f, 0.1f), Mesh::TexCoord(0.5f, 0.8f),
 	    Mesh::TexCoord(300, 300), Mesh::TexCoord(400, 300), Mesh::TexCoord(350, 400)};
-	const std::vector<Mesh::FIndex> blobs = {0, 7};
+	const std::vector<Mesh::TexIndex> blobs = {0, 7};
 	const std::vector<Eigen::Vector2i> dims = {Eigen::Vector2i(256, 256)};
 	const std::vector<bool> norm = UVBlobsAreNormalized(uv, blobs, dims);
 	ASSERT_EQ(norm.size(), 1u);
@@ -1067,7 +1067,7 @@ TEST(TextureBakeTest, ClassifierGuardsMismatchedBlobListSize)
 	const std::vector<Mesh::TexCoord> uv = {
 	    Mesh::TexCoord(0.1f, 0.2f), Mesh::TexCoord(0.9f, 0.1f), Mesh::TexCoord(0.5f, 0.8f),
 	    Mesh::TexCoord(0.2f, 0.3f), Mesh::TexCoord(0.8f, 0.2f), Mesh::TexCoord(0.4f, 0.7f)};
-	const std::vector<Mesh::FIndex> blobs = {1};
+	const std::vector<Mesh::TexIndex> blobs = {1};
 	const std::vector<Eigen::Vector2i> dims = {Eigen::Vector2i(64, 64),
 	                                           Eigen::Vector2i(64, 64)};
 	const std::vector<bool> norm = UVBlobsAreNormalized(uv, blobs, dims);
@@ -1238,4 +1238,162 @@ TEST(TextureBakeTest, DefragPatchLimitIsTunable)
 	bp.maxDefragPatches = 0; // unlimited
 	const BakeResult res = DefragmentTexture(m2, bp);
 	EXPECT_GE(res.numPages, 1u);
+}
+
+// A solid-color page the size of `m`'s atlas, so any texel the bake did not
+// touch is recognizable by its sentinel value afterwards.
+void SetSentinelTexture(Mesh& m, int size, uint8_t v)
+{
+	Image3u tex(size, size);
+	tex.setTo(cv::Scalar(v, v, v));
+	m.texturesDiffuse = {tex};
+}
+
+// Count texels carrying the source's constant blue (z == 50) and, separately,
+// the sentinel the target went in with.
+void CountBakedAndSentinel(const Mesh& m, uint8_t sentinel, int& baked, int& kept)
+{
+	baked = kept = 0;
+	for (const Image3u& atlas : m.texturesDiffuse)
+		for (int r = 0; r < atlas.rows; ++r)
+			for (int c = 0; c < atlas.cols; ++c) {
+				const Pixel& p = atlas(r, c);
+				if (p.z() == 50)
+					++baked;
+				else if (p.x() == sentinel && p.y() == sentinel && p.z() == sentinel)
+					++kept;
+			}
+}
+
+// BakeOntoAtlas is RebakeTexture's counterpart for a target whose UV layout must
+// survive: the UVs must come back byte-identical, and the texels under them must
+// carry the source's color rather than the target's own.
+TEST(TextureBakeTest, BakeOntoAtlasKeepsTargetUVsAndSamplesSource)
+{
+	const Mesh source = MakeGridTextured(4, 64);
+
+	Mesh target = MakeGridTextured(4, 64);
+	SetSentinelTexture(target, 64, 9);
+	const std::vector<Mesh::TexCoord> uvBefore = target.faceTexcoords;
+
+	BakeParams params;
+	params.resolution = 64;
+	params.padding = 0;
+	params.correspondence = Correspondence::Nearest;
+
+	const BakeResult res = BakeOntoAtlas(source, target, params);
+
+	EXPECT_EQ(res.numPages, 1u);
+	EXPECT_EQ(target.faceTexcoords, uvBefore) << "the target's authored UVs must survive";
+
+	int baked = 0, kept = 0;
+	CountBakedAndSentinel(target, 9, baked, kept);
+	EXPECT_GT(baked, 0);
+	EXPECT_EQ(kept, 0) << "an unmasked bake covers the whole atlas";
+}
+
+// Under a face mask the bake is an in-place edit: the selected faces' texels get
+// the source color, and every other texel keeps exactly what the target carried
+// (the page is seeded from target.texturesDiffuse instead of black).
+TEST(TextureBakeTest, BakeOntoAtlasMaskLeavesUnselectedTexelsAlone)
+{
+	const Mesh source = MakeGridTextured(4, 64);
+
+	Mesh target = MakeGridTextured(4, 64);
+	SetSentinelTexture(target, 64, 9);
+
+	std::vector<bool> mask(target.faces.size(), false);
+	mask[0] = true;
+
+	BakeParams params;
+	params.resolution = 64;
+	params.padding = 0;
+	params.correspondence = Correspondence::Nearest;
+	params.faceMask = &mask;
+
+	const BakeResult res = BakeOntoAtlas(source, target, params);
+
+	EXPECT_EQ(res.numPages, 1u);
+	int baked = 0, kept = 0;
+	CountBakedAndSentinel(target, 9, baked, kept);
+	EXPECT_GT(baked, 0) << "the selected face must have been rasterized";
+	EXPECT_GT(kept, 0) << "the other 31 faces' texels must be untouched";
+	EXPECT_LT(baked, 64 * 64 / 4) << "one of 32 faces cannot cover a quarter of the atlas";
+}
+
+// A mask that does not match the target's face count is a caller bug that would
+// silently bake the wrong faces; it is refused and the full bake runs instead.
+TEST(TextureBakeTest, BakeOntoAtlasWrongSizedMaskIsIgnored)
+{
+	const Mesh source = MakeGridTextured(4, 64);
+
+	Mesh target = MakeGridTextured(4, 64);
+	SetSentinelTexture(target, 64, 9);
+	std::vector<bool> mask(target.faces.size() + 1, false);
+
+	BakeParams params;
+	params.resolution = 64;
+	params.padding = 0;
+	params.correspondence = Correspondence::Nearest;
+	params.faceMask = &mask;
+
+	EXPECT_EQ(BakeOntoAtlas(source, target, params).numPages, 1u);
+	int baked = 0, kept = 0;
+	CountBakedAndSentinel(target, 9, baked, kept);
+	EXPECT_GT(baked, 0);
+	EXPECT_EQ(kept, 0);
+}
+
+// The target's own texture size is the only evidence of the pixel space its UVs
+// live in, so baking at a different resolution is refused rather than writing to
+// texels the UVs never addressed.
+TEST(TextureBakeTest, BakeOntoAtlasRefusesResolutionMismatch)
+{
+	const Mesh source = MakeGridTextured(4, 64);
+
+	Mesh target = MakeGridTextured(4, 64); // UVs and texture in 64-pixel space
+	const std::vector<Mesh::TexCoord> uvBefore = target.faceTexcoords;
+
+	BakeParams params;
+	params.resolution = 128; // ... but asked for a 128 atlas
+	params.padding = 0;
+
+	EXPECT_EQ(BakeOntoAtlas(source, target, params).numPages, 0u);
+	EXPECT_EQ(target.faceTexcoords, uvBefore) << "a refused bake must not touch the target";
+	EXPECT_EQ(target.texturesDiffuse.front().rows, 64);
+}
+
+// RebakeTexture generates a fresh layout, in which the unselected texels of the
+// old one mean nothing -- so it ignores faceMask instead of leaving most of the
+// new atlas black (or seeded from a stale page that happened to match in size).
+TEST(TextureBakeTest, RebakeTextureIgnoresFaceMask)
+{
+	const Mesh source = MakeGridTextured(4, 64);
+
+	BakeParams params;
+	params.resolution = 64;
+	params.padding = 0;
+	params.correspondence = Correspondence::Nearest;
+
+	Mesh plain = MakeGridTextured(4, 64);
+	RebakeTexture(source, plain, params);
+
+	Mesh masked = MakeGridTextured(4, 64);
+	std::vector<bool> mask(masked.faces.size(), false);
+	mask[0] = true;
+	params.faceMask = &mask;
+	RebakeTexture(source, masked, params);
+
+	ASSERT_EQ(plain.texturesDiffuse.size(), masked.texturesDiffuse.size());
+	for (size_t i = 0; i < plain.texturesDiffuse.size(); ++i) {
+		const Image3u& a = plain.texturesDiffuse[i];
+		const Image3u& b = masked.texturesDiffuse[i];
+		ASSERT_EQ(a.size(), b.size());
+		int diff = 0;
+		for (int r = 0; r < a.rows; ++r)
+			for (int c = 0; c < a.cols; ++c)
+				if (a(r, c) != b(r, c))
+					++diff;
+		EXPECT_EQ(diff, 0) << "page " << i;
+	}
 }

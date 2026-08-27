@@ -2148,6 +2148,7 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
                        unsigned numCharts, const ParametrizeParams& params,
                        ChartFlattenCache* cache)
 {
+	mesh.SyncFaces();
 	const size_t nf = mesh.faces.size();
 	mesh.faceTexcoords.assign(nf * 3, Mesh::TexCoord::Zero());
 	if (nf == 0 || numCharts == 0)
@@ -2155,7 +2156,7 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
 
 	// Ensure adjacency exists (used for chart vertex/face structure; the
 	// flattener itself works on the extracted local submesh).
-	if (mesh.halfMesh.Empty() || mesh.halfMesh.FSize() != mesh.faces.size())
+	if (mesh.halfMesh.Empty())
 		mesh.ListHalfEdges();
 
 	std::vector<ChartMesh> charts = ExtractCharts(mesh, faceChart, numCharts);
@@ -2290,8 +2291,8 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
 			std::vector<Vec2> uvT;
 			if (hasB && numLoops == 1 && TutteInit(cut, uvT, aspect, startK) && !ChartUVSelfOverlaps(cut, uvT, /*gridLongSide=*/512) && !ChartOverDistorted(cut, uvT, kFallbackMaxSymDir)) {
 				*wb = std::move(cut); // on a cache hit this replaces the entry's
-				    // cm — safe: the entry is owned by this
-				    // task alone and released below
+				// cm — safe: the entry is owned by this
+				// task alone and released below
 				uv = std::move(uvT);
 			} else if (LscmInit(*wb, uvT) && CountRealFlips(*wb, uvT) == 0 && !ChartUVSelfOverlaps(*wb, uvT, /*gridLongSide=*/512) && !ChartOverDistorted(*wb, uvT, kFallbackMaxSymDir)) {
 				uv = std::move(uvT);
@@ -2319,7 +2320,7 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
 		}
 		if (cached != nullptr)
 			cached->cm = ChartMesh{}; // release the consumed bulk early (value-only
-			    // mutation of this task's entry — no rehash)
+		// mutation of this task's entry — no rehash)
 	};
 	BS::light_thread_pool pool;
 	for (std::size_t ci : order)
@@ -2351,6 +2352,7 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
 
 unsigned Parametrize(Mesh& mesh, const ParametrizeParams& params)
 {
+	mesh.SyncFaces();
 	// Segmentation and flattening share one flatten cache: the flip-repair's final
 	// accepting verdict per shipping chart already computed its map (or its init),
 	// so ParametrizeCharts resumes instead of flattening every chart twice.

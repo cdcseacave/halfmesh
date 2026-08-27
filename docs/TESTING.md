@@ -160,9 +160,17 @@ Every tolerance is named and justified in the test; no silent magic numbers.
 - **Independent oracle (no golden needed):** build a brute-force adjacency from
   the face list; assert `VAdjacentVertices/Faces/Edges`, `FAdjacentFaces`,
   boundary flags, and degrees match exactly for every element.
-- **Invariants / `Validate()`:** write a structural validator (twin pairing
-  `he^1`, `he_nexts` cycle consistency, `v_halfedges` even & boundary-pointing,
-  `he_faces` NO_ID only on boundary) and run it **after every mutation** in tests.
+- **Invariants / `Mesh::ValidateHalfMesh()`:** the structural validator (twin
+  pairing `he^1`, `heNexts` cycle consistency, `vHalfedges` even &
+  boundary-pointing, `heFaces` NO_ID only on boundary) plus a semantic comparison
+  against a from-scratch rebuild (faces, adjacency, boundary loops, counts). Run
+  it **after every mutation** in tests -- it is O(F log F), so the library itself
+  only asserts the O(1) `ValidateInvariants()`. Never compare raw half-edge arrays
+  after an in-place mutation: numbering and representatives are canonical only
+  right after a fresh `Build`.
+- **Rebuild budget:** a native pipeline is expected to build connectivity once.
+  `HalfMesh::BuildCount()` / `FFacesCount()` make that assertable; `tests/perf`
+  pins one build + one harvest for a simulated multi-stage clean.
 - **Round-trip:** `Build → FFaces` reproduces input faces (up to cyclic rotation).
 - **Euler / boundary:** `V−E+F` consistent with genus & boundary-loop count.
 - **Mutations:** collapse/flip/remove on hand-built fans, boundaries, and the
@@ -172,13 +180,18 @@ Every tolerance is named and justified in the test; no silent magic numbers.
   (`igl::triangle_triangle_adjacency`) on the corpus.
 - **Differential + perf:** vs golden snapshot; build-time scaling on the large mesh.
 
-### Topology repair (FixNonManifold, RemoveDuplicate/Degenerate/Unreferenced, RemoveSmallComponents)
+### Topology repair (FixNonManifold, RemoveDuplicate/Degenerate/Unreferenced/Spikes, RemoveSmall/SpuriousComponents)
 - **Adversarial exact counts:** the synthesized dirty meshes have known defects →
   assert exact number of fixes/removals.
 - **Invariants after repair:** result is edge+vertex manifold (FixNonManifold), no
   duplicate faces, no faces below area threshold, no unreferenced vertices,
   correct surviving component count.
 - **Idempotence:** running the op again changes nothing (zero further fixes).
+- **Arm parity:** for the ops that dispatch by representation
+  (`RemoveUnreferencedVertices`, `RemoveDegenerateFaces`, `RemoveSpikes`) run the
+  array arm and the half-edge arm on the same input and compare; degenerate
+  removal is exempt from count identity, because the half-edge arm refuses welds
+  that would break validity.
 - **Conservation:** surface area within ε (degenerate removal ≈ 0 area); bbox
   preserved.
 - **3rd-party:** confirm manifoldness with CGAL `is_valid` / libigl manifold
@@ -209,12 +222,17 @@ Every tolerance is named and justified in the test; no silent magic numbers.
   to the plane (residual → 0); a smooth region's volume/area barely changes;
   energy/roughness metric decreases monotonically per iteration.
 
-### Hole filling (CloseHoles)
+### Hole filling (CloseHoles, RemoveVerticesAndFill)
 - **Synthetic watertight test:** delete N known faces from a closed mesh, fill,
   assert `EnumerateHoles == 0`, face count grows as expected, no new non-manifold,
   patch normals consistent with the neighbourhood.
-- **Boundary-length cap:** holes larger than `nCloseHoles` are left open (exact
-  behaviour).
+- **Boundary-size cap:** holes spanning more than `maxHoleEdges` edges are left
+  open (exact behaviour).
+- **No rebuild:** filling runs on the live half-edge, so a call that fills
+  nothing must report `HalfMesh::BuildCount() == 0`.
+- **Removal-only fill:** `RemoveVerticesAndFill` spans only the loops the removal
+  created — pre-existing boundaries and regions touching them stay open — and the
+  vertex count is asserted to shrink.
 - **Regression:** vs golden snapshot.
 
 ### Triangle KD-tree (NearestPoint, IntersectedPoint)

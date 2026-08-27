@@ -15,9 +15,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# packages:write lets the vcpkg binary cache push to this owner's GitHub Packages
+# NuGet feed; actions:read is what actions/download-artifact@v4 needs in
+# python-crosscheck. Naming any permission here drops the token to exactly this
+# set, so both must be spelled out alongside contents:read.
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
 env:
   # Shared vcpkg commit pin — must match the "builtin-baseline" in vcpkg.json.
-  VCPKG_COMMIT: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+  VCPKG_COMMIT: 0ac8df3b98e3afcd8bf075fa74a6bd2c32613345
+  VCPKG_FEATURE_FLAGS: manifests,binarycaching,registries
   # The 9 golden fixtures classified CompareMode::CANONICAL_EXACT in
   # tests/golden/GoldenSpecs.h (exact canonical-mesh equality against a frozen
   # fixture) — excluded on the -march legs of opt-in-build-flags, which are free
@@ -47,6 +57,69 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      # macOS uses the `files` backend (see below); persist that folder between runs.
+      - name: Cache vcpkg binary packages (macOS only)
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-cache
+          key: vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-${{ env.VCPKG_COMMIT }}-
+
+      - &vcpkg-cache-step
+        name: Configure vcpkg binary cache
+        # lukka/run-vcpkg@v11 defaults VCPKG_BINARY_SOURCES to "clear;x-gha,readwrite",
+        # and Microsoft REMOVED the x-gha backend in April 2025 (vcpkg-tool #1662)
+        # after GitHub asked them to stop consuming the Actions Cache internal API.
+        # vcpkg only warns about it, so every job here has silently been building
+        # all of opencv4/eigen/gtest from source -- ~10-13 min per job, 10 jobs.
+        # A NuGet feed on GitHub Packages is the migration path Microsoft
+        # recommends, and the one openMVS already uses: each port is its own
+        # package keyed by its ABI hash, so touching one dependency invalidates
+        # only that port rather than the whole tree.
+        env:
+          # GITHUB_TOKEN carries packages:write for in-repo events. On a PR from a
+          # fork it is read-only, so read the cache (forks still skip the rebuild)
+          # but skip the push path rather than failing the run.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUGET_FEED: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true }}
+        # build-test also runs this on windows, where the default shell is pwsh.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # nuget.exe needs mono, and mono on Apple Silicon is unreliable. The
+            # macOS leg is a single short job, so fall back to the plain `files`
+            # backend over a workspace folder that actions/cache tarballs.
+            mkdir -p "${GITHUB_WORKSPACE}/vcpkg-cache"
+            echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-cache,readwrite" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # nuget.exe is a .NET assembly; on Linux vcpkg invokes it through mono.
+            sudo apt-get update -y
+            sudo apt-get install -y mono-complete
+          fi
+          if [ "$IS_FORK_PR" = "true" ]; then
+            NUGET_MODE=read
+            echo "Fork PR: vcpkg NuGet cache is READ-ONLY (its token cannot push to GitHub Packages)."
+          else
+            NUGET_MODE=readwrite
+          fi
+          NUGET="$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)"
+          run_nuget() {
+            if [ "$RUNNER_OS" = "Windows" ]; then "$NUGET" "$@"; else mono "$NUGET" "$@"; fi
+          }
+          # The GH Packages endpoint demands auth even to read, so register the
+          # source in both modes; only setapikey is gated on being able to push.
+          run_nuget sources add -Source "$NUGET_FEED" -StorePasswordInClearText             -Name GitHubPackages -UserName "${{ github.repository_owner }}" -Password "$GH_TOKEN"
+          if [ "$NUGET_MODE" = "readwrite" ]; then
+            run_nuget setapikey "$GH_TOKEN" -Source "$NUGET_FEED"
+          fi
+          echo "VCPKG_BINARY_SOURCES=clear;nuget,$NUGET_FEED,$NUGET_MODE" >> "$GITHUB_ENV"
 
       - name: Configure
         run: >
@@ -97,22 +170,38 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
-      - name: Configure (ASan + UBSan Debug)
+      - *vcpkg-cache-step
+
+      # Debug, but at -O1 rather than the default -O0. The build type is what
+      # keeps NDEBUG undefined, and therefore what keeps every
+      # ASSERT(ValidateInvariants()) live -- which is most of what this job
+      # buys after the half-edge representation contract landed. Switching to
+      # RelWithDebInfo to gain the optimizer would define NDEBUG and silently
+      # compile all of that back out, so override the Debug flags instead.
+      # -O0 was costing ~7x: the same 515 tests run in 2m under Release and
+      # ~19m under TSan/RelWithDebInfo (the heavier instrumentation) against
+      # ~2h14m here. -O1 is also what ASan's own documentation recommends.
+      - name: Configure (ASan + UBSan, Debug at -O1)
         run: >
           cmake -S . -B build-san
           -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
           -DHALFMESH_BUILD_TESTS=ON
           -DHALFMESH_SANITIZE=ON
           -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS_DEBUG="-O1 -g"
 
       - name: Build
         run: cmake --build build-san -j
 
+      # -j3, not -j4: the runner has 4 cores but ASan's redzones multiply the
+      # footprint of every concurrent test process. Five tests are 61% of the
+      # suite's serial time (SegmentQuality/Parametrize on the real mesh), so
+      # the packing win is most of what is available here.
       - name: Test (under ASan/UBSan)
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build-san --output-on-failure
+        run: ctest --test-dir build-san -j3 --output-on-failure
 
   # ===========================================================================
   # Job 2b: tsan  [ADVISORY — promote to blocking after first clean runs]
@@ -137,22 +226,34 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
+      - *vcpkg-cache-step
+
+      # CMAKE_CXX_FLAGS_RELWITHDEBINFO is spelled out to drop the -DNDEBUG that
+      # CMake puts there by default; without this the whole ASSERT family --
+      # including every ASSERT(ValidateInvariants()) -- is compiled out, and
+      # this job was racing the threaded paths with the contract checks
+      # disabled. -UNDEBUG in CMAKE_CXX_FLAGS would not work: CMake appends the
+      # per-config flags after it, so the -DNDEBUG would win.
       - name: Configure (TSan RelWithDebInfo)
         run: >
           cmake -S . -B build-tsan
           -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
           -DHALFMESH_BUILD_TESTS=ON
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g"
           -DCMAKE_CXX_FLAGS="-fsanitize=thread"
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
 
       - name: Build
         run: cmake --build build-tsan -j
 
+      # -j3 for the same reason as the ASan job, and because re-enabling the
+      # assertions above adds work to every mutator exit in a leg that was
+      # already 19 minutes of serial testing.
       - name: Test (under TSan)
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: ctest --test-dir build-tsan --output-on-failure
+        run: ctest --test-dir build-tsan -j3 --output-on-failure
 
   # ===========================================================================
   # Job 2c: valgrind-memcheck  [ADVISORY — promote to blocking after triage]
@@ -167,7 +268,13 @@ jobs:
     name: Memcheck / Valgrind (ubuntu, advisory)
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 90
+    # Backstop for a hung configure/build ONLY -- the memcheck sweep carries its
+    # own, lower step-level timeout. The distinction is not cosmetic: a step that
+    # overruns is recorded as *failed*, which continue-on-error absorbs, whereas
+    # a job that overruns is recorded as *cancelled*, which it does not. This
+    # advisory job overrunning at the job level is what concluded the whole
+    # workflow run "cancelled" while every blocking job was green.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -183,6 +290,8 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
+      - *vcpkg-cache-step
+
       - name: Configure (RelWithDebInfo)
         run: >
           cmake -S . -B build-vg
@@ -194,19 +303,90 @@ jobs:
         run: cmake --build build-vg -j
 
       - name: Run test binaries under memcheck
+        # Comfortably above the ~20 min the parallel sweep costs, and below the
+        # job-level backstop so this trips first and stays a mere failure.
+        timeout-minutes: 40
         run: |
-          FAIL=0
+          set -u
+          # Fresh every time: a stale .failed marker from a previous run would
+          # otherwise report a binary that just passed.
+          rm -rf vg-logs vg-tmp
+          mkdir -p vg-logs vg-tmp
+
+          # Valgrind serialises the threads inside one process, so the only
+          # parallelism left is across binaries -- and the suite is lopsided
+          # enough that feed order decides the wall clock. Measured serially:
+          # parametrize 17m, atlas 16m, remesh 12m, flatten 11m,
+          # segment_quality 11m+, holes 5m -- 6 of 29 binaries, ~95% of the
+          # time, everything else seconds apiece. Start the long poles first so
+          # they are not left straggling after the cheap ones drained the
+          # workers. Purely a scheduling hint: a binary that is new, renamed or
+          # simply unlisted still runs, just later.
+          SLOW="parametrize_test atlas_test mesh_remesh_test flatten_test
+                segment_quality_test mesh_holes_test"
+          : > vg-order.txt
+          for n in $SLOW; do
+            [ -x "build-vg/tests/$n" ] && echo "build-vg/tests/$n" >> vg-order.txt
+          done
           for t in build-vg/tests/*_test; do
             [ -x "$t" ] || continue
-            echo "=== memcheck: $t ==="
-            if ! valgrind --error-exitcode=99 --exit-on-first-error=no \
-                 --track-origins=yes --errors-for-leak-kinds=definite \
-                 "$t" > /dev/null; then
-              echo "MEMCHECK FINDINGS in $t"
-              FAIL=1
-            fi
+            grep -qxF "$t" vg-order.txt || echo "$t" >> vg-order.txt
           done
+          echo "memcheck: $(wc -l < vg-order.txt) binaries across $(nproc) workers"
+
+          cat > vg-run.sh <<'SH'
+          #!/usr/bin/env bash
+          set -u
+          t="$1"; n="$(basename "$t")"; log="vg-logs/$n.log"
+          # mesh_io_test and robustness_test round-trip fixtures through fixed
+          # names under the temp dir; a private TMPDIR per worker keeps binaries
+          # running side by side from colliding on them.
+          export TMPDIR="$PWD/vg-tmp/$n"
+          rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+          vg() { valgrind --error-exitcode=99 --errors-for-leak-kinds=definite "$@"; }
+          start=$SECONDS
+          vg "$t" > "$log" 2>&1; rc=$?
+          took=$((SECONDS - start))
+          case $rc in
+            0)  echo "ok       $n (${took}s)"; exit 0 ;;
+            99) # --track-origins costs ~50%, and nobody reads an origin unless
+                # there is a finding to explain -- so pay for it in a re-run of
+                # the one guilty binary rather than on every clean binary of
+                # every push. Appends to the same log.
+                echo "MEMCHECK $n (${took}s) -- re-running with --track-origins"
+                vg --track-origins=yes "$t" >> "$log" 2>&1 ;;
+            *)  echo "TESTFAIL $n (${took}s) exit $rc" ;;
+          esac
+          touch "vg-logs/$n.failed"
+          exit $rc
+          SH
+          chmod +x vg-run.sh
+
+          # xargs reports 123 if any invocation exited non-zero.
+          xargs -a vg-order.txt -P "$(nproc)" -n1 ./vg-run.sh && FAIL=0 || FAIL=1
+
+          if [ "$FAIL" -ne 0 ]; then
+            for f in vg-logs/*.failed; do
+              [ -e "$f" ] || continue
+              echo "::group::$(basename "$f" .failed)"
+              cat "${f%.failed}.log"
+              echo "::endgroup::"
+            done
+          fi
           exit $FAIL
+
+      # This job is advisory precisely because nobody has triaged it yet -- and
+      # it has never once run to completion. Keep every log, not just the
+      # failing ones: the clean ones are what a tests/sanitize/valgrind.supp
+      # gets curated from.
+      - name: Upload memcheck logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memcheck-logs
+          path: vg-logs/
+          retention-days: 7
+          if-no-files-found: ignore
 
   # ===========================================================================
   # Job 3: crosschecks  [BLOCKING — ubuntu only]
@@ -225,6 +405,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (with libigl crosschecks)
         run: >
@@ -259,6 +441,8 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
+      - *vcpkg-cache-step
+
       - name: Configure (perf harness)
         run: >
           cmake -S . -B build-perf
@@ -292,6 +476,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (bench harness)
         run: >
@@ -394,6 +580,8 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
 
+      - *vcpkg-cache-step
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -443,6 +631,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (${{ matrix.name }})
         run: >
@@ -513,6 +703,8 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
+
+      - *vcpkg-cache-step
 
       - name: Configure (export compile commands)
         run: >

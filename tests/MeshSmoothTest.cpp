@@ -600,5 +600,23 @@ TEST(MeshSmooth, UnifiedSmoothDispatchesHCLaplacian)
 	EXPECT_TRUE(BitEqual(unified.vertices, direct.vertices));
 }
 
+// Smoothing moves every vertex without renumbering any, which the size-based
+// freshness checks cannot see; authored vertex normals are staled by exactly
+// that motion, so they go the same way as the cached face normals.
+TEST(MeshSmooth, ClearsAuthoredVertexNormals)
+{
+	Mesh m = hmtest::corpus::UVSphere(8, 12);
+	m.vertexNormals.assign(m.vertices.size(), Mesh::Normal(0.f, 0.f, 1.f));
+	m.SmoothTaubin(2);
+	EXPECT_TRUE(m.vertexNormals.empty());
+	EXPECT_TRUE(m.ValidateInvariants());
+
+	Mesh h = hmtest::corpus::UVSphere(8, 12);
+	h.vertexNormals.assign(h.vertices.size(), Mesh::Normal(0.f, 0.f, 1.f));
+	h.SmoothHCLaplacian(2);
+	EXPECT_TRUE(h.vertexNormals.empty());
+	EXPECT_TRUE(h.ValidateInvariants());
+}
+
 } // namespace
 } // namespace halfmesh

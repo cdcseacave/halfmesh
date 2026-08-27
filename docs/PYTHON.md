@@ -13,7 +13,7 @@ re-exports it.
 [GitHub Release](https://github.com/cdcseacave/halfmesh/releases):
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.2.0/halfmesh-0.2.0-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.3.0/halfmesh-0.3.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 Pick the `cpXY-cpXY` tag matching your interpreter (`cp310`, `cp311`, `cp312`,
@@ -69,7 +69,7 @@ any C++ work happens. The GIL is released around all native computation (see
 
 ### `version() -> str`
 
-The halfmesh library version string (`"0.2.0"`), single-sourced from
+The halfmesh library version string (`"0.3.0"`), single-sourced from
 `project(halfmesh VERSION …)` in `CMakeLists.txt`. Also exposed as
 `halfmesh.__version__`.
 
@@ -121,15 +121,13 @@ higher throughput on large meshes. Use `0.0` when you need the target hit
 precisely; raise it when you're decimating large meshes and an approximate
 result is fine.
 
-### `close_holes(vertices, faces, max_holes=200) -> (v, f, closed)`
+### `close_holes(vertices, faces, max_hole_edges=30) -> (v, f, closed)`
 
-Liepa minimum-weight-triangulation hole filling (fill → refine → fair),
-processing the **smallest holes first**. `max_holes` is a **count of holes**,
-not a size/area threshold — it bounds how many boundary loops get patched in
-one call, not how large a hole may be. `closed` (an `int`) is the number of
-holes actually filled. To leave large holes open while closing only small
-ones, filter/measure boundary loops yourself before calling — there is no
-size-threshold parameter.
+Liepa minimum-weight-triangulation hole filling (fill → refine → fair) of every
+hole spanned by at most `max_hole_edges` boundary edges, so the big open
+boundary of a scanned surface stays open while its small gaps are patched.
+`closed` (an `int`) is the number of holes filled. Pass a large cap to fill
+every hole.
 
 ### `remove_small_components(vertices, faces, min_faces) -> (v, f, removed)`
 
@@ -213,7 +211,7 @@ v, f = mesh.to_arrays()
 v, f = hm.repair(v, f)
 v, f = hm.smooth(v, f, iterations=10, method="taubin")
 v, f = hm.simplify(v, f, target=0.5)          # keep ~50% of faces
-v, f, closed = hm.close_holes(v, f, max_holes=50)
+v, f, closed = hm.close_holes(v, f, max_hole_edges=50)
 print(f"closed {closed} holes")
 
 # Save the cleaned mesh, then generate a packed UV atlas from it

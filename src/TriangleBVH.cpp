@@ -93,6 +93,7 @@ inline bool RayAABB(const TriangleBVH::Point& o, const TriangleBVH::Point& invDi
 
 void TriangleBVH::Build(const Mesh& mesh, unsigned leafSize)
 {
+	mesh.SyncFacesConst();
 	nodes.clear();
 	prims.clear();
 	centroids.clear();

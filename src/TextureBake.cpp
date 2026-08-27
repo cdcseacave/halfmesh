@@ -83,7 +83,7 @@ Mesh::TexCoord InterpUV(const Mesh::TexCoord& t0, const Mesh::TexCoord& t1,
 // (caught by SliverSourceUVStaysInChart: mx=8 on a 16px texture, threshold
 // max(2,8)=8).
 std::vector<bool> UVBlobsAreNormalized(const std::vector<Mesh::TexCoord>& uv,
-                                       const std::vector<Mesh::FIndex>& faceBlobs,
+                                       const std::vector<Mesh::TexIndex>& faceBlobs,
                                        const std::vector<Eigen::Vector2i>& blobDims)
 {
 	const size_t numBlobs = std::max<size_t>(blobDims.size(), 1);
@@ -263,7 +263,7 @@ bool TriangleCoversAnyPixel(const Point2& v1, const Point2& v2, const Point2& v3
 // SameUVResolver
 // -------------------------------------------------------------------------
 SameUVResolver::SameUVResolver(std::vector<Mesh::TexCoord> origTexcoords,
-                               std::vector<Mesh::FIndex> origBlobs,
+                               std::vector<Mesh::TexIndex> origBlobs,
                                std::vector<Eigen::Vector2i> blobDims) :
     texcoords(std::move(origTexcoords)), blobs(std::move(origBlobs)),
     dims(std::move(blobDims)), normalized(UVBlobsAreNormalized(texcoords, blobs, dims))
@@ -296,8 +296,10 @@ bool SameUVResolver::Resolve(Mesh::FIndex tgtFace, const Vector3& bary,
 RaycastResolver::RaycastResolver(const Mesh& source, Correspondence mode,
                                  float raySearchDist, Accelerator accel) :
     source(source), mode(mode), rayDist(raySearchDist),
-    srcNormalized(UVBlobsAreNormalized(source.faceTexcoords, source.faceTexblobs, BlobDims(source)))
+    srcNormalized()
 {
+	source.SyncFacesConst();
+	srcNormalized = UVBlobsAreNormalized(source.faceTexcoords, source.faceTexblobs, BlobDims(source));
 	if (accel == Accelerator::KdTree)
 		kdtree = std::make_unique<TriangleKdTree>(source);
 	else
@@ -425,6 +427,7 @@ bool RaycastResolver::Resolve(Mesh::FIndex /*tgtFace*/, const Vector3& /*bary*/,
 BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
                      const SourceResolver& resolver, const BakeParams& params)
 {
+	target.SyncFaces();
 	BakeResult res;
 	const int W = static_cast<int>(params.resolution);
 	const int H = static_cast<int>(params.resolution);
@@ -432,6 +435,15 @@ BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
 	res.height = params.resolution;
 	const size_t nf = target.faces.size();
 	ASSERT(target.faceTexcoords.size() == nf * 3);
+	// A wrong-sized mask is a caller bug that would silently bake the wrong faces;
+	// refuse it and bake everything, which is the documented default.
+	const std::vector<bool>* faceMask = params.faceMask;
+	if (faceMask && faceMask->size() != nf) {
+		REPORT_WARNING("BakeAtlas: faceMask has {} entries for {} faces; ignoring it",
+		               faceMask->size(), nf);
+		faceMask = nullptr;
+	}
+	const auto bakeFace = [faceMask](size_t fi) { return !faceMask || (*faceMask)[fi]; };
 
 	unsigned numPages = 1;
 	for (const Mesh::FIndex b : target.faceTexblobs)
@@ -469,7 +481,14 @@ BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
 	std::vector<cv::Mat_<uint8_t>> cover(numPages);
 	for (unsigned p = 0; p < numPages; ++p) {
 		atlases[p].create(H, W);
-		atlases[p].setTo(cv::Scalar(0, 0, 0));
+		// A masked bake rewrites only the selected faces' texels, so the rest has to
+		// start from what the target already carries rather than from black. Only
+		// when masked: an unmasked bake covers the page and seeding it would just
+		// change what gutter dilation spreads over.
+		if (faceMask && p < target.texturesDiffuse.size() && target.texturesDiffuse[p].rows == H && target.texturesDiffuse[p].cols == W)
+			target.texturesDiffuse[p].copyTo(atlases[p]);
+		else
+			atlases[p].setTo(cv::Scalar(0, 0, 0));
 		masks[p] = cv::Mat_<uint8_t>::zeros(H, W);
 		cover[p] = cv::Mat_<uint8_t>::zeros(H, W);
 	}
@@ -693,7 +712,8 @@ BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
 	if (nthreads <= 1) {
 		Mesh::FIndex hint = noHint;
 		for (size_t fi = 0; fi < nf; ++fi)
-			processFace(fi, 0, H, covered, filled, hint);
+			if (bakeFace(fi))
+				processFace(fi, 0, H, covered, filled, hint);
 	} else {
 		// Contiguous row bands; bin each face into the bands its UV-bbox rows
 		// overlap (a face spanning K bands is rasterized K times, but each pass
@@ -703,6 +723,8 @@ BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
 			rowStart[b] = static_cast<int>(static_cast<long>(b) * H / nthreads);
 		std::vector<std::vector<size_t>> bins(nthreads);
 		for (size_t fi = 0; fi < nf; ++fi) {
+			if (!bakeFace(fi))
+				continue;
 			const Mesh::TexCoord& t0 = target.faceTexcoords[fi * 3 + 0];
 			const Mesh::TexCoord& t1 = target.faceTexcoords[fi * 3 + 1];
 			const Mesh::TexCoord& t2 = target.faceTexcoords[fi * 3 + 2];
@@ -802,6 +824,8 @@ void ApplyPackedLayout(Mesh& mesh, const AtlasResult& atlas)
 // -------------------------------------------------------------------------
 BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams& params)
 {
+	source.SyncFacesConst();
+	target.SyncFaces();
 	// Fail fast on violated preconditions (documented in TextureBake.h): the
 	// size invariants downstream are Debug-only ASSERTs, so without this an
 	// untextured source is an out-of-bounds read in Release, not a diagnostic.
@@ -834,6 +858,40 @@ BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams& par
 
 	BakeParams bp = params;
 	bp.resolution = atlas.width;
+	bp.faceMask = nullptr; // the layout is brand new: nothing to preserve under a mask
+	if (bp.correspondence == Correspondence::SameUV)
+		bp.correspondence = Correspondence::Nearest; // SameUV is undefined cross-mesh
+	RaycastResolver resolver(source, bp.correspondence, params.raySearchDist,
+	                         params.accelerator);
+	return BakeAtlas(target, source.texturesDiffuse, resolver, bp);
+}
+
+BakeResult BakeOntoAtlas(const Mesh& source, Mesh& target, const BakeParams& params)
+{
+	source.SyncFacesConst();
+	target.SyncFaces();
+	// Same fail-fast contract as RebakeTexture, plus the target UVs this variant
+	// reads instead of generating (documented in TextureBake.h).
+	if (source.faces.empty() || target.faces.empty() || source.faceTexcoords.size() != source.faces.size() * 3 || source.texturesDiffuse.empty() || target.faceTexcoords.size() != target.faces.size() * 3) {
+		REPORT_WARNING("BakeOntoAtlas: source must carry per-corner UVs ({} needed, {} present) and "
+		               "textures ({} present), and target must carry its own per-corner UVs "
+		               "({} needed, {} present); nothing baked",
+		               source.faces.size() * 3, source.faceTexcoords.size(), source.texturesDiffuse.size(),
+		               target.faces.size() * 3, target.faceTexcoords.size());
+		return BakeResult{};
+	}
+	// The target's own texture is the only evidence of the pixel space its UVs are
+	// in; baking at a different resolution would quietly write the wrong texels
+	// (and skip the in-place seeding a masked bake needs).
+	for (const Image3u& page : target.texturesDiffuse) {
+		if (page.rows == static_cast<int>(params.resolution) && page.cols == static_cast<int>(params.resolution))
+			continue;
+		REPORT_WARNING("BakeOntoAtlas: target texture is {}x{} but resolution is {}; "
+		               "rescale the target UVs or drop the stale textures; nothing baked",
+		               page.cols, page.rows, params.resolution);
+		return BakeResult{};
+	}
+	BakeParams bp = params;
 	if (bp.correspondence == Correspondence::SameUV)
 		bp.correspondence = Correspondence::Nearest; // SameUV is undefined cross-mesh
 	RaycastResolver resolver(source, bp.correspondence, params.raySearchDist,
@@ -846,6 +904,7 @@ BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams& par
 // -------------------------------------------------------------------------
 BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 {
+	mesh.SyncFaces();
 	// Fail fast on violated preconditions (documented in TextureBake.h) — the
 	// downstream size invariants are Debug-only ASSERTs, so an untextured mesh
 	// would be an out-of-bounds read in Release instead of a diagnostic.
@@ -858,7 +917,7 @@ BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 	// Snapshot the original layout + textures BEFORE any modification, so the
 	// SameUV resolver can map each (unchanged) face back to its original texture.
 	std::vector<Mesh::TexCoord> origUv = mesh.faceTexcoords;
-	std::vector<Mesh::FIndex> origBlob = mesh.faceTexblobs;
+	std::vector<Mesh::TexIndex> origBlob = mesh.faceTexblobs;
 	const std::vector<Image3u> origTex = mesh.texturesDiffuse;
 
 	// Decide the layout from the ORIGINAL (pre-relayout) UV/texture budget.
@@ -870,7 +929,7 @@ BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 	// Existing UV islands are the charts (light defrag: no re-parametrization).
 	if (mesh.halfMesh.Empty())
 		mesh.ListHalfEdges(); // NOTE: auto-repairs (manifoldizes) non-manifold
-		    // input in place — see Mesh::ListHalfEdges
+	// input in place — see Mesh::ListHalfEdges
 	std::vector<unsigned> faceChart;
 	const unsigned numCharts = mesh.ListTexPatchFaces(faceChart);
 	// Guard against pathologically fragmented source atlases: the skyline
@@ -914,12 +973,14 @@ BakeResult DefragmentTexture(Mesh& mesh, const BakeParams& params)
 	SameUVResolver resolver(std::move(origUv), std::move(origBlob), std::move(dims));
 	BakeParams bp = params;
 	bp.resolution = atlas.width;
+	bp.faceMask = nullptr; // the layout is brand new: nothing to preserve under a mask
 	bp.correspondence = Correspondence::SameUV;
 	return BakeAtlas(mesh, origTex, resolver, bp);
 }
 
 unsigned AutoAtlasResolution(const Mesh& source, unsigned maxResolution)
 {
+	source.SyncFacesConst();
 	return NextPow2Clamp(IdealSinglePageSide(source), std::min(256u, maxResolution),
 	                     maxResolution);
 }

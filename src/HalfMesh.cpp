@@ -9,17 +9,51 @@
 
 #include <halfmesh/HalfMesh.h>
 #include <halfmesh/Mesh.h>
-#include <halfmesh/Util/Hash.h>
 #include <halfmesh/Util/Loop.h>
 #include <halfmesh/Util/Assert.h>
 #include <halfmesh/Util/Maths.h>
 #include <limits>
 #include <algorithm>
-#include <unordered_map>
+#include <atomic>
 
 using namespace math;
 
 namespace halfmesh {
+namespace {
+
+std::atomic<uint64_t> gBuildCount{0};
+std::atomic<uint64_t> gFFacesCount{0};
+
+} // anonymous namespace
+
+uint64_t HalfMesh::BuildCount()
+{
+	return gBuildCount.load(std::memory_order_relaxed);
+}
+
+void HalfMesh::ResetBuildCount()
+{
+	gBuildCount.store(0, std::memory_order_relaxed);
+}
+
+uint64_t HalfMesh::FFacesCount()
+{
+	return gFFacesCount.load(std::memory_order_relaxed);
+}
+
+void HalfMesh::ResetFFacesCount()
+{
+	gFFacesCount.store(0, std::memory_order_relaxed);
+}
+
+void HalfMesh::FFacesImpl(std::vector<Face>& faces, bool countHarvest) const
+{
+	if (countHarvest)
+		gFFacesCount.fetch_add(1, std::memory_order_relaxed);
+	faces.reserve(faces.size() + fHalfedges.size());
+	for (HIndex iHe : fHalfedges)
+		faces.emplace_back(FHe(iHe));
+}
 
 void HalfMesh::Clear()
 {
@@ -33,10 +67,28 @@ void HalfMesh::Clear()
 
 bool HalfMesh::Build(const Mesh& mesh)
 {
-	return Build(static_cast<VIndex>(mesh.vertices.size()), mesh.faces);
+	const VIndex numVertices = static_cast<VIndex>(mesh.vertices.size());
+	if (!mesh.faces.empty() || mesh.halfMesh.Empty())
+		return BuildImpl(numVertices, mesh.faces, true);
+	// half-edge-only source: harvest into a scratch snapshot rather than forcing
+	// the caller's derived array to materialize (works for an in-place rebuild
+	// too -- the copy is taken before BuildImpl's Clear())
+	std::vector<Face> harvested;
+	mesh.halfMesh.FFaces(harvested);
+	return BuildImpl(numVertices, harvested, true);
 }
 bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 {
+	return BuildImpl(numVertices, faces, true);
+}
+bool HalfMesh::BuildForValidation(VIndex numVertices, const std::vector<Face>& faces)
+{
+	return BuildImpl(numVertices, faces, false);
+}
+bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces, bool countBuild)
+{
+	if (countBuild)
+		gBuildCount.fetch_add(1, std::memory_order_relaxed);
 	Clear();
 	if (numVertices == 0 || faces.empty())
 		return true;
@@ -45,27 +97,45 @@ bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 	heFaces.reserve(heNexts.capacity());
 	vHalfedges.resize(numVertices, NO_ID);
 	fHalfedges.resize(faces.size(), NO_ID);
-	// walk the faces, creating half-edges if non-existing.
-	// Edges are keyed by a packed 64-bit UNDIRECTED key (min(tail,head)<<32)|max:
-	// VIndex is uint32, so the pack is lossless and gives an identity hash + single
-	// 64-bit compare instead of a two-round HashCombine chain over a tuple. Both
-	// directions of an edge share one key, so a single emplace per corner both
-	// creates the pair (on the first, first-seen direction) and locates the twin
-	// (on the second) — halving hash traffic and node allocations vs probing two
-	// directed keys. The map stores the EVEN half-edge of each pair; the odd twin is
-	// its XOR-partner. Output is bit-identical to a two-directed-key probe: the pair
-	// is still created oriented from the first-seen corner (even = idxTail, so the
-	// same vHalfedges / heVertices), the same corner triggers creation (first
-	// undirected encounter == twin-not-yet-created), and a directed edge reused by a
-	// second face is rejected the same way (its half-edge already carries a face).
-	// The map is never iterated — half-edge indices are assigned in face-walk order.
+	// Walk the faces, creating half-edges if non-existing. Edges are keyed by a
+	// packed 64-bit undirected key (min(tail,head)<<32)|max in a flat linear-probing
+	// table. Key 0 is the empty sentinel: the only edge that could produce it is the
+	// self-edge 0->0, which is rejected before lookup. The table is never iterated,
+	// so pairs are still created in first-encounter face order and slot assignment is
+	// byte-identical to the node-based map this replaces.
 	const auto edgeKey = [](VIndex a, VIndex b) -> uint64_t {
 		if (a > b)
 			std::swap(a, b);
 		return (static_cast<uint64_t>(a) << 32) | b;
 	};
-	std::unordered_map<uint64_t, HIndex> createdHalfedges;
-	createdHalfedges.reserve(heNexts.capacity());
+#if HALFMESH_TRIS
+	const size_t maxEdges = faces.size() * 3;
+#else
+	size_t maxEdges = 0;
+	for (const Face& face : faces)
+		maxEdges += static_cast<size_t>(face.rows());
+#endif
+	// strictly greater than maxEdges, so the table always keeps a free slot and
+	// the probe loop below terminates
+	size_t edgeTableCapacity = 1;
+	while (edgeTableCapacity <= maxEdges)
+		edgeTableCapacity <<= 1;
+	const size_t edgeTableMask = edgeTableCapacity - 1;
+	std::vector<uint64_t> edgeKeys(edgeTableCapacity, 0);
+	std::vector<HIndex> edgeHalfedges(edgeTableCapacity);
+	const auto findEdgeSlot = [&](uint64_t key) {
+		// MurmurHash3 finalizer: mixes both packed vertex indices before masking.
+		uint64_t hash = key;
+		hash ^= hash >> 33;
+		hash *= 0xff51afd7ed558ccdULL;
+		hash ^= hash >> 33;
+		hash *= 0xc4ceb9fe1a85ec53ULL;
+		hash ^= hash >> 33;
+		size_t slot = static_cast<size_t>(hash) & edgeTableMask;
+		while (edgeKeys[slot] != 0 && edgeKeys[slot] != key)
+			slot = (slot + 1) & edgeTableMask;
+		return slot;
+	};
 	FOREACHIDX (FIndex, idxFace, faces) {
 		const Face& face = faces[idxFace];
 		// walk around this face
@@ -81,17 +151,17 @@ bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 				Clear();
 				return false; // self-edge => non-manifold/degenerate input
 			}
-			// one emplace per corner: locate (or create) this edge's half-edge pair
-			HIndex& iHeEven = createdHalfedges.emplace(
-			                                      edgeKey(idxTail, idxHead), NO_ID)
-			                      .first->second;
+			// One probe per corner locates or creates this edge's half-edge pair.
+			const uint64_t key = edgeKey(idxTail, idxHead);
+			const size_t edgeSlot = findEdgeSlot(key);
 			HIndex iHe;
-			if (iHeEven == NO_ID) {
+			if (edgeKeys[edgeSlot] == 0) {
 				// first time this edge is seen: create and initialize a new pair,
 				// oriented from this corner (even half-edge has idxTail as tail)
 				ASSERT(heNexts.size() == heVertices.size() && heNexts.size() == heFaces.size());
 				iHe = static_cast<HIndex>(heNexts.size());
-				iHeEven = iHe;
+				edgeKeys[edgeSlot] = key;
+				edgeHalfedges[edgeSlot] = iHe;
 				vHalfedges[idxTail] = iHe;
 				heNexts.emplace_back(NO_ID);
 				heNexts.emplace_back(NO_ID);
@@ -102,6 +172,7 @@ bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 			} else {
 				// edge already exists: pick the half-edge for this corner's direction
 				// (the stored even half-edge if it leaves idxTail, else its twin)
+				const HIndex iHeEven = edgeHalfedges[edgeSlot];
 				iHe = (heVertices[iHeEven] == idxTail) ? iHeEven : HeTwin(iHeEven);
 				// A directed edge seen twice means an edge shared by >2 faces (or a
 				// duplicate face): the half-edge for this direction already carries a
@@ -168,7 +239,7 @@ bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 	// not the MSVC-only _DEBUG, so the validation runs on every platform.
 	{
 		// 1. every vertex is referenced by some half-edge: ConnectBorders() rejects
-		//    a NO_ID anchor (odd-parity test), so reaching here implies all are set.
+		//    a NO_ID anchor explicitly, so reaching here implies all are set.
 		for (const HIndex iHe : vHalfedges) {
 			ASSERT(iHe != NO_ID); // unreferenced vertex
 		}
@@ -211,48 +282,70 @@ void HalfMesh::GuaranteeAlwaysEven()
 	Build(nv, faces);
 }
 
+namespace {
+
+template <typename BeforeNextWrite>
+bool ConnectBordersImpl(HalfMesh& mesh, HalfMesh::HIndex& iHeStart, BeforeNextWrite&& beforeNextWrite)
+{
+	using HIndex = HalfMesh::HIndex;
+	using VIndex = HalfMesh::VIndex;
+	if (iHeStart == NO_ID || iHeStart >= mesh.heNexts.size())
+		return false;
+
+	// Find the face-bearing outgoing side of a boundary edge. Representatives on
+	// interior vertices may be odd after in-place mutations, so face occupancy,
+	// not pair parity, decides when the boundary has been reached.
+	const HIndex original = iHeStart;
+	const VIndex vertex = mesh.HeVertex(original);
+	const std::size_t guardLimit = mesh.heNexts.size() + 1;
+	std::size_t guard = 0;
+	HIndex boundaryOut = original;
+	while (mesh.heFaces[boundaryOut] == NO_ID || mesh.heFaces[mesh.HeTwin(boundaryOut)] != NO_ID) {
+		const HIndex twin = mesh.HeTwin(boundaryOut);
+		if (mesh.heNexts[twin] == NO_ID)
+			return false;
+		boundaryOut = mesh.HeNextOutgoingHalfedge(boundaryOut);
+		if (boundaryOut == original)
+			return true; // interior vertex
+		if (++guard > guardLimit)
+			return false;
+	}
+
+	// Find the outgoing boundary half-edge on the other side of this vertex's
+	// fan. Defer both writes until this walk succeeds so failure is non-mutating.
+	guard = 0;
+	HIndex boundaryNext = boundaryOut;
+	do {
+		boundaryNext = mesh.HeTwin(mesh.HePrev(boundaryNext));
+		if (++guard > guardLimit)
+			return false;
+	} while (mesh.heFaces[boundaryNext] != NO_ID);
+
+	ASSERT(mesh.HeVertex(boundaryNext) == vertex);
+	const HIndex boundaryIn = mesh.HeTwin(boundaryOut);
+	ASSERT(mesh.heFaces[boundaryOut] != NO_ID && mesh.heFaces[boundaryIn] == NO_ID);
+	mesh.SetVHalfedge(vertex, boundaryOut);
+	// All in-tree callers pass the representative itself by reference. Preserve
+	// the public by-reference behavior for any caller that passes a local copy.
+	if (iHeStart != boundaryOut)
+		iHeStart = boundaryOut;
+	beforeNextWrite(boundaryIn);
+	mesh.heNexts[boundaryIn] = boundaryNext;
+	return true;
+}
+
+} // anonymous namespace
+
 bool HalfMesh::ConnectBorders(HIndex& iHeStart)
 {
-	// A corrupt (non-manifold) adjacency can make the walks below never reach a
-	// boundary; bound every loop by the half-edge count so we fail instead of
-	// hanging.  On a manifold mesh the guard never trips (one extra compare per
-	// step of two short, boundary-local loops).
-	const std::size_t guardLimit = heNexts.size() + 1;
-	std::size_t guard = 0;
-	// assign vertex half-edge on the border if it's the case
-	HIndex iHe = iHeStart;
-	while (heNexts[HeBack(iHeStart)] != NO_ID) {
-		iHeStart = HeNextOutgoingHalfedge(iHeStart);
-		if (iHeStart == iHe)
-			return true;
-		if (++guard > guardLimit)
-			return false; // would loop forever => non-manifold
-	}
-	if ((iHeStart & 1) != 0)
-		return false;
-	// close adjacency loop by assigning the half-edge on
-	// the other side of the border
-	guard = 0;
-	do {
-		iHe = HeTwin(HePrev(iHe));
-		if (++guard > guardLimit)
-			return false; // no boundary reachable => non-manifold
-	} while (!EHeIsBoundary(iHe));
-	ASSERT(heVertices[iHe] == heVertices[iHeStart] && heFaces[iHe] == NO_ID);
-	ASSERT(heFaces[HeBack(iHeStart)] == NO_ID);
-	ASSERT(heNexts[HeBack(iHeStart)] == NO_ID);
-	heNexts[HeBack(iHeStart)] = iHe;
-	return true;
+	return ConnectBordersImpl(*this, iHeStart, [](HIndex) {});
 }
 
 bool HalfMesh::ConnectBorders()
 {
 	for (HIndex& iHeStart : vHalfedges) {
-		if ((iHeStart & 1) != 0)
+		if (!ConnectBorders(iHeStart))
 			return false;
-		if (!EHeIsBoundary(iHeStart) || heNexts[HeBack(iHeStart)] == NO_ID)
-			if (!ConnectBorders(iHeStart))
-				return false;
 		ASSERT([&]() {
 			HIndex iHe = iHeStart;
 			do {
@@ -508,37 +601,118 @@ void HalfMesh::VRemoveOnly(VIndex* verts, unsigned numVerts)
 		VRemoveOnly(verts[i]);
 }
 
+void HalfMesh::VRemoveUnreferenced(std::vector<VIndex>& removedVerts)
+{
+	const std::size_t firstRemoved = removedVerts.size();
+	FOREACHIDX (VIndex, vertex, vHalfedges)
+		if (vHalfedges[vertex] == NO_ID)
+			removedVerts.emplace_back(vertex);
+	if (removedVerts.size() > firstRemoved)
+		VRemoveOnly(removedVerts.data() + firstRemoved, static_cast<unsigned>(removedVerts.size() - firstRemoved));
+}
+
+HalfMesh::AddMark HalfMesh::AddUndoMark(const AddUndo& undo) const
+{
+	AddMark mark;
+	mark.nexts = undo.nexts.size();
+	mark.faces = undo.faces.size();
+	mark.representatives = undo.representatives.size();
+	mark.numHalfedges = heNexts.size();
+	mark.numFaces = fHalfedges.size();
+	mark.alwaysEven = alwaysEven;
+	return mark;
+}
+
+void HalfMesh::AddUndoRollback(AddUndo& undo, const AddMark& mark)
+{
+	// reverse order, so a slot written more than once is restored to its OLDEST
+	// recorded value; the writes come first because a shared log may hold slots
+	// that only the truncation below removes
+	while (undo.nexts.size() > mark.nexts) {
+		heNexts[undo.nexts.back().first] = undo.nexts.back().second;
+		undo.nexts.pop_back();
+	}
+	while (undo.faces.size() > mark.faces) {
+		heFaces[undo.faces.back().first] = undo.faces.back().second;
+		undo.faces.pop_back();
+	}
+	heNexts.resize(mark.numHalfedges);
+	heVertices.resize(mark.numHalfedges);
+	heFaces.resize(mark.numHalfedges);
+	fHalfedges.resize(mark.numFaces);
+	while (undo.representatives.size() > mark.representatives) {
+		vHalfedges[undo.representatives.back().first] = undo.representatives.back().second;
+		undo.representatives.pop_back();
+	}
+	alwaysEven = mark.alwaysEven; // restored last: the writes above bypass SetVHalfedge
+}
+
 HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 {
-// check if adding the face maintains a manifold mesh
+	AddUndo undo;
+	return FAddImpl(face, undo);
+}
+
+HalfMesh::FIndex HalfMesh::FAddImpl(const Face& face, AddUndo& undo)
+{
+// check if adding the face maintains a manifold mesh; nothing below this block
+// mutates, so every rejection here needs no rollback
 #if HALFMESH_TRIS
 	const unsigned numVertices = 3;
 	HIndex hedges[3];
 	unsigned numNewEdges[3] = {0, 0, 0};
+	bool isolated[3];
 #else
 	const unsigned numVertices = face.rows();
 	std::vector<HIndex> hedges(numVertices);
 	std::vector<unsigned> numNewEdges(numVertices);
+	std::vector<bool> isolated(numVertices);
 #endif
 	for (unsigned v = 0; v < numVertices; ++v) {
-		ASSERT(VIsBoundary(face[v]));
+		if (face[v] >= VSize())
+			return NO_ID;
+		isolated[v] = VHalfedge(face[v]) == NO_ID;
+		if (!isolated[v] && !VIsBoundary(face[v]))
+			return NO_ID;
 		const unsigned v1 = (v + 1) % numVertices;
-		const EIndex iE = EEdge(face[v], face[v1]);
+		if (face[v] == face[v1])
+			return NO_ID;
+		// an isolated endpoint cannot already share an edge with this corner
+		const EIndex iE = (isolated[v] || VHalfedge(face[v1]) == NO_ID) ? NO_ID : EEdge(face[v], face[v1]);
 		if (iE == NO_ID) {
 			hedges[v] = NO_ID;
 			++numNewEdges[v];
 			++numNewEdges[v1];
 		} else {
-			ASSERT(EIsBoundary(iE)); // duplicate edge
+			if (!EIsBoundary(iE))
+				return NO_ID; // duplicate/interior edge
 			hedges[v] = HeBack(EHalfedge(iE));
 			if (HeVertex(hedges[v]) != face[v])
 				return NO_ID; // non-manifold edge (opposite orientation)
 		}
 	}
 	for (unsigned v = 0; v < numVertices; ++v) {
-		if (numNewEdges[v] > 1)
+		// an existing boundary vertex may gain at most one new edge (more would
+		// fan it into two disks); an isolated one is a fresh corner, so the two
+		// edges of the face that meet there are both legal
+		if (numNewEdges[v] > (isolated[v] ? 2u : 1u))
 			return NO_ID; // non-manifold vertex
 	}
+
+	const AddMark mark = AddUndoMark(undo);
+	const auto RememberNext = [&](HIndex iHe) {
+		if (iHe < mark.numHalfedges)
+			undo.nexts.emplace_back(iHe, heNexts[iHe]);
+	};
+	const auto RememberFace = [&](HIndex iHe) {
+		if (iHe < mark.numHalfedges)
+			undo.faces.emplace_back(iHe, heFaces[iHe]);
+	};
+	// this face's corners are the only representatives FAdd and the border relink
+	// below can touch, so recording them up front covers both
+	for (unsigned v = 0; v < numVertices; ++v)
+		undo.representatives.emplace_back(face[v], vHalfedges[face[v]]);
+
 	// add the new face
 	const FIndex iF = static_cast<FIndex>(fHalfedges.size());
 	fHalfedges.emplace_back(NO_ID);
@@ -553,7 +727,7 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 			const VIndex idxTail = face[v];
 			const VIndex idxHead = face[(v + 1) % numVertices];
 			iHe = static_cast<HIndex>(heNexts.size());
-			vHalfedges[idxTail] = iHe;
+			SetVHalfedge(idxTail, iHe);
 			heNexts.emplace_back(NO_ID);
 			heNexts.emplace_back(NO_ID);
 			heVertices.emplace_back(idxTail);
@@ -562,25 +736,66 @@ HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
 			heFaces.emplace_back(NO_ID);
 		}
 		// update data-structures
+		RememberFace(iHe);
 		heFaces[iHe] = iF;
 		if (v == 0) {
 			fHalfedges[iF] = iHe;
 			firstIHe = iHe;
 		} else {
+			RememberNext(prevIHe);
 			heNexts[prevIHe] = iHe;
 		}
 		prevIHe = iHe;
 	}
 	// initialize first half-edge next index, skipped above
+	RememberNext(prevIHe);
 	heNexts[prevIHe] = firstIHe;
 	// define the border edges
 	for (unsigned v = 0; v < numVertices; ++v) {
 		HIndex& iHe = vHalfedges[face[v]];
-		if (EHeIsBoundary(iHe))
-			heNexts[HeTwin(iHe)] = NO_ID;
-		ConnectBorders(iHe);
+		if (!ConnectBordersImpl(*this, iHe, RememberNext)) {
+			AddUndoRollback(undo, mark);
+			return NO_ID;
+		}
 	}
 	return iF;
+}
+
+bool HalfMesh::FAddDisk(const std::vector<Face>& faces)
+{
+	if (faces.empty())
+		return true;
+	// A patch face is attachable only once one of its edges exists in the mesh;
+	// FAdd would reject it otherwise (all-new edges exceed the one-new-edge budget
+	// of an existing boundary vertex), so defer it instead of paying a rejection.
+	const auto SharesExistingEdge = [this](const Face& face) {
+		for (Eigen::Index corner = 0; corner < face.rows(); ++corner) {
+			const VIndex a = face[corner];
+			const VIndex b = face[(corner + 1) % face.rows()];
+			if (a < VSize() && b < VSize() && VHalfedge(a) != NO_ID && VHalfedge(b) != NO_ID && EEdge(a, b) != NO_ID)
+				return true;
+		}
+		return false;
+	};
+	// one log for the whole patch: a rejected patch unwinds in O(patch)
+	AddUndo undo;
+	const AddMark mark = AddUndoMark(undo);
+	std::vector<Face> pending(faces), retry;
+	retry.reserve(faces.size());
+	while (true) {
+		retry.clear();
+		for (const Face& face : pending)
+			if (!SharesExistingEdge(face) || FAddImpl(face, undo) == NO_ID)
+				retry.emplace_back(face);
+		if (retry.empty())
+			return true;
+		if (retry.size() == pending.size()) {
+			// a whole sweep attached nothing: the remainder never will
+			AddUndoRollback(undo, mark);
+			return false;
+		}
+		pending.swap(retry);
+	}
 }
 
 #if HALFMESH_TRIS
@@ -618,6 +833,185 @@ void HalfMesh::FRemove(FIndex iF)
 	}
 	// remove face
 	FRemoveOnly(iF);
+}
+
+void HalfMesh::FRemoveBulk(std::vector<FIndex>& faceRemoves,
+                           std::vector<VIndex>& removedVerts,
+                           std::vector<VIndex>& splitSrcVerts)
+{
+	if (faceRemoves.empty() || fHalfedges.empty())
+		return;
+
+	std::sort(faceRemoves.begin(), faceRemoves.end());
+	faceRemoves.erase(std::unique(faceRemoves.begin(), faceRemoves.end()), faceRemoves.end());
+	faceRemoves.erase(std::remove_if(faceRemoves.begin(), faceRemoves.end(), [this](FIndex face) { return face >= FSize(); }), faceRemoves.end());
+	if (faceRemoves.empty())
+		return;
+	const std::size_t firstRemoved = removedVerts.size();
+
+	const VIndex originalVertexCount = VSize();
+	const EIndex originalEdgeCount = ESize();
+	const FIndex originalFaceCount = FSize();
+	std::vector<bool> removedFace(originalFaceCount, false);
+	for (FIndex face : faceRemoves)
+		removedFace[face] = true;
+	const auto FaceSurvives = [&](FIndex face) {
+		return face != NO_ID && !removedFace[face];
+	};
+
+	std::vector<VIndex> affectedVertices;
+	std::vector<EIndex> affectedEdges;
+	affectedVertices.reserve(faceRemoves.size() * 3);
+	affectedEdges.reserve(faceRemoves.size() * 3);
+	for (FIndex face : faceRemoves) {
+		for (HIndex iHe : FAdjacentHalfedges(face)) {
+			affectedVertices.emplace_back(HeTailVertex(iHe));
+			affectedVertices.emplace_back(HeHeadVertex(iHe));
+			affectedEdges.emplace_back(HeEdge(iHe));
+		}
+	}
+	std::sort(affectedVertices.begin(), affectedVertices.end());
+	affectedVertices.erase(std::unique(affectedVertices.begin(), affectedVertices.end()), affectedVertices.end());
+	std::sort(affectedEdges.begin(), affectedEdges.end());
+	affectedEdges.erase(std::unique(affectedEdges.begin(), affectedEdges.end()), affectedEdges.end());
+
+	std::vector<bool> touchedVertex(originalVertexCount, false);
+	std::vector<VIndex> touchedVertices;
+	touchedVertices.reserve(affectedVertices.size() + faceRemoves.size());
+	const auto TouchVertex = [&](VIndex vertex) {
+		if (vertex >= touchedVertex.size())
+			touchedVertex.resize(static_cast<std::size_t>(vertex) + 1, false);
+		if (!touchedVertex[vertex]) {
+			touchedVertex[vertex] = true;
+			touchedVertices.emplace_back(vertex);
+		}
+	};
+	std::vector<bool> removedVertex(originalVertexCount, false);
+	// Split every surviving disconnected fan before changing face/edge links.
+	// One face-bearing outgoing half-edge represents each incident face in the
+	// cyclic vertex orbit; removed faces and an existing boundary separate runs.
+	for (VIndex vertex : affectedVertices) {
+		std::vector<HIndex> ring;
+		for (HIndex iHe : VOutgoingHalfedges(vertex))
+			ring.emplace_back(iHe);
+		if (ring.empty()) {
+			removedVerts.emplace_back(vertex);
+			removedVertex[vertex] = true;
+			continue;
+		}
+
+		std::vector<std::vector<HIndex>> fans;
+		std::size_t separator = ring.size();
+		for (std::size_t i = 0; i < ring.size(); ++i)
+			if (!FaceSurvives(heFaces[ring[i]])) {
+				separator = i;
+				break;
+			}
+		if (separator == ring.size()) {
+			fans.emplace_back(ring);
+		} else {
+			std::vector<HIndex> fan;
+			for (std::size_t step = 1; step <= ring.size(); ++step) {
+				const HIndex iHe = ring[(separator + step) % ring.size()];
+				if (FaceSurvives(heFaces[iHe])) {
+					fan.emplace_back(iHe);
+				} else if (!fan.empty()) {
+					fans.emplace_back(std::move(fan));
+					fan.clear();
+				}
+			}
+			if (!fan.empty())
+				fans.emplace_back(std::move(fan));
+		}
+
+		if (fans.empty()) {
+			removedVerts.emplace_back(vertex);
+			removedVertex[vertex] = true;
+			continue;
+		}
+		const HIndex oldRepresentative = vHalfedges[vertex];
+		const auto originalFan = std::find_if(fans.begin(), fans.end(), [oldRepresentative](const std::vector<HIndex>& fan) {
+			return std::find(fan.begin(), fan.end(), oldRepresentative) != fan.end();
+		});
+		if (originalFan != fans.end() && originalFan != fans.begin())
+			std::iter_swap(fans.begin(), originalFan);
+		SetVHalfedge(vertex, fans.front().front());
+		if (fans.size() > 1)
+			TouchVertex(vertex);
+
+		for (std::size_t fanIndex = 1; fanIndex < fans.size(); ++fanIndex) {
+			const VIndex duplicate = VSize();
+			vHalfedges.emplace_back(NO_ID);
+			TouchVertex(duplicate);
+			splitSrcVerts.emplace_back(vertex);
+			for (HIndex faceOut : fans[fanIndex]) {
+				const HIndex previous = HePrev(faceOut);
+				heVertices[faceOut] = duplicate;
+				heVertices[HeTwin(previous)] = duplicate;
+			}
+			SetVHalfedge(duplicate, fans[fanIndex].front());
+		}
+	}
+
+	std::vector<EIndex> edgeRemoves;
+	edgeRemoves.reserve(faceRemoves.size() * 2);
+	for (EIndex edge : affectedEdges) {
+		ASSERT(edge < originalEdgeCount);
+		const HIndex even = EHalfedge(edge);
+		const HIndex odd = HeTwin(even);
+		const bool evenSurvives = FaceSurvives(heFaces[even]);
+		const bool oddSurvives = FaceSurvives(heFaces[odd]);
+		if (evenSurvives && oddSurvives)
+			continue;
+
+		const VIndex endpoint0 = heVertices[even];
+		const VIndex endpoint1 = heVertices[odd];
+		TouchVertex(endpoint0);
+		TouchVertex(endpoint1);
+		if (!evenSurvives && !oddSurvives) {
+			edgeRemoves.emplace_back(edge);
+			continue;
+		}
+
+		if (evenSurvives) {
+			heFaces[odd] = NO_ID;
+			heNexts[odd] = NO_ID;
+		} else {
+			const FIndex survivingFace = heFaces[odd];
+			const VIndex survivingTail = heVertices[odd];
+			const HIndex previous = HePrev(odd);
+			heNexts[previous] = even;
+			heNexts[even] = heNexts[odd];
+			heNexts[odd] = NO_ID;
+			if (vHalfedges[survivingTail] == odd)
+				SetVHalfedge(survivingTail, even);
+			std::swap(heVertices[even], heVertices[odd]);
+			heFaces[even] = survivingFace;
+			heFaces[odd] = NO_ID;
+			if (fHalfedges[survivingFace] == odd)
+				fHalfedges[survivingFace] = even;
+		}
+	}
+
+	// Rebuild only the boundary links at vertices whose local fan changed.
+	std::sort(touchedVertices.begin(), touchedVertices.end());
+	for (VIndex vertex : touchedVertices) {
+		if (vertex < removedVertex.size() && removedVertex[vertex])
+			continue;
+		if (!ConnectBorders(vHalfedges[vertex])) {
+			// unreachable: the fan split above leaves every survivor single-fan.
+			// Still fall through to the compaction, so the reported swap-pops stay
+			// consistent with the array sizes the Mesh wrapper is about to apply.
+			ASSERT(false && "FRemoveBulk produced an invalid surviving fan");
+			break;
+		}
+	}
+
+	if (!edgeRemoves.empty())
+		ERemoveOnly(edgeRemoves.data(), static_cast<unsigned>(edgeRemoves.size()));
+	FRemoveOnly(faceRemoves.data(), static_cast<unsigned>(faceRemoves.size()));
+	if (removedVerts.size() > firstRemoved)
+		VRemoveOnly(removedVerts.data() + firstRemoved, static_cast<unsigned>(removedVerts.size() - firstRemoved));
 }
 
 bool HalfMesh::FRemoveCorner(FIndex iF, RemovedData& removedData)

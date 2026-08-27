@@ -134,6 +134,10 @@ halfmesh_discover_tests(triangle_bvh_test)
 
 # mesh_io_test: PLY round-trip + glTF smoke-save + mesh.ply-based KdTree tests
 add_executable(mesh_io_test MeshIOTest.cpp)
+# Needs src/ on the include path for GltfImageCodec.h: the tests that drive a
+# tinygltf::TinyGLTF directly must install the same OpenCV image codec MeshIO
+# does, since the build compiles tinygltf without stb_image.
+target_include_directories(mesh_io_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(mesh_io_test PRIVATE
     GTest::gtest
     GTest::gtest_main
@@ -143,9 +147,15 @@ halfmesh_discover_tests(mesh_io_test)
 
 # mesh_repair_test: duplicate/degenerate/non-manifold/small-component/OBB-cull
 add_executable(mesh_repair_test MeshRepairTest.cpp)
+target_include_directories(mesh_repair_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/corpus
+    ${CMAKE_CURRENT_SOURCE_DIR}/metrics
+)
 target_link_libraries(mesh_repair_test PRIVATE
     GTest::gtest
     GTest::gtest_main
+    halfmesh_corpus
+    halfmesh_metrics
     halfmesh::halfmesh
 )
 halfmesh_discover_tests(mesh_repair_test)
@@ -433,6 +443,10 @@ if(HALFMESH_BUILD_PERF)
     set_tests_properties(perf_harness PROPERTIES
         LABELS "perf"
         TIMEOUT 3600   # generous: 1 hour for slow machines
+        # The harness times wall-clock, so co-scheduled tests read as a slowdown:
+        # under `ctest -j` the Build scaling ratio drifts past its bound purely
+        # from contention. RUN_SERIAL keeps the machine to itself.
+        RUN_SERIAL TRUE
     )
     message(STATUS "halfmesh: perf harness enabled (ctest -L perf)")
 endif()

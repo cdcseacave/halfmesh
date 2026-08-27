@@ -288,7 +288,7 @@ struct Candidate
 	unsigned chart;
 	unsigned depth; // flood hops from the chart's seed
 	double dist; // accumulated centroid-path distance from the chart's seed
-	    // (data for the distance term — NOT a tie-break)
+	// (data for the distance term — NOT a tie-break)
 	// Min-heap via std::priority_queue (a max-heap on operator<): the CHEAPEST cost
 	// pops first. On developable regions every candidate cost ties at ~0, so the
 	// boundary between competing charts would otherwise be decided by the STL heap's
@@ -1247,12 +1247,13 @@ namespace detail {
 unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
                        std::vector<unsigned>& faceChart, ChartFlattenCache* cache)
 {
+	mesh.SyncFaces();
 	faceChart.clear();
 	if (mesh.faces.empty())
 		return 0;
 
 	// Ensure adjacency + normals are available.
-	if (mesh.halfMesh.Empty() || mesh.halfMesh.FSize() != mesh.faces.size())
+	if (mesh.halfMesh.Empty())
 		mesh.ListHalfEdges();
 	if (mesh.faceNormals.size() != mesh.faces.size())
 		mesh.ComputeFaceNormals();
@@ -1324,7 +1325,8 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 // seed setup in ConeLloydSegment exactly.
 std::vector<Mesh::FIndex> ComputeSegmentationSeeds(Mesh& mesh, const ParametrizeParams& params)
 {
-	if (mesh.halfMesh.Empty() || mesh.halfMesh.FSize() != mesh.faces.size())
+	mesh.SyncFaces();
+	if (mesh.halfMesh.Empty())
 		mesh.ListHalfEdges();
 	if (mesh.faceNormals.size() != mesh.faces.size())
 		mesh.ComputeFaceNormals();
@@ -1380,6 +1382,7 @@ float NormalizeChartDensity(Mesh& mesh,
                             unsigned numCharts,
                             const AtlasParams& params)
 {
+	mesh.SyncFaces();
 	const size_t nf = mesh.faces.size();
 	if (nf == 0 || numCharts == 0)
 		return 0.f;
@@ -1497,6 +1500,7 @@ AtlasResult GenerateAtlas(Mesh& mesh,
                           const ParametrizeParams& pparams,
                           const AtlasParams& aparams)
 {
+	mesh.SyncFaces();
 	// Segment + flatten share one flatten cache: the flip-repair's final accepting
 	// verdict already flattened every shipping chart (fully on the
 	// developableMaxUvDistortion > 0 path, init-only otherwise), so

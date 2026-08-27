@@ -5,6 +5,202 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0]
+
+### Half-edge–primary mesh processing
+
+The half-edge is now the working representation and `faces` is a derived
+snapshot, so a multi-stage pipeline pays **one** `HalfMesh::Build` instead of
+one per family transition. Measured on a 5 M-face mesh, a native clean
+(spurious → spikes → holes → unref) performs exactly one build and one face
+harvest; `tests/perf` asserts both counts.
+
+- **Representation contract.** `Mesh` has exactly three valid states —
+  arrays-only, half-edge-only, both-and-consistent. New:
+  `Mesh::InvalidateFaces()`, `Mesh::SyncFaces()`, `Mesh::SyncFacesConst()`,
+  `Mesh::InvalidateHalfMesh()`, `Mesh::ValidateInvariants()`,
+  `Mesh::ValidateHalfMesh()`, and the `BeginHalfEdgePipeline()` /
+  `EndHalfEdgePipeline()` scope that defers per-stage snapshots to a single
+  final harvest. Public methods still return with `faces` populated.
+- **New `HalfMesh` primitives.** `FRemoveBulk` removes an arbitrary face set in
+  one pass, splitting pinch vertices and reporting the vertex swap-pops and
+  split sources so `Mesh::vertices`/`vertexColors` follow in lockstep;
+  `FAddDisk` attaches a pre-triangulated patch in dependency order;
+  `VRemoveUnreferenced` sweeps unreferenced vertices natively. `FAdd` now
+  accepts isolated corners (two new edges), propagates a border-relink failure
+  as `NO_ID`, and unwinds through an undo log so a rejected add — or a rejected
+  whole patch — leaves every array byte-identical.
+- **Border relinking is parity-agnostic.** `ConnectBorders` identifies the
+  boundary representative through `heFaces` instead of half-edge parity, so it
+  works on a structure mutated in place by `EFlip`/`ESplit`/`ERemove`, not only
+  on a freshly built one.
+- **Native repair/hole stages.** `RemoveSpuriousComponents`,
+  `RemoveSmallComponents`, `RemoveSpikes`, `RemoveDegenerateFaces`,
+  `RemoveUnreferencedVertices`, `CloseHoles` and `RemoveVerticesAndFill` mutate
+  the live half-edge and no longer clear it. `CloseHoles` also dropped its
+  defensive entry rebuild, so a call that fills nothing now costs ~0, and
+  `RemoveVerticesAndFill` classifies loops straight off the connectivity, so it
+  neither reads nor produces a face snapshot.
+  `FixNonManifold` short-circuits to a no-op once `halfMesh` exists — the
+  structure cannot represent what it fixes.
+- **Representation dispatch.** `RemoveUnreferencedVertices`,
+  `RemoveDegenerateFaces` and `RemoveSpikes` pick an arm by current state and
+  never force a transition; both arms are public as `…Arrays` / `…HalfEdge`.
+  The array arms keep working on non-manifold soup (no silent manifoldization)
+  and keep preserving attributes.
+- **`Simplify` and `RemeshIsotropic` read topology from `halfMesh` only**, so
+  neither needs a face snapshot on entry and neither maintains one mid-pass.
+
+### Performance
+
+- `HalfMesh::Build` pairs twin half-edges through a flat open-addressing table
+  keyed by a packed `(min,max)` vertex pair instead of
+  `std::unordered_map`: **3.24×** faster (0.608 s vs. 1.969 s) at 495.8 MiB vs.
+  904.2 MiB peak working set on a 5,003,552-face mesh (Release, MSVC 14.51,
+  x64, i7-13700KF). Half-edge numbering, rejection behavior and goldens are
+  unchanged.
+
+### New
+
+- `Mesh::RemoveSpuriousComponents(factor)` — reconstruction-debris removal
+  relative to the mesh's own edge-length distribution (long-edge faces, then
+  components with a small bounding-box diagonal).
+- `Mesh::RemoveSpikes(maxIterations)` — cascade removal of vertices incident to
+  at most one face.
+- `Mesh::RemoveVerticesAndFill(vertexRemoves)` — remove vertices and span only
+  the boundary loops that removal created, without refining, so the vertex
+  count is guaranteed to shrink.
+- `Mesh::RemoveFacesHalfEdge`, `Mesh::ComputeMeanEdgeLength`.
+- **`Mesh::vertexNormals`** — authored per-vertex normals, transported rather
+  than maintained. Parallel to `vertices` under the same empty-or-exact contract
+  as `vertexColors`, but explicitly *not* a cache: nothing recomputes it, so an
+  empty array means "derive them yourself". It is remapped through every
+  operation that only renumbers vertices (duplicate/unreferenced-vertex removal,
+  non-manifold bow-tie splits, face removal, edge collapse) and cleared by every
+  operation that *moves* one (`Simplify`, `SmoothHCLaplacian`, `SmoothTaubin`,
+  `RemeshIsotropic`, degenerate-face collapse, hole filling) via the new
+  `Mesh::InvalidateVertexNormals()`. `Mesh::VertexAttributesSwapPop()` /
+  `VertexAttributesAppendFrom()` let a remover name the per-vertex attribute
+  *set* instead of each array. `SavePLY` prefers stored normals over derived
+  ones; the openMVS bridge carries them in both directions, so a round trip no
+  longer silently replaces an artist's normals with geometric ones.
+- **`BakeOntoAtlas(source, target, params)`** — `RebakeTexture`'s counterpart
+  for a target whose UV layout is authored and must be preserved: it reads
+  `target.faceTexcoords` instead of generating a new atlas, so only the texels
+  change. Preconditions (including the target texture's size against
+  `params.resolution`, the only evidence of the pixel space the UVs are in) are
+  checked in every build mode.
+- **`BakeParams::faceMask`** — restrict rasterization to selected target faces.
+  Under a mask each page is seeded from `target.texturesDiffuse` rather than
+  black, so unselected texels keep what they had and the bake is a true in-place
+  edit; a wrong-sized mask is refused with a warning. Honored by `BakeAtlas` and
+  `BakeOntoAtlas`; `RebakeTexture` and `DefragmentTexture` repack into a new
+  layout in which the old texels mean nothing, so they ignore it.
+- [`RectPacking.h`](docs/FEATURES.md#rectangle-packing-mesh-independent) —
+  `PackRectangles` / `EstimateSquareTextureSize`: the atlas packer's two-tier
+  skyline+shelf core exposed over integer pixel rectangles, for lightmaps,
+  sprite sheets and texture repacking with no mesh involved. `PackAtlas` and
+  `PackRectangles` are now two thin wrappers over one implementation.
+- `HalfMesh::BuildCount()` / `FFacesCount()` (+ `Reset…`) — process-wide
+  counters that let a pipeline assert it rebuilds connectivity once.
+
+### glTF: exception-free tinygltf, OpenCV image codec
+
+- **tinygltf no longer needs exceptions.** Built with `TINYGLTF_NOEXCEPTION` +
+  `JSON_NOEXCEPTION`, so glTF JSON is parsed by checking the parser's return
+  value rather than by catching, and nlohmann/json is compiled in its
+  no-exception mode. Both are `PRIVATE` to the library -- they are only read
+  behind `TINYGLTF_IMPLEMENTATION` -- so `JSON_NOEXCEPTION` cannot leak onto a
+  consumer that uses nlohmann/json itself, where it would turn its exceptions
+  into `abort()`. OpenCV and tinyply still throw, so the library as a whole is
+  not yet buildable with exceptions disabled.
+- **glTF textures are decoded and encoded with OpenCV, not stb.** Built with
+  `TINYGLTF_NO_STB_IMAGE` + `TINYGLTF_NO_STB_IMAGE_WRITE`; the bundled stb
+  codecs are no longer compiled into the build at all, and glTF images now take
+  the same libjpeg-turbo / libpng path as every other image the library reads or
+  writes. JPEG export keeps stb's quality 100, so file output is unchanged.
+  Internal `src/GltfImageCodec.{h,cpp}`: with those macros set tinygltf ships no
+  default codec, so every `tinygltf::TinyGLTF` context must call
+  `SetGltfImageCodec()` before touching images. `Mesh::LoadGLTF` /
+  `Mesh::SaveGLTF` do it themselves -- callers see no change.
+
+### Changed
+
+- **`LoadPLY` resets the optional arrays it does not replace.** Loading into a
+  reused `Mesh` kept the previous mesh's `vertexColors` / `faceTexcoords` /
+  textures whenever the new file carried none, leaving an array of the wrong
+  length against the new vertex or face count. Both loaders now clear the
+  optional set up front, so the empty-or-parallel contract holds across a load.
+- **`Mesh::CloseHoles` changed meaning.** The first parameter is now
+  `maxHoleEdges` (default **30**), a *size* threshold: every boundary loop
+  spanned by at most that many edges is filled, in place of the old
+  `nCloseHoles = 200` *count* of smallest-first loops. A scanned surface's
+  large open boundary now stays open by default instead of being patched.
+  Python: `close_holes(v, f, max_hole_edges=30)`.
+- **Processing targets untextured meshes.** Half-edge mutators drop face-keyed
+  attributes through `InvalidateFaces()` (one-time warning when texture data is
+  actually discarded). `docs/FEATURES.md` marks every public processing method
+  `untextured-only` or `attribute-preserving (bonus)`.
+- `Mesh::ListHalfEdges()`'s freshness gate is now exact (`halfMesh` non-empty ⇒
+  valid, by contract) instead of a vertex/face count heuristic. **A caller that
+  hand-edits the public `faces` array must call `Mesh::InvalidateHalfMesh()`**;
+  the old heuristic happened to catch count-changing edits.
+- **`vertexColors` is a contractual parallel array** — either empty, or exactly
+  as long as `vertices` — and `Mesh::ValidateInvariants()` now enforces it, so
+  every mutator's existing assertions catch a desync at its source. Mutators
+  that change the vertex set maintain it: `ECollapse` and `RemeshIsotropic`
+  mirror the swap-pop (and interpolate at an edge split), `FixNonManifold` and
+  `FRemoveBulk` duplicate the source colour on a vertex split, `CloseHoles`
+  gives patch interiors the mean colour of the loop they span, and `Simplify`
+  clears the array up front because its collapses have no mapping to offer.
+  `ECollapse` also refreshes the face snapshot; scope a collapse loop in
+  `BeginHalfEdgePipeline` to avoid the per-call harvest.
+- Atlas packing: `PackAtlas` and the fit-to-resolution probe run through the
+  shared packer; behavior matches 0.2.0.
+- **`faceTexblobs` is `std::vector<Mesh::TexIndex>` (uint8)** rather than
+  `FIndex`, matching openMVS's `MVS::Mesh::TexIndex` — whose texture list is
+  indexed by that same type, so 255 blobs was always the ceiling. The array is
+  4x smaller and `ConvertMesh` becomes a straight copy in both directions;
+  `Mesh::MAX_TEXBLOBS` spells out where the limit comes from, and `LoadGLTF`
+  now caps and says so instead of silently folding the extra textures onto
+  blob 0. The PLY on-disc property stays `int32`, so existing files and their
+  readers are unaffected.
+- **`Mesh::SaveGLTF` takes `imageFormat` and `embedImages`**, defaulted to the
+  previous embedded-JPEG behavior; `Mesh::ImageFormat` maps onto the glTF
+  mimeType, which is what tinygltf picks its encoder from. Non-embedded images
+  are named per blob (`<stem>_diffuse<NN>`, matching `SavePLY`) instead of
+  every blob overwriting and referencing one `image` file.
+- **openMVS interop gained consuming overloads.** `ConvertMesh` now has an
+  rvalue form in each direction that frees every source array as soon as it is
+  copied — peak footprint is the larger mesh plus one array instead of both at
+  once — and the halfmesh->MVS side also drops the half-edge structure and the
+  incident-face cache.
+- **glTF save → load is now an identity.** `SaveGLTF` has always written the
+  vertex buffer in halfmesh's z-up frame and put the z-up → y-up rotation on
+  the root node, but `LoadGLTF` applied that node matrix like any other and
+  returned the mesh rotated 90° about X — so the library could not read back
+  what it had just written, and glTF was unusable as a lossless interchange
+  format. `LoadGLTF` now converts back to z-up after flattening the hierarchy.
+  The rotation stays in the *file*, so exports remain upright in Blender,
+  three.js and Cesium.
+
+  **halfmesh is z-up in memory and its glTF files are y-up** is now a stated
+  contract (`Mesh::Load` header comment, `docs/FEATURES.md`) rather than
+  something implied by a `const bool` inside `SaveGLTF`. It is fixed, not
+  selectable — a knob would let the two sides be configured into disagreement.
+  **A y-up glTF from any exporter now loads correctly; a glTF carrying z-up
+  data under an identity node — non-conformant, but emitted by some writers,
+  including openMVS's own pre-halfmesh exporter — will load rotated and must be
+  corrected by its producer.** PLY is unaffected: it has no up-axis convention
+  and is still read and written raw.
+- **vcpkg `builtin-baseline` advanced** to `0ac8df3b98e3afcd8bf075fa74a6bd2c32613345`
+  (2026-08-24), which carries the corrected `tinygltf` 3.0.0#1 archive hash.
+  `vcpkg-overlay-ports/` (the tinygltf hotfix plus a local-source `halfmesh`
+  port) and `vcpkg-configuration.json` are removed — a cold-cache build now
+  resolves every dependency straight from the registry, and the halfmesh port
+  lives only in the consumer that needs it.
+- **Not ABI-compatible with 0.2.0** — recompile against the new headers.
+
 ## [0.2.0]
 
 ### Python bindings
@@ -158,5 +354,6 @@ Initial release.
   UV-atlas and remeshing benchmarks (`HALFMESH_BUILD_BENCH`), ASan+UBSan
   (`HALFMESH_SANITIZE`), and verbose atlas diagnostics (`HALFMESH_ATLAS_DEBUG`).
 
+[0.3.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.1.0

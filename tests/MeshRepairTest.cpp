@@ -9,6 +9,7 @@
 
 // Tests for MeshRepair.cpp:
 //   RemoveDuplicateFaces, RemoveDegenerateFaces, RemoveSmallComponents,
+//   RemoveSpuriousComponents, RemoveSpikes,
 //   RemoveFacesOutside, FixNonManifold, ListHalfEdgesSafe
 //   + sanity run on tests/data/mesh.ply
 
@@ -16,10 +17,16 @@
 #include <halfmesh/HalfMesh.h>
 #include <halfmesh/OrientedBoundingBox.h>
 
+#include "Corpus.h"
+#include "Metrics.h"
+
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <numeric>
 #include <string>
+#include <vector>
 
 namespace halfmesh {
 namespace {
@@ -71,6 +78,74 @@ static Mesh MakeTetra()
 	    {0, 3, 2}, // left
 	};
 	return m;
+}
+
+static unsigned RemoveSmallComponentsArraysReference(Mesh& mesh, unsigned minComponentSize)
+{
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> components;
+	const Mesh::FIndex numComponents = mesh.halfMesh.ConnectedComponents(components);
+	std::vector<unsigned> sizes(numComponents, 0);
+	for (Mesh::FIndex component : components)
+		++sizes[component];
+	const unsigned removedComponents = std::accumulate(sizes.begin(), sizes.end(), 0u,
+	                                                   [minComponentSize](unsigned count, unsigned size) { return count + (size < minComponentSize); });
+	std::vector<Mesh::FIndex> removes;
+	for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+		if (sizes[components[face]] < minComponentSize)
+			removes.emplace_back(face);
+	mesh.RemoveFaces(removes);
+	mesh.RemoveUnreferencedVertices();
+	return removedComponents;
+}
+
+static Mesh::FIndex RemoveSpuriousComponentsArraysReference(Mesh& mesh, float factor)
+{
+	const Mesh::FIndex initialFaces = static_cast<Mesh::FIndex>(mesh.faces.size());
+	mesh.ListHalfEdges();
+	std::vector<float> edgeLengths;
+	for (Mesh::EIndex edge = 0; edge < mesh.halfMesh.ESize(); ++edge) {
+		const auto vertices = mesh.halfMesh.EVertices(edge);
+		edgeLengths.emplace_back((mesh.vertices[vertices.first] - mesh.vertices[vertices.second]).norm());
+	}
+	const size_t idx95 = edgeLengths.size() * 95 / 100;
+	const size_t idx55 = edgeLengths.size() * 55 / 100;
+	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx95, edgeLengths.end());
+	const float maxEdgeLength = edgeLengths[idx95] * factor;
+	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx55, edgeLengths.end());
+	const float minComponentDiameter = edgeLengths[idx55] * factor;
+
+	std::vector<Mesh::FIndex> removes;
+	for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+		for (int edge = 0; edge < 3; ++edge)
+			if ((mesh.vertices[mesh.faces[face][edge]] - mesh.vertices[mesh.faces[face][(edge + 1) % 3]]).norm() > maxEdgeLength) {
+				removes.emplace_back(face);
+				break;
+			}
+	if (!removes.empty()) {
+		mesh.RemoveFaces(removes);
+		mesh.RemoveUnreferencedVertices();
+		mesh.ListHalfEdges();
+	}
+	if (!mesh.faces.empty() && !mesh.halfMesh.Empty()) {
+		std::vector<Mesh::FIndex> components;
+		const Mesh::FIndex numComponents = mesh.halfMesh.ConnectedComponents(components);
+		if (numComponents > 1) {
+			std::vector<Eigen::AlignedBox<float, 3>> bounds(numComponents);
+			for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+				for (int corner = 0; corner < 3; ++corner)
+					bounds[components[face]].extend(mesh.vertices[mesh.faces[face][corner]]);
+			removes.clear();
+			for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+				if (bounds[components[face]].diagonal().norm() < minComponentDiameter)
+					removes.emplace_back(face);
+			if (!removes.empty()) {
+				mesh.RemoveFaces(removes);
+				mesh.RemoveUnreferencedVertices();
+			}
+		}
+	}
+	return initialFaces - static_cast<Mesh::FIndex>(mesh.faces.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +250,107 @@ TEST(MeshRepairTest, RemoveDegenerateFacesHealthyFaceKept)
 	EXPECT_EQ(m.faces.size(), 4u);
 }
 
+TEST(MeshRepairTest, RemoveDegenerateFacesHalfEdgeCollapsesNeedleWithoutBuild)
+{
+	Mesh m = hmtest::corpus::GridPlane(8);
+	m.ListHalfEdges();
+	Mesh::EIndex shortEdge = math::NO_ID;
+	Mesh::Vertex midpoint;
+	for (Mesh::EIndex edge = 0; edge < m.halfMesh.ESize(); ++edge) {
+		if (m.halfMesh.EIsBoundary(edge) || !m.halfMesh.EIsCollapseValidTopologically(edge))
+			continue;
+		const auto edgeVertices = m.halfMesh.EVertices(edge);
+		const Mesh::Vertex candidate = (m.vertices[edgeVertices.first] + m.vertices[edgeVertices.second]) * 0.5f;
+		if (m.halfMesh.EIsCollapseValidGeometrically(edge, candidate, m.vertices)) {
+			shortEdge = edge;
+			midpoint = candidate;
+			break;
+		}
+	}
+	ASSERT_NE(shortEdge, math::NO_ID);
+	const auto edgeVertices = m.halfMesh.EVertices(shortEdge);
+	const Mesh::Vertex direction = (m.vertices[edgeVertices.second] - m.vertices[edgeVertices.first]).normalized();
+	m.vertices[edgeVertices.first] = midpoint - direction * 5e-7f;
+	m.vertices[edgeVertices.second] = midpoint + direction * 5e-7f;
+	ASSERT_TRUE(m.halfMesh.EIsCollapseValidGeometrically(shortEdge, midpoint, m.vertices));
+	const Mesh input = m;
+	Mesh arrays = input;
+	arrays.InvalidateHalfMesh();
+	EXPECT_GT(arrays.RemoveDegenerateFacesArrays(1e-5f), 0u);
+	arrays.RemoveUnreferencedVerticesArrays();
+	const std::size_t initialFaces = m.faces.size();
+	const std::size_t initialVertices = m.vertices.size();
+
+	HalfMesh::ResetBuildCount();
+	EXPECT_EQ(m.RemoveDegenerateFaces(1e-5f), 2u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(m.faces.size(), initialFaces - 2u);
+	EXPECT_EQ(m.vertices.size(), initialVertices - 1u);
+	EXPECT_TRUE(m.ValidateHalfMesh());
+	EXPECT_LT(hmtest::metrics::ComputeDistanceKdTree(input, arrays).hausdorffSymmetric, 2e-6);
+	EXPECT_LT(hmtest::metrics::ComputeDistanceKdTree(input, m).hausdorffSymmetric, 2e-6);
+	for (const Mesh::Face& face : m.faces) {
+		const auto cross = (m.vertices[face[1]] - m.vertices[face[0]]).cross(m.vertices[face[2]] - m.vertices[face[0]]);
+		EXPECT_GT(cross.squaredNorm(), 4e-10f);
+	}
+}
+
+TEST(MeshRepairTest, RemoveDegenerateFacesHalfEdgeFlipsCapWithoutBuild)
+{
+	Mesh m;
+	m.vertices = {
+	    {0.f, 0.f, 0.f},
+	    {2.f, 0.f, 0.f},
+	    {1.f, 1e-6f, 0.f},
+	    {1.f, -1.f, 0.f},
+	};
+	m.faces = {{0, 1, 2}, {1, 0, 3}};
+	m.ListHalfEdges();
+	ASSERT_NE(m.halfMesh.EEdge(0, 1), math::NO_ID);
+
+	HalfMesh::ResetBuildCount();
+	// A flip repairs both triangles without removing either face.
+	EXPECT_EQ(m.RemoveDegenerateFaces(1e-5f), 0u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(m.faces.size(), 2u);
+	EXPECT_EQ(m.vertices.size(), 4u);
+	EXPECT_EQ(m.halfMesh.EEdge(0, 1), math::NO_ID);
+	EXPECT_NE(m.halfMesh.EEdge(2, 3), math::NO_ID);
+	EXPECT_TRUE(m.ValidateHalfMesh());
+	for (const Mesh::Face& face : m.faces) {
+		const auto cross = (m.vertices[face[1]] - m.vertices[face[0]]).cross(m.vertices[face[2]] - m.vertices[face[0]]);
+		EXPECT_GT(cross.squaredNorm(), 4e-10f);
+	}
+}
+
+// The needle/cap split is an edge-length RATIO, so the same cap must still be
+// flipped (never collapsed) when the mesh is expressed in different units --
+// comparing the shortest edge against the area threshold directly would flip
+// the classification as soon as the model is scaled.
+TEST(MeshRepairTest, RemoveDegenerateFacesHalfEdgeCapClassificationIsScaleInvariant)
+{
+	for (const float scale : {1e-2f, 1.f, 1e3f}) {
+		SCOPED_TRACE(scale);
+		Mesh m;
+		m.vertices = {
+		    {0.f, 0.f, 0.f},
+		    {2.f * scale, 0.f, 0.f},
+		    {1.f * scale, 1e-6f * scale, 0.f},
+		    {1.f * scale, -1.f * scale, 0.f},
+		};
+		m.faces = {{0, 1, 2}, {1, 0, 3}};
+		m.ListHalfEdges();
+		// threshold scaled with the model, as an area threshold must be
+		const float thArea = 1e-5f * scale * scale;
+		EXPECT_EQ(m.RemoveDegenerateFaces(thArea), 0u); // flipped, not collapsed
+		EXPECT_EQ(m.faces.size(), 2u);
+		EXPECT_EQ(m.vertices.size(), 4u);
+		EXPECT_EQ(m.halfMesh.EEdge(0, 1), math::NO_ID);
+		EXPECT_NE(m.halfMesh.EEdge(2, 3), math::NO_ID);
+		EXPECT_TRUE(m.ValidateHalfMesh());
+	}
+}
+
 // The iterated overload must actually iterate: removing the nearly-collinear
 // (0,1,2) vertex-merges P2 onto P1, silently making the VALID neighbor
 // (2,3,4) -> (1,3,4) newly collinear with 3 distinct indices -- invisible to
@@ -241,7 +417,9 @@ TEST(MeshRepairTest, RemoveSmallComponentsAllSmallRemovesEverything)
 	// Three isolated triangles: 3 components of 1 face each — ALL small.
 	Mesh m;
 	m.vertices = {
-	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.5f, 1.f, 0.f}, // component 0
+	    {0.f, 0.f, 0.f},
+	    {1.f, 0.f, 0.f},
+	    {0.5f, 1.f, 0.f}, // component 0
 	    {10.f, 0.f, 0.f},
 	    {11.f, 0.f, 0.f},
 	    {10.5f, 1.f, 0.f}, // component 1
@@ -308,6 +486,113 @@ TEST(MeshRepairTest, RemoveSmallComponentsSingleComponent)
 	m.RemoveSmallComponents(/*minComponentSize=*/2);
 	// Face count must not decrease — the single big component is preserved
 	EXPECT_EQ(m.faces.size(), faceCountBefore);
+}
+
+TEST(MeshRepairTest, RemoveSmallComponentsNativeMatchesArrayReference)
+{
+	Mesh arrays;
+	arrays.vertices = {
+	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}, {10.f, 0.f, 0.f}, {11.f, 0.f, 0.f}, {10.f, 1.f, 0.f}};
+	arrays.faces = {{0, 1, 2}, {1, 3, 2}, {4, 5, 6}};
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(RemoveSmallComponentsArraysReference(arrays, 2), native.RemoveSmallComponents(2));
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_FALSE(native.halfMesh.Empty());
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
+// ---------------------------------------------------------------------------
+// RemoveSpuriousComponents
+// ---------------------------------------------------------------------------
+TEST(MeshRepairTest, RemoveSpuriousComponentsDisabledIsNoOp)
+{
+	Mesh mesh = MakeTetra();
+	const std::vector<Mesh::Vertex> vertices = mesh.vertices;
+	const std::vector<Mesh::Face> faces = mesh.faces;
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(0.f), 0u);
+	EXPECT_EQ(mesh.vertices, vertices);
+	EXPECT_EQ(mesh.faces, faces);
+}
+
+TEST(MeshRepairTest, RemoveSpuriousComponentsCountsAutoRepairRemovals)
+{
+	Mesh mesh;
+	mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}, {0, 1, 2}};
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(100.f), 1u);
+	EXPECT_EQ(mesh.faces.size(), 1u);
+}
+
+TEST(MeshRepairTest, RemoveSpuriousComponentsDropsSmallDisconnectedSurface)
+{
+	Mesh mesh;
+	for (unsigned x = 0; x <= 10; ++x) {
+		mesh.vertices.emplace_back(static_cast<float>(x), 0.f, 0.f);
+		mesh.vertices.emplace_back(static_cast<float>(x), 1.f, 0.f);
+	}
+	for (unsigned x = 0; x < 10; ++x) {
+		const Mesh::VIndex lower = 2 * x;
+		mesh.faces.emplace_back(lower, lower + 1, lower + 3);
+		mesh.faces.emplace_back(lower, lower + 3, lower + 2);
+	}
+	const Mesh::VIndex tiny = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.emplace_back(20.f, 0.f, 0.f);
+	mesh.vertices.emplace_back(20.01f, 0.f, 0.f);
+	mesh.vertices.emplace_back(20.f, 0.01f, 0.f);
+	mesh.faces.emplace_back(tiny, tiny + 1, tiny + 2);
+
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(), 1u);
+	EXPECT_EQ(mesh.faces.size(), 20u);
+	EXPECT_EQ(mesh.vertices.size(), 22u);
+	for (const Mesh::Vertex& vertex : mesh.vertices)
+		EXPECT_LT(vertex.x(), 20.f);
+}
+
+TEST(MeshRepairTest, RemoveSpuriousComponentsSplitsCreatedPinch)
+{
+	Mesh mesh;
+	mesh.vertices = {
+	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {-1.f, 0.f, 0.f}, {-0.5f, 0.8660254f, 0.f}, {0.f, 1.f, 0.f}, {0.f, -1.f, 0.f}, {0.8660254f, -0.5f, 0.f}};
+	for (Mesh::VIndex ring = 1; ring <= 6; ++ring)
+		mesh.faces.emplace_back(0, ring, ring == 6 ? 1 : ring + 1);
+
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(0.9f), 2u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+	EXPECT_EQ(mesh.vertices.size(), 8u) << "the center pinch must duplicate its source vertex";
+	EXPECT_FALSE(mesh.halfMesh.Empty());
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	HalfMesh rebuilt;
+	EXPECT_TRUE(rebuilt.Build(mesh));
+}
+
+TEST(MeshRepairTest, RemoveSpuriousComponentsNativeMatchesArrayReference)
+{
+	Mesh arrays;
+	for (unsigned x = 0; x <= 10; ++x) {
+		arrays.vertices.emplace_back(static_cast<float>(x), 0.f, 0.f);
+		arrays.vertices.emplace_back(static_cast<float>(x), 1.f, 0.f);
+	}
+	for (unsigned x = 0; x < 10; ++x) {
+		const Mesh::VIndex lower = 2 * x;
+		arrays.faces.emplace_back(lower, lower + 1, lower + 3);
+		arrays.faces.emplace_back(lower, lower + 3, lower + 2);
+	}
+	const Mesh::VIndex tiny = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.emplace_back(20.f, 0.f, 0.f);
+	arrays.vertices.emplace_back(20.01f, 0.f, 0.f);
+	arrays.vertices.emplace_back(20.f, 0.01f, 0.f);
+	arrays.faces.emplace_back(tiny, tiny + 1, tiny + 2);
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(RemoveSpuriousComponentsArraysReference(arrays, 2.f), native.RemoveSpuriousComponents(2.f));
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_FALSE(native.halfMesh.Empty());
+	EXPECT_TRUE(native.ValidateHalfMesh());
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +683,34 @@ TEST(MeshRepairTest, FixNonManifoldBowtieSplitsVertex)
 	EXPECT_TRUE(m.halfMesh.Build(m));
 }
 
+// Splitting the bowtie vertex appends a duplicate of it; vertexColors is
+// parallel to `vertices` (Mesh::vertexColors), so the copy has to carry the
+// source colour -- exactly as RemoveFacesHalfEdgeImpl does for pinch splits.
+TEST(MeshRepairTest, FixNonManifoldKeepsVertexColorsInLockstep)
+{
+	Mesh m;
+	m.vertices = {
+	    {0.f, 0.f, 0.f}, // v0: bowtie centre
+	    {1.f, 1.f, 0.f},
+	    {-1.f, 1.f, 0.f},
+	    {1.f, -1.f, 0.f},
+	    {-1.f, -1.f, 0.f},
+	};
+	m.faces = {{0, 1, 2}, {0, 3, 4}};
+	for (uint8_t i = 0; i < 5; ++i)
+		m.vertexColors.emplace_back(i, i, i); // vertex i tagged colour i
+
+	ASSERT_GE(m.FixNonManifold(/*thMoveDuplicate=*/0.01f), 1u);
+
+	ASSERT_EQ(m.vertexColors.size(), m.vertices.size());
+	EXPECT_TRUE(m.ValidateInvariants());
+	// the originals keep their tags, and the split copies inherit v0's
+	for (uint8_t i = 0; i < 5; ++i)
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].x()), i) << "original at slot " << unsigned(i);
+	for (size_t i = 5; i < m.vertexColors.size(); ++i)
+		EXPECT_EQ(static_cast<int>(m.vertexColors[i].x()), 0) << "split copy of v0 at slot " << i;
+}
+
 TEST(MeshRepairTest, FixNonManifoldManifoldMeshUnchanged)
 {
 	Mesh m = MakeTetra();
@@ -405,6 +718,31 @@ TEST(MeshRepairTest, FixNonManifoldManifoldMeshUnchanged)
 	EXPECT_EQ(fixed, 0u);
 	EXPECT_EQ(m.vertices.size(), 4u);
 	EXPECT_EQ(m.faces.size(), 4u);
+}
+
+TEST(MeshRepairTest, FixNonManifoldPrebuiltMeshIsUntouchedWithoutBuild)
+{
+	Mesh m = MakeTetra();
+	m.ListHalfEdges();
+	const auto vertices = m.vertices;
+	const auto faces = m.faces;
+	const auto heNexts = m.halfMesh.heNexts;
+	const auto heVertices = m.halfMesh.heVertices;
+	const auto heFaces = m.halfMesh.heFaces;
+	const auto vHalfedges = m.halfMesh.vHalfedges;
+	const auto fHalfedges = m.halfMesh.fHalfedges;
+
+	HalfMesh::ResetBuildCount();
+	EXPECT_EQ(m.FixNonManifold(), 0u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(m.vertices, vertices);
+	EXPECT_EQ(m.faces, faces);
+	EXPECT_EQ(m.halfMesh.heNexts, heNexts);
+	EXPECT_EQ(m.halfMesh.heVertices, heVertices);
+	EXPECT_EQ(m.halfMesh.heFaces, heFaces);
+	EXPECT_EQ(m.halfMesh.vHalfedges, vHalfedges);
+	EXPECT_EQ(m.halfMesh.fHalfedges, fHalfedges);
+	EXPECT_TRUE(m.ValidateHalfMesh());
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +765,9 @@ TEST(MeshRepairTest, RemoveDuplicateVerticesWeldsCoincident)
 	// glTF stores them: 6 vertices at only 4 distinct positions.
 	Mesh m;
 	m.vertices = {
-	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, // tri 0
+	    {0.f, 0.f, 0.f},
+	    {1.f, 0.f, 0.f},
+	    {1.f, 1.f, 0.f}, // tri 0
 	    {0.f, 0.f, 0.f},
 	    {1.f, 1.f, 0.f},
 	    {0.f, 1.f, 0.f}, // tri 1 (v3,v4 dup v0,v2)
@@ -675,6 +1015,198 @@ TEST(MeshRepairTest, FixNonManifoldEmptyMeshIsNoOp)
 	Mesh mesh;
 	EXPECT_EQ(mesh.FixNonManifold(), 0u);
 	EXPECT_TRUE(mesh.Empty());
+}
+
+// ---------------------------------------------------------------------------
+// RemoveSpikes
+// ---------------------------------------------------------------------------
+
+// A closed surface has no vertex below valence 2, so nothing is a spike.
+TEST(MeshRepairTest, RemoveSpikesClosedSurfaceIsNoOp)
+{
+	Mesh mesh = MakeTetra();
+	EXPECT_EQ(mesh.RemoveSpikes(), 0u);
+	EXPECT_EQ(mesh.vertices.size(), 4u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+}
+
+TEST(MeshRepairTest, RemoveSpikesEmptyMeshIsNoOp)
+{
+	Mesh mesh;
+	EXPECT_EQ(mesh.RemoveSpikes(), 0u);
+	EXPECT_TRUE(mesh.Empty());
+}
+
+// An isolated vertex is incident to zero faces, so it is a spike and no face
+// is harmed removing it.
+TEST(MeshRepairTest, RemoveSpikesDropsIsolatedVertex)
+{
+	Mesh mesh = MakeTetra();
+	mesh.vertices.push_back(Mesh::Vertex(5.f, 5.f, 5.f));
+	EXPECT_EQ(mesh.RemoveSpikes(), 1u);
+	EXPECT_EQ(mesh.vertices.size(), 4u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+}
+
+// A triangle hanging off the surface by a single edge: its free tip is incident
+// to exactly one face, so tip and triangle both go.
+TEST(MeshRepairTest, RemoveSpikesDropsDanglingTriangle)
+{
+	Mesh mesh = MakeTetra();
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	mesh.faces.push_back(Mesh::Face(0, 1, tip));
+	EXPECT_EQ(mesh.RemoveSpikes(), 1u);
+	EXPECT_EQ(mesh.vertices.size(), 4u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+}
+
+// Removing a spike can starve its neighbour down to a single face, so the sweep
+// has to iterate: here the chain unwinds one triangle per round.
+TEST(MeshRepairTest, RemoveSpikesUnwindsChainOverIterations)
+{
+	Mesh mesh = MakeTetra();
+	const Mesh::VIndex mid = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(3.f, 0.f, 0.f));
+	mesh.faces.push_back(Mesh::Face(0, 1, mid)); // attached to the tetra by edge 0-1
+	mesh.faces.push_back(Mesh::Face(mid, 1, tip)); // attached to the previous by edge mid-1
+	// `mid` starts with two incident faces and only becomes a spike after `tip`
+	// takes the outer triangle with it.
+	EXPECT_EQ(mesh.RemoveSpikes(), 2u);
+	EXPECT_EQ(mesh.vertices.size(), 4u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+}
+
+// maxIterations bounds the sweep: one round peels exactly one link of the chain.
+TEST(MeshRepairTest, RemoveSpikesHonorsIterationLimit)
+{
+	Mesh mesh = MakeTetra();
+	const Mesh::VIndex mid = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.push_back(Mesh::Vertex(3.f, 0.f, 0.f));
+	mesh.faces.push_back(Mesh::Face(0, 1, mid));
+	mesh.faces.push_back(Mesh::Face(mid, 1, tip));
+	EXPECT_EQ(mesh.RemoveSpikes(1), 1u);
+	EXPECT_EQ(mesh.vertices.size(), 5u);
+	EXPECT_EQ(mesh.faces.size(), 5u);
+}
+
+TEST(MeshRepairTest, RemoveSpikesNativeMatchesArrayCascade)
+{
+	Mesh arrays = MakeTetra();
+	std::vector<Mesh::FIndex> openFace{0};
+	arrays.RemoveFaces(openFace);
+	const Mesh::VIndex mid = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(3.f, 0.f, 0.f));
+	arrays.faces.push_back(Mesh::Face(1, 0, mid));
+	arrays.faces.push_back(Mesh::Face(mid, 0, tip));
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(arrays.RemoveSpikesArrays(), native.RemoveSpikes());
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_FALSE(native.halfMesh.Empty());
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
+TEST(MeshRepairTest, RemoveSpikesNativeMatchesArrayIterationLimit)
+{
+	Mesh arrays = MakeTetra();
+	std::vector<Mesh::FIndex> openFace{0};
+	arrays.RemoveFaces(openFace);
+	const Mesh::VIndex mid = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(3.f, 0.f, 0.f));
+	arrays.faces.push_back(Mesh::Face(1, 0, mid));
+	arrays.faces.push_back(Mesh::Face(mid, 0, tip));
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(arrays.RemoveSpikesArrays(1), native.RemoveSpikes(1));
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
+TEST(MeshRepairTest, RemoveSpikesDispatchAttributePolicy)
+{
+	Mesh arrays = MakeTetra();
+	const Mesh::VIndex tip = static_cast<Mesh::VIndex>(arrays.vertices.size());
+	arrays.vertices.push_back(Mesh::Vertex(2.f, 0.f, 0.f));
+	arrays.faces.push_back(Mesh::Face(0, 1, tip));
+	arrays.faceTexcoords.resize(arrays.faces.size() * 3, Mesh::TexCoord::Zero());
+	Mesh native = arrays;
+	native.ListHalfEdgesSafe();
+
+	arrays.RemoveSpikes();
+	EXPECT_EQ(arrays.faceTexcoords.size(), arrays.faces.size() * 3);
+	native.RemoveSpikes();
+	EXPECT_TRUE(native.faceTexcoords.empty());
+}
+
+// vertexNormals rides the same per-vertex lockstep as vertexColors: the bowtie
+// split copy inherits the source normal (Mesh::VertexAttributesAppendFrom), so
+// the array stays parallel to `vertices`.
+TEST(MeshRepairTest, FixNonManifoldKeepsVertexNormalsInLockstep)
+{
+	Mesh m;
+	m.vertices = {
+	    {0.f, 0.f, 0.f}, // v0: bowtie centre
+	    {1.f, 1.f, 0.f},
+	    {-1.f, 1.f, 0.f},
+	    {1.f, -1.f, 0.f},
+	    {-1.f, -1.f, 0.f},
+	};
+	m.faces = {{0, 1, 2}, {0, 3, 4}};
+	for (int i = 0; i < 5; ++i)
+		m.vertexNormals.emplace_back(float(i), 0.f, 1.f); // vertex i tagged by x
+
+	ASSERT_GE(m.FixNonManifold(/*thMoveDuplicate=*/0.01f), 1u);
+
+	ASSERT_EQ(m.vertexNormals.size(), m.vertices.size());
+	EXPECT_TRUE(m.ValidateInvariants());
+	// the originals keep their tags, and the split copies inherit v0's
+	for (int i = 0; i < 5; ++i)
+		EXPECT_FLOAT_EQ(m.vertexNormals[i].x(), float(i)) << "original at slot " << i;
+	for (size_t i = 5; i < m.vertexNormals.size(); ++i)
+		EXPECT_FLOAT_EQ(m.vertexNormals[i].x(), 0.f) << "split copy of v0 at slot " << i;
+}
+
+// Welding renumbers vertices but never moves them, so an authored normal stays
+// valid for every survivor and must be carried through the remap rebuild.
+TEST(MeshRepairTest, RemoveDuplicateVerticesKeepsVertexNormals)
+{
+	Mesh m;
+	// a quad as two triangles that do NOT share vertices: v2/v3 duplicate v1/v0
+	m.vertices = {
+	    {0.f, 0.f, 0.f},
+	    {1.f, 0.f, 0.f},
+	    {0.f, 1.f, 0.f},
+	    {1.f, 0.f, 0.f},
+	    {0.f, 1.f, 0.f},
+	    {1.f, 1.f, 0.f},
+	};
+	m.faces = {{0, 1, 2}, {3, 5, 4}};
+	// tag every vertex by its position, so the survivor's normal is recognizable
+	for (const Mesh::Vertex& v : m.vertices)
+		m.vertexNormals.emplace_back(v.x(), v.y(), 1.f);
+
+	ASSERT_EQ(m.RemoveDuplicateVertices(), 2u);
+
+	ASSERT_EQ(m.vertexNormals.size(), m.vertices.size());
+	EXPECT_TRUE(m.ValidateInvariants());
+	// every survivor still carries the tag matching its own position
+	for (size_t i = 0; i < m.vertices.size(); ++i) {
+		EXPECT_FLOAT_EQ(m.vertexNormals[i].x(), m.vertices[i].x()) << "slot " << i;
+		EXPECT_FLOAT_EQ(m.vertexNormals[i].y(), m.vertices[i].y()) << "slot " << i;
+	}
 }
 
 } // namespace

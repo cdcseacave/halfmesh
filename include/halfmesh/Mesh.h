@@ -34,6 +34,9 @@ class Mesh
 
 	typedef Eigen::Matrix<Type, 3, 1> Normal;
 	typedef Eigen::Matrix<Type, 2, 1> TexCoord;
+	// Per-face texture-blob id. uint8 to match openMVS's MVS::Mesh::TexIndex
+	// byte for byte, so ConvertMesh is a straight copy in both directions.
+	typedef uint8_t TexIndex;
 
 	typedef std::vector<FIndex> VertexFaces;
 	typedef Eigen::Matrix<FIndex, 3, 1> FaceFaces;
@@ -46,27 +49,94 @@ class Mesh
 
 	public:
 	std::vector<Vertex> vertices;
+	// Derived topology snapshot. After editing faces directly, call
+	// InvalidateHalfMesh() before invoking any half-edge consumer.
 	std::vector<Face> faces;
 
 	// optional data
+	// Per-vertex attribute: either empty, or exactly parallel to `vertices`.
+	// A mutator that grows or renumbers `vertices` must do the same here --
+	// duplicating the source entry on a vertex split, mirroring the swap-pop on
+	// a removal, interpolating on an edge split -- or clear the array outright
+	// when it has no mapping to offer (Simplify's arbitrary pair collapses).
+	// ValidateInvariants() enforces this.
 	std::vector<Pixel> vertexColors; // color for each vertex
+	// Authored normal for each vertex, carried but never maintained: it survives
+	// the operations that merely renumber vertices (duplicate/unreferenced vertex
+	// removal, non-manifold repair) and is cleared by every operation that moves
+	// one -- hole filling included, for the interior vertices it appends -- since
+	// a normal that no longer matches its surface is worse than no normal at all.
+	// Unlike faceNormals this is not a cache: nothing recomputes it, so empty
+	// means "derive them yourself", not "not built yet".
+	std::vector<Normal> vertexNormals;
 	std::vector<Normal> faceNormals; // normal for each face
 	std::vector<TexCoord> faceTexcoords; // absolute texture-coordinates for each face vertex (no.faces*3)
-	std::vector<FIndex> faceTexblobs; // for each face, the corresponding texture ID, or empty if only one blob (no.faces or 0)
+	// For each face, the corresponding texture ID, or empty if only one blob
+	// (no.faces or 0). Capped at MAX_TEXBLOBS -- see the note on TexIndex.
+	std::vector<TexIndex> faceTexblobs;
 	std::vector<Image3u> texturesDiffuse; // diffuse color images, one for each texture blob (no.blobs)
+
+	// Largest texture-blob count a mesh may carry. openMVS holds its texture
+	// array as cList<Image8U3,...,TexIndex>, whose size field is that same
+	// uint8, so 255 is the largest count both sides can address faithfully
+	// (a 256th entry would wrap its size to 0). Valid ids are 0..254.
+	static constexpr size_t MAX_TEXBLOBS = 255;
+	static constexpr TexIndex MAX_TEXBLOB_ID = (TexIndex)(MAX_TEXBLOBS - 1);
 
 	// optional tools
 	std::vector<VertexFaces> vertexFaces; // list of incident faces for each vertex (in increasing order)
 	HalfMesh halfMesh; // represent mesh connectivity in half-edge format for fast adjacency queries
 
+	private:
+	// suppresses SyncFacesOnPublicExit between Begin/EndHalfEdgePipeline
+	bool deferFaceSync{false};
+
 	public:
+	// SyncFaces() from a const array consumer: `faces` is a snapshot derived from
+	// `halfMesh`, so refreshing it does not change the mesh's logical value. The
+	// single place that const_casts for it, and NOT thread-safe -- a `const Mesh&`
+	// shared across threads must already be face-synced (every public method syncs
+	// on exit, so this only bites inside a BeginHalfEdgePipeline scope).
+	void SyncFacesConst() const { const_cast<Mesh*>(this)->SyncFaces(); }
 	void ReleaseOptional();
+	// Per-vertex attribute bookkeeping, so every vertex remover/splitter keeps the
+	// whole set parallel to `vertices` instead of naming one array at a time.
+	// Positions stay with the caller: the removers need the vacated slot for their
+	// own bookkeeping, and the order they do it in differs.
+	// Mirror the vertices' swap-pop: move the last entry into `idx` and shrink.
+	void VertexAttributesSwapPop(VIndex idx);
+	// Append a copy of `source`'s entries, for a vertex split.
+	void VertexAttributesAppendFrom(VIndex source);
+	// Drop the attributes that moving a vertex invalidates; call this from any
+	// operation that relocates vertices rather than only renumbering them.
+	void InvalidateVertexNormals() { vertexNormals.clear(); }
+	// drop the derived face snapshot together with every face-keyed attribute;
+	// called by half-edge mutators once they stop reading `faces`
+	void InvalidateFaces();
+	// regenerate the face snapshot from the half-edge when it is missing
+	void SyncFaces();
+	// Internal multi-stage processing scope: build connectivity once, defer
+	// native-stage face snapshots, then harvest exactly once at End.
+	void BeginHalfEdgePipeline();
+	void EndHalfEdgePipeline();
+	void InvalidateHalfMesh();
+	bool ValidateInvariants() const;
+	bool ValidateHalfMesh() const;
+	// Public native methods use this at exit; it is suppressed only between
+	// BeginHalfEdgePipeline and EndHalfEdgePipeline.
+	void SyncFacesOnPublicExit();
 	bool Empty() const
 	{
 		ASSERT(vertices.empty() == faces.empty() || vertices.empty() == halfMesh.Empty());
 		return vertices.empty();
 	}
-	bool HasTextureCoordinates() const { return faceTexcoords.size() == faces.size() * 3 || faceTexcoords.size() == vertices.size(); }
+	bool HasTextureCoordinates() const
+	{
+		if (faceTexcoords.empty())
+			return false; // the untextured fast path costs no face harvest
+		SyncFacesConst();
+		return faceTexcoords.size() == faces.size() * 3 || faceTexcoords.size() == vertices.size();
+	}
 	bool HasTexture() const { return HasTextureCoordinates() && !texturesDiffuse.empty(); }
 
 	// convert a textured mesh from storing the texture coordinates per face,
@@ -79,14 +149,41 @@ class Mesh
 	// split a textured mesh in multiple meshes, one per texture
 	std::vector<Mesh> ToOneMeshPerTexblob() const;
 
+	// Image encoding SaveGLTF uses for the diffuse textures. tinygltf selects
+	// its encoder from the image's file extension, which it derives from the
+	// glTF mimeType -- so this maps directly onto that mimeType.
+	enum class ImageFormat : uint8_t {
+		JPG, // lossy but compact; what a textured mesh normally wants
+		PNG, // lossless, several times larger
+	};
+
 	// import/export PLY/GLTF mesh
 	// Load dispatches on the file extension: .ply -> LoadPLY, .glb/.gltf -> LoadGLTF
+	//
+	// Coordinate frame. halfmesh is z-up in memory, everywhere, always. glTF is
+	// y-up by specification, so the conversion happens at the glTF boundary and
+	// nowhere else: SaveGLTF writes z-up vertices and declares the z-up -> y-up
+	// rotation as a matrix on the root node; LoadGLTF flattens the node
+	// hierarchy and then undoes it. Save -> Load is bit-exact (both matrices
+	// are signed permutations, so the product is exactly the identity), and
+	// viewers still show the model upright because the rotation is in the file.
+	// PLY has no such convention and is read and written raw, in halfmesh's
+	// frame. The conversion is fixed, not a parameter -- a knob would let the
+	// two sides be configured into disagreement, which is the defect this
+	// contract replaced. A y-up glTF from any exporter therefore lands in the
+	// library's frame correctly; a glTF carrying z-up data under an identity
+	// node (non-conformant, but some writers emit it) loads rotated.
 	bool Load(const std::string& fileName);
 	bool LoadPLY(const std::string& fileName);
 	bool LoadGLTF(const std::string& fileName);
 	bool Save(const std::string& fileName, bool binary = true) const;
 	bool SavePLY(const std::string& fileName, bool binary = true) const;
-	bool SaveGLTF(const std::string& fileName, bool binary = true) const;
+	// imageFormat and embedImages apply only to the diffuse textures. Embedded
+	// images ride inside the file as base64 data URIs, which is the only
+	// self-contained option; otherwise they are written beside `fileName` as
+	// <stem>_diffuse<NN>.<ext> and referenced by relative URI.
+	bool SaveGLTF(const std::string& fileName, bool binary = true,
+	              ImageFormat imageFormat = ImageFormat::JPG, bool embedImages = true) const;
 	bool ExportSeamEdges(std::vector<std::pair<VIndex, VIndex>> seamEdges, const std::string& fileName, bool binary = true) const;
 	bool ExportSeamEdges(const std::string& fileName, bool binary = true) const;
 
@@ -101,6 +198,7 @@ class Mesh
 	}
 	Normal ComputeFaceNormal(FIndex idxFace) const
 	{
+		SyncFacesConst();
 		return ComputeFaceNormal(faces[idxFace]);
 	}
 	// compute normal for all faces
@@ -130,12 +228,17 @@ class Mesh
 	}
 	Type ComputeFaceDoubleArea(FIndex idxFace) const
 	{
+		SyncFacesConst();
 		return ComputeFaceDoubleArea(faces[idxFace]);
 	}
 	// compute area for all faces
 	real ComputeArea() const;
 	// compute area for the given face indices
 	real ComputeArea(const std::vector<FIndex>&) const;
+	// mean length over the mesh's undirected edges, each counted once (0 if the
+	// mesh has no edge); builds the half-edge structure if it is not current,
+	// which repairs non-manifold input (see ListHalfEdges)
+	Type ComputeMeanEdgeLength();
 	// compute the axis-aligned bounding box of the mesh vertices
 	Eigen::AlignedBox<Type, 3> ComputeAABBox() const;
 
@@ -180,12 +283,14 @@ class Mesh
 	// fetch the requested face vertex by value
 	VIndex FVertex(FIndex iF, VIndex iV) const
 	{
+		SyncFacesConst();
 		const uint32_t idx(FVertexIdx(iF, iV));
 		ASSERT(idx != math::NO_ID);
 		return faces[iF][idx];
 	}
 	VIndex& FVertex(FIndex iF, VIndex iV)
 	{
+		SyncFaces();
 		const uint32_t idx(FVertexIdx(iF, iV));
 		ASSERT(idx != math::NO_ID);
 		return faces[iF][idx];
@@ -207,7 +312,7 @@ class Mesh
 	// unnormalize and flip Y axis texture coordinates
 	std::vector<TexCoord> FTexcoordsUnNormalizeFlipY() const;
 	// get the texture blob corresponding to the given face
-	FIndex FTexblob(FIndex i) const
+	TexIndex FTexblob(FIndex i) const
 	{
 		ASSERT(HasTextureCoordinates());
 		return faceTexblobs.empty() ? 0 : faceTexblobs[i];
@@ -215,8 +320,10 @@ class Mesh
 	// collapse the given edge, remove it, remove one of its vertices, and remove both adjacent faces
 	void ECollapse(EIndex);
 
-	// remove unreferenced vertices
+	// remove unreferenced vertices; the public name dispatches by representation
 	VIndex RemoveUnreferencedVertices();
+	VIndex RemoveUnreferencedVerticesArrays();
+	VIndex RemoveUnreferencedVerticesHalfEdge();
 	// merge spatially-coincident vertices into one and remap the faces to the
 	// surviving representative (per-corner faceTexcoords are unaffected;
 	// per-vertex colors are remapped).  This recovers shared connectivity from
@@ -233,6 +340,13 @@ class Mesh
 	// faces referencing the REMOVED vertices are left untouched -- a fast
 	// path for callers that remove those faces themselves.
 	void RemoveVertices(std::vector<VIndex>&, bool updateLists = true);
+	// remove the selected vertices and their incident faces, then fill only the
+	// closed boundary loops created by that removal using Liepa triangulation.
+	// The patch is not refined, so no vertex is added: this path decimates, and
+	// the vertex count is guaranteed to shrink. Pre-existing holes are never
+	// filled; a removed region touching an existing boundary remains open.
+	// Returns the number of newly created holes filled.
+	unsigned RemoveVerticesAndFill(std::vector<VIndex>);
 	// remove duplicate faces (referencing the same vertices)
 	//  - removeBothFaces: it is recommended that the input mesh to be manifold
 	//                       and so the duplicated faces can only be isolated from
@@ -242,15 +356,27 @@ class Mesh
 	FIndex RemoveDuplicateFaces(bool removeBothFaces = true);
 	// remove degenerate faces (with one or more identical vertices,
 	// or very close vertices - disabled if thArea == 0)
-	// unreferenced vertices and non-manifold edges/vertices can be created,
-	// so should be followed by RemoveUnreferencedVertices() and FixNonManifold()
+	// The public name dispatches by representation. The array arm keeps the
+	// ingest-compatible welding behavior and can create unreferenced or
+	// non-manifold topology; the half-edge arm applies only validity-preserving
+	// cap flips/collapses, so its removed count can differ.
 	FIndex RemoveDegenerateFaces(Type thArea = 1e-5f);
+	FIndex RemoveDegenerateFacesArrays(Type thArea = 1e-5f);
+	FIndex RemoveDegenerateFacesHalfEdge(Type thArea = 1e-5f);
 	// removing zero-area-faces can generate some new zero-area-faces,
 	// so iterate till no zero-area faces are encountered or max number of iterations is reached
 	FIndex RemoveDegenerateFaces(unsigned maxIterations, Type thArea = 1e-5f);
 	// remove specified faces
 	// (require vertexFaces if updateLists)
 	void RemoveFaces(std::vector<FIndex>&, bool updateLists = false);
+	// remove specified faces through the live half-edge representation while
+	// preserving manifold connectivity
+	void RemoveFacesHalfEdge(std::vector<FIndex>&);
+
+	private:
+	bool RemoveFacesHalfEdgeImpl(std::vector<FIndex>&, std::vector<VIndex>& removedVerts, std::vector<VIndex>& splitSrcVerts);
+
+	public:
 	// removes all faces outside the given oriented bounding-box
 	unsigned RemoveFacesOutside(const halfmesh::OBB&);
 
@@ -268,6 +394,27 @@ class Mesh
 	// clean the mesh by removing small components
 	//  - minComponentSize: remove components with less number of faces
 	unsigned RemoveSmallComponents(unsigned minComponentSize);
+
+	// remove reconstruction debris relative to the mesh's own edge-length
+	// distribution: first discard faces containing an edge longer than
+	// percentile95(edgeLength)*factor, then discard connected components whose
+	// bounding-box diagonal is shorter than percentile55(edgeLength)*factor.
+	// return number of faces removed
+	FIndex RemoveSpuriousComponents(float factor = 2.f);
+
+	// remove spike/needle vertices: a vertex incident to at most one face is not
+	// part of a surface, it is either isolated or the tip of a dangling triangle.
+	// Dropping such a vertex takes its incident face with it, which can starve a
+	// neighbour down to a single face, so the sweep repeats until the mesh is
+	// stable or maxIterations rounds have run.
+	// The public name dispatches by representation. RemoveSpikesArrays keeps the
+	// soup-compatible array behavior and happens to preserve face attributes;
+	// RemoveSpikesHalfEdge keeps live connectivity and drops face attributes by
+	// the processing policy.
+	// return number of vertices removed
+	unsigned RemoveSpikes(unsigned maxIterations = 100);
+	unsigned RemoveSpikesArrays(unsigned maxIterations = 100);
+	unsigned RemoveSpikesHalfEdge(unsigned maxIterations = 100);
 
 	// implement edge collapse mesh simplification approximating the error
 	// locally for each vertex using a quadric representation;
@@ -301,7 +448,18 @@ class Mesh
 	// collapses (measured: target reached at +3% area vs +50% at the raw floor).
 	void Simplify(float decimateRatio, float minEdgeLength = 0.f, float aggressiveness = 0.f);
 
-	unsigned CloseHoles(unsigned nCloseHoles = 200, std::vector<std::vector<FIndex>>* holesFaces = NULL);
+	// fill every hole (boundary loop) spanned by at most maxHoleEdges edges,
+	// smallest first, by Liepa minimum-weight triangulation followed by refining
+	// and fairing the patch, which appends interior vertices to match the
+	// surrounding density. Loops that repeat a vertex are not triangulable and
+	// are skipped. Filling invalidates the texture attributes (the new faces have
+	// no authored UVs), so they are cleared.
+	//  - maxHoleEdges: largest hole to fill, in boundary edges (0 is a no-op)
+	//  - holesFaces: optionally receives the new face indices, per successfully
+	//      filled hole; each list is the contiguous FAdd append range and remains
+	//      valid after the public-exit SyncFaces
+	// return the number of holes closed
+	unsigned CloseHoles(unsigned maxHoleEdges = 30, std::vector<std::vector<FIndex>>* holesFaces = NULL);
 
 	// smooth the vertex positions in place using HC Laplacian smoothing:
 	// "Improved Laplacian Smoothing of Noisy Surface Meshes", Vollmer, Mencl
@@ -369,8 +527,8 @@ class Mesh
 	{
 		float edgeMinLength{0}; // no edge should be shorter than this value (used when collapsing)
 		float edgeMaxLength{0}; // no edge should be longer than this value (used when refining);
-		    // 0 is deliberately INVALID — RemeshIsotropic validates and no-ops
-		    // (a non-positive threshold would split every edge forever)
+		// 0 is deliberately INVALID — RemeshIsotropic validates and no-ops
+		// (a non-positive threshold would split every edge forever)
 
 		float minAdaptiveMult{1};
 		float maxAdaptiveMult{1};

@@ -22,11 +22,12 @@ Quick index:
 | [QEM decimation](#qem-decimation) | `Mesh::Simplify` | `Mesh.h` | `Decimate.cpp` |
 | [Isotropic remeshing](#isotropic-remeshing) | `Mesh::RemeshIsotropic` | `Mesh.h` | `Remesh.cpp` |
 | [Smoothing](#smoothing) | `Mesh::Smooth`, `SmoothTaubin`, `SmoothHCLaplacian` | `Mesh.h` | `Smooth.cpp` |
-| [Hole filling](#hole-filling) | `Mesh::CloseHoles` | `Mesh.h` | — |
+| [Hole filling](#hole-filling) | `Mesh::CloseHoles`, `Mesh::RemoveVerticesAndFill` | `Mesh.h` | — |
 | [Spatial indices](#spatial-indices) | `TriangleBVH`, `TriangleKdTree` | `TriangleBVH.h`, `TriangleKDTree.h` | `TextureBakeTool.cpp` |
 | [UV parametrization](#uv-parametrization) | `Parametrize`, `SegmentCharts`, `ParametrizeCharts` | `Parametrize.h` | `Unwrap.cpp` |
 | [Atlas packing](#atlas-packing) | `GenerateAtlas`, `PackAtlas`, `NormalizeChartDensity` | `AtlasCharting.h`, `AtlasPacking.h` | `Unwrap.cpp` |
-| [Texture bake / rebake / defrag](#texture-bake--rebake--defrag) | `BakeAtlas`, `RebakeTexture`, `DefragmentTexture` | `TextureBake.h` | `TextureBakeTool.cpp` |
+| [Rectangle packing](#rectangle-packing-mesh-independent) | `PackRectangles`, `EstimateSquareTextureSize` | `RectPacking.h` | — |
+| [Texture bake / rebake / defrag](#texture-bake--rebake--defrag) | `BakeAtlas`, `RebakeTexture`, `BakeOntoAtlas`, `DefragmentTexture` | `TextureBake.h` | `TextureBakeTool.cpp` |
 | [openMVS interop](#openmvs-interop) | `ConvertMesh` | `InteropOpenMVS.h` | — |
 | [Utilities](#utilities) | `OBB`, raster/sampler/geometry helpers | `OrientedBoundingBox.h`, `Util/` | — |
 
@@ -56,9 +57,20 @@ lookups cost no memory; a boundary is `heFaces[h|1] == NO_ID`.
   collapse (`EIsCollapseValidTopologically` — Hoppe'93 link condition —
   `EIsCollapseValidGeometrically`, `ERemove`), edge flip (`EIsFlipValid`,
   `EFlip`), and in-place edge split (`ESplit`).
+- **In-place face editing**: `FAdd` (one face, isolated corners allowed, and a
+  rejected add leaves every array byte-identical), `FAddDisk` (a whole
+  pre-triangulated patch, attached in dependency order), and `FRemoveBulk` (an
+  arbitrary face set in one pass, splitting pinch vertices and reporting the
+  vertex swap-pops so positions can follow in lockstep). None of them rebuilds.
 - **Holes and components**: `EnumerateHoles`, `TriangulateHole`,
   `ConnectedComponents` (optionally with a custom edge validator),
   `ConnectBorders`.
+
+`Build` is the one cost the architecture cannot delete, so it pairs twin
+half-edges through a flat open-addressing table keyed by a packed
+`(min,max)` vertex pair rather than a node-based hash map: measured 0.608 s
+vs. 1.969 s (**3.24×**) on a 5,003,552-face mesh, at 495.8 MiB vs. 904.2 MiB
+peak working set. `tests/perf` pins the ≥5 M-face workload.
 
 Header: [`HalfMesh.h`](../include/halfmesh/HalfMesh.h) ·
 implementation: `src/HalfMesh.cpp`.
@@ -71,10 +83,11 @@ readable/writable:
 ```cpp
 std::vector<Vertex>   vertices;       // Eigen::Vector3f
 std::vector<Face>     faces;          // Eigen::Matrix<uint32_t,3,1>
-std::vector<Pixel>    vertexColors;   // BGR uint8, per vertex (optional)
+std::vector<Pixel>    vertexColors;   // BGR uint8, per vertex (optional, see below)
+std::vector<Normal>   vertexNormals;  // authored, per vertex (optional, see below)
 std::vector<Normal>   faceNormals;    // per-face cache (optional)
 std::vector<TexCoord> faceTexcoords;  // per corner (faces*3) or per vertex
-std::vector<FIndex>   faceTexblobs;   // per-face texture id (optional)
+std::vector<TexIndex> faceTexblobs;   // per-face texture id, uint8 (optional)
 std::vector<Image3u>  texturesDiffuse;// one cv::Mat_<Pixel> per texture blob
 HalfMesh halfMesh;                    // optional connectivity (built on demand)
 ```
@@ -86,6 +99,43 @@ buffers is a single copy in each direction. Geometry helpers include
 `ComputeArea`, `ComputeAABBox`, and per-face/per-edge queries. Texture-layout
 conversions: `ToTexCoordPerVertex()`, `ToTexCoordPerVertexUVOnly()`,
 `ToOneMeshPerTexblob()`.
+
+`vertexColors` is a *parallel* array: either empty, or exactly as long as
+`vertices`, indexed identically. Any mutator that grows or renumbers the vertex
+set maintains it — duplicating the source entry on a vertex split, mirroring
+the swap-pop on a removal, interpolating at an edge split — or clears it
+outright when it has no mapping to offer (`Simplify`'s arbitrary pair
+collapses). `Mesh::ValidateInvariants()` enforces the length relation, so a
+desync trips the assertions the mutators already carry.
+
+`vertexNormals` is parallel under the same contract, but it is *authored data,
+not a cache*: nothing in the library ever recomputes it, so an empty array means
+"derive them yourself" rather than "not built yet" (`ComputeVertexNormals()`
+returns a fresh array and never writes this one). It survives every operation
+that merely renumbers vertices — duplicate/unreferenced-vertex removal,
+non-manifold repair, face removal — and is dropped outright by every operation
+that *moves* a vertex, since a normal that no longer matches its surface is
+worse than no normal at all: `Simplify`, `SmoothHCLaplacian`, `SmoothTaubin`,
+`RemeshIsotropic`, degenerate-face collapse, and hole filling (which appends
+interior vertices no authored normal covers). `Mesh::InvalidateVertexNormals()`
+is the single call any new vertex-moving pass must make;
+`VertexAttributesSwapPop()` / `VertexAttributesAppendFrom()` keep the whole
+per-vertex attribute set in lockstep so a remover names the set, not the array.
+
+Topology has three valid representation states: arrays-only, half-edge-only,
+or both-and-consistent. Once `halfMesh` has been built it is authoritative and
+`faces` is a derived snapshot. Native topology mutators keep `halfMesh` live,
+call `InvalidateFaces()`, and regenerate the snapshot at public return;
+array-native mutators clear connectivity. Call `Mesh::InvalidateHalfMesh()`
+after editing `faces` directly because half-edge consumers deliberately trust
+a non-empty `halfMesh` and cannot detect direct array edits.
+
+An internal multi-stage consumer can call `BeginHalfEdgePipeline()` to build
+connectivity once and defer public-exit snapshots, then
+`EndHalfEdgePipeline()` to restore ordinary behavior and perform the single
+final face harvest. Direct calls to `SyncFaces()` always force a snapshot, so
+I/O/export and other array consumers remain safe. Do not expose a mesh to
+ordinary callers between Begin/End: `faces.empty()` is intentional there.
 
 Header: [`Mesh.h`](../include/halfmesh/Mesh.h).
 
@@ -103,8 +153,28 @@ extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
   INT32 for MeshLab compatibility.
 - **glTF** flattens the node hierarchy into world space on load (`POSITION`,
   `TEXCOORD_0`, `COLOR_0`, base-color textures); on save it writes one
-  primitive per texture blob with embedded JPEG textures, `KHR_materials_unlit`
-  and a z-up → y-up root rotation.
+  primitive per texture blob, `KHR_materials_unlit`, and a z-up → y-up root
+  rotation. `SaveGLTF`'s `imageFormat` / `embedImages` choose JPEG or PNG and
+  whether textures ride inside the file or sit beside it.
+- **Coordinate frame** — **halfmesh is z-up in memory; glTF files are y-up**,
+  and the conversion happens at this boundary and nowhere else. `SaveGLTF`
+  writes the vertex buffer in halfmesh's own frame and declares the
+  z-up → y-up rotation as a matrix on the root node; `LoadGLTF` flattens the
+  hierarchy and undoes exactly that. So save → load is an identity (bit-exact:
+  both matrices are signed permutations, so their product is exactly the
+  identity), while viewers still show the model upright because the rotation
+  is in the file. PLY has no such convention and is read and written raw, in
+  halfmesh's frame — which means a PLY and a glTF exported from the same mesh
+  hold *different coordinates on disc*, and agree only once the glTF's node
+  transform is applied.
+
+  The conversion is fixed, not a parameter: a knob would let the two sides be
+  configured into disagreement, which is the defect this contract replaced.
+  A y-up glTF from any exporter therefore lands in halfmesh's frame correctly.
+  The corollary is that a glTF storing z-up data under an identity node — which
+  the format does not permit, but some writers emit anyway — loads rotated;
+  nothing in such a file distinguishes it from a conformant one, so it has to
+  be fixed by its producer.
 - **UV conventions** (worth reading twice): in-memory textured meshes store
   *absolute pixel* UVs with no Y flip; PLY on disk stores normalized+Y-flipped;
   glTF stores `(pixel + 0.5)/size`. The `FTexcoords{Normalize,UnNormalize}[FlipY]`
@@ -127,13 +197,30 @@ half-edge core accepts:
 - `RemoveDegenerateFaces(thArea)` (+ iterated overload) — drop faces with
   repeated or near-coincident vertices.
 - `RemoveDuplicateFaces()`, `RemoveUnreferencedVertices()`, `RemoveVertices()`,
-  `RemoveFaces()`, `RemoveFacesOutside(const OBB&)`.
+  `RemoveFaces()`, `RemoveFacesHalfEdge()`, `RemoveFacesOutside(const OBB&)`.
 - `FixNonManifold(thMoveDuplicate)` — finds non-manifold edges/vertices and
   restores manifoldness by duplicating the offending vertices (optionally
-  displaced toward the incident-face barycenter).
-- `RemoveSmallComponents(minComponentSize)` — floater removal.
-- `ListHalfEdgesSafe()` — the whole pipeline in one call, followed by the
+  displaced toward the incident-face barycenter). A no-op once `halfMesh`
+  exists: the structure cannot represent what it fixes.
+- `RemoveSmallComponents(minComponentSize)` — floater removal by face count.
+- `RemoveSpuriousComponents(factor)` — reconstruction-debris removal relative
+  to the mesh's own edge-length distribution: drop faces with an edge longer
+  than `percentile95(edgeLength) * factor`, then components whose bounding-box
+  diagonal is shorter than `percentile55(edgeLength) * factor`.
+- `RemoveSpikes(maxIterations)` — drop vertices incident to at most one face
+  (an isolated vertex or a dangling triangle's tip) together with that face,
+  repeating until stable.
+- `ListHalfEdgesSafe()` — the whole ingest pipeline in one call, followed by the
   half-edge build.
+
+`RemoveUnreferencedVertices`, `RemoveDegenerateFaces` and `RemoveSpikes`
+**dispatch by representation** and never force a transition in either
+direction: on an arrays-only mesh they run the array arm (works on
+non-manifold soup, no build, attributes preserved as a bonus); with a live
+`halfMesh` they run the half-edge arm (keeps connectivity valid, no rebuild for
+the next stage). Both arms are public as `…Arrays` / `…HalfEdge` when a caller
+needs to force one. Removed counts can differ for degenerate faces — the
+half-edge arm applies only validity-preserving collapses and cap flips.
 
 Note that every half-edge consumer (`Simplify`, `RemeshIsotropic`,
 `CloseHoles`, `SegmentCharts`, the smoothers) builds connectivity via
@@ -143,6 +230,24 @@ self-edge faces, prune unreferenced vertices). Callers holding external
 per-vertex/per-face arrays must re-map them afterwards.
 
 Implementation: `src/MeshRepair.cpp`.
+
+### Processing texture policy
+
+Mesh processing targets **untextured geometry**. A method marked
+`attribute-preserving (bonus)` currently keeps the listed arrays aligned, but
+that behavior is not a cross-stage texture contract. Rebuild or rebake UVs
+after an `untextured-only` operation.
+
+| Public processing method | Policy |
+|---|---|
+| `RemoveDuplicateVertices`, `RemoveDuplicateFaces`, `RemoveFaces`, `RemoveVertices`, `RemoveFacesOutside` | attribute-preserving (bonus; vertex colors and face-keyed arrays remap in lockstep) |
+| `RemoveUnreferencedVerticesArrays`, `RemoveDegenerateFacesArrays`, `RemoveSpikesArrays` | attribute-preserving (bonus) |
+| `RemoveUnreferencedVertices`, `RemoveDegenerateFaces`, `RemoveSpikes` | representation-dependent: array arm preserves as a bonus; native arm is untextured-only |
+| `ECollapse`, `RemoveFacesHalfEdge`, `RemoveUnreferencedVerticesHalfEdge`, `RemoveDegenerateFacesHalfEdge`, `RemoveSpikesHalfEdge` | untextured-only |
+| `RemoveSmallComponents`, `RemoveSpuriousComponents`, `RemoveVerticesAndFill`, `CloseHoles` | untextured-only |
+| `FixNonManifold`, `ListHalfEdgesSafe` | untextured-only ingest repair |
+| `Simplify`, `RemeshIsotropic` | untextured-only |
+| `Smooth`, `SmoothHCLaplacian`, `SmoothTaubin` | attribute-preserving (bonus; positions move, topology/UVs/colors stay, cached face normals clear) |
 
 ## QEM decimation
 
@@ -227,8 +332,9 @@ at a glance).
 ## Hole filling
 
 ```cpp
-unsigned Mesh::CloseHoles(unsigned nCloseHoles = 200,
+unsigned Mesh::CloseHoles(unsigned maxHoleEdges = 30,
                           std::vector<std::vector<FIndex>>* holesFaces = NULL);
+unsigned Mesh::RemoveVerticesAndFill(std::vector<VIndex> vertexRemoves);
 ```
 
 The Liepa 2003 pipeline (structure follows the pmp-library implementation):
@@ -240,13 +346,28 @@ The Liepa 2003 pipeline (structure follows the pmp-library implementation):
 3. **Fair** — bi-Laplacian (k=2) cotangent fairing solved with Eigen
    `SimplicialLDLT`, falling back to a k=1 graph Laplacian.
 
-Holes are processed **smallest-first by boundary vertex count**; `nCloseHoles`
-caps *how many* are filled (there is no size threshold — leave the cap below
-the hole count to skip the largest loops, e.g. a scan's open outer boundary).
-An internal patch budget (`max(16384, 8·n)` triangles) keeps degenerate giant
-boundaries from exploding the fill. Returns the number of holes closed;
-optionally reports the new faces per hole. Lower-level building blocks are
-also public: `HalfMesh::EnumerateHoles()` + `HalfMesh::TriangulateHole()`.
+`maxHoleEdges` is a **size** threshold, not a count: every boundary loop
+spanned by at most that many edges is filled, so a scan's large open outer
+boundary stays open while its small gaps are patched (`0` is a no-op; pass a
+large cap to fill everything). Loops that repeat a vertex are not triangulable
+and are skipped. An internal patch budget (`max(16384, 8·n)` triangles) keeps
+degenerate giant boundaries from exploding the fill. Returns the number of
+holes closed; `holesFaces` optionally receives the new face indices per filled
+hole (each list is the contiguous append range and stays valid across the
+public-exit face sync). Patches are attached straight into the live half-edge
+via `HalfMesh::FAddDisk`, so filling costs no rebuild.
+
+`RemoveVerticesAndFill` is the decimating counterpart: it drops the selected
+vertices with their incident faces and spans **only the boundary loops that
+removal created**, without refining, so the vertex count is guaranteed to
+shrink and pre-existing holes are never filled. A removed region that already
+touches an existing boundary widens that boundary rather than opening a hole,
+so what it leaves behind is left open. Which loops qualify is decided on the
+connectivity before the removal — no face snapshot is read or produced, so the
+whole call is free of both a rebuild and a harvest.
+
+Lower-level building blocks are also public: `HalfMesh::EnumerateHoles()`,
+`HalfMesh::TriangulateHole()`, and `HalfMesh::FAddDisk()`.
 
 Implementation: `src/MeshHoles.cpp`.
 
@@ -325,12 +446,37 @@ float NormalizeChartDensity(Mesh&, const std::vector<unsigned>& faceChart,
   survives), gutter `padding`, and multi-page overflow. For multi-page
   results, per-face pages come from `AtlasResult::chartPage[faceChart[f]]`.
 
+Packing is **two-tier**: rects whose padded long side reaches `pageW/32` go
+through the full min-waste skyline scan, everything smaller lands on
+height-sorted shelves allocated through that same skyline. The skyline probe
+is `O(#segments)` per rect, so the shelf tier is what removes the quadratic
+regime at 100 k+ charts. Every page stays open, so a later small chart can
+fill space an earlier large one left behind.
+
 Benchmarks against xatlas / libigl / pmp / CGAL / BFF (methodology + numbers):
 [`BENCHMARKS.md`](BENCHMARKS.md). Headline: end-to-end atlas 30–130× faster
 than xatlas at comparable pack occupancy, always flip-free, lowest
 symmetric-Dirichlet distortion of the seven flatteners tested.
 
-Implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp` ·
+### Rectangle packing (mesh-independent)
+
+```cpp
+RectPackResult PackRectangles(const std::vector<cv::Rect>&, const RectPackParams&,
+                              std::vector<RectPlacement>& placements);
+int EstimateSquareTextureSize(const std::vector<cv::Rect>&, int multiple = 0,
+                              float targetOccupancy = 0.9f);
+```
+
+The same two-tier packer over **integer pixel** rectangles, for callers that
+already have rectangles — texture repacking, lightmap layout, sprite sheets —
+and no mesh. `RectPackMode` selects `GrowSinglePage` (double the page until
+everything fits, up to `maxPageSize`), `FixedSinglePage`, or
+`FixedMultiPage`; `placements` is indexed in lockstep with the input and
+degenerate, oversized, and cap-limited entries come back with
+`packed = false` instead of silently enlarging the atlas.
+
+Header: [`RectPacking.h`](../include/halfmesh/RectPacking.h) ·
+implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp` ·
 example: `examples/Unwrap.cpp`.
 
 ## Texture bake / rebake / defrag
@@ -338,10 +484,11 @@ example: `examples/Unwrap.cpp`.
 ```cpp
 struct BakeParams { resolution, maxResolution, multiPage, padding, supersample,
                     interp, correspondence, raySearchDist, numThreads,
-                    accelerator, maxDefragPatches };
+                    accelerator, faceMask, maxDefragPatches };
 BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
                      const SourceResolver&, const BakeParams&);
 BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams&);
+BakeResult BakeOntoAtlas(const Mesh& source, Mesh& target, const BakeParams&);
 BakeResult DefragmentTexture(Mesh& mesh, const BakeParams&);
 unsigned   AutoAtlasResolution(const Mesh& source, unsigned maxResolution = 8192);
 ```
@@ -365,6 +512,15 @@ fresh atlas and rebakes, recovering wasted texels. `BakeAtlas` expects
 `target.faceTexcoords` in absolute-pixel space; `RebakeTexture` runs
 `GenerateAtlas` internally first.
 
+`BakeOntoAtlas` is `RebakeTexture`'s counterpart for a target whose UV layout is
+authored and must be preserved: it *reads* `target.faceTexcoords` instead of
+generating them, so only the texels change. `BakeParams::faceMask` narrows that
+to a subset of the target's faces — under a mask each page is seeded from
+`target.texturesDiffuse` rather than black, making the bake a true in-place edit
+of one region of an existing texture. The mask is honored by `BakeAtlas` and
+`BakeOntoAtlas` only; `RebakeTexture` and `DefragmentTexture` repack into a new
+layout in which the old texels mean nothing, so they ignore it.
+
 Header: [`TextureBake.h`](../include/halfmesh/TextureBake.h) ·
 example: `examples/TextureBakeTool.cpp` (rebake / defrag / fidelity modes).
 
@@ -373,10 +529,18 @@ example: `examples/TextureBakeTool.cpp` (rebake / defrag / fidelity modes).
 [`InteropOpenMVS.h`](../include/halfmesh/InteropOpenMVS.h) — header-only,
 compiled only when `<MVS/Mesh.h>` is on the include path (a no-op otherwise):
 `ConvertMesh(const MVS::Mesh&, halfmesh::Mesh&)` and the reverse transfer
-geometry, per-vertex colors, per-face normals, per-corner UVs, per-face
-texture indices and diffuse textures between the two libraries with zero
-build-time coupling. openMVS's per-vertex normals have no halfmesh
-counterpart and are not transferred.
+geometry, per-vertex colors and normals, per-face normals, per-corner UVs,
+per-face texture indices and diffuse textures between the two libraries with
+zero build-time coupling.
+
+Each direction also has an rvalue overload — `ConvertMesh(MVS::Mesh&&, ...)`
+and `ConvertMesh(halfmesh::Mesh&&, ...)` — that frees every source array as
+soon as it is copied, so a large conversion peaks at the larger mesh plus one
+array rather than holding both representations at once. Per-vertex normals
+cross as authored data under the contract above — openMVS classifies them as
+attributes, not a derived cache, so a round trip either returns the caller's own
+values or an empty array, never silently recomputed ones. openMVS's adjacency
+caches and octree are derived data and are not copied.
 
 ## Utilities
 

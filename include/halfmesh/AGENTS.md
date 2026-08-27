@@ -8,11 +8,15 @@ no origin references).
 ## Header map
 - `Mesh.h` — the main user-facing class `halfmesh::Mesh`: vertex/face/texcoord/texture
   containers + a `HalfMesh halfMesh` member; Load/Save (PLY/glTF), Simplify, RemeshIsotropic,
-  SmoothHCLaplacian, SmoothTaubin, Smooth (unified dispatcher), CloseHoles, FixNonManifold, Remove*/repair, normals/area/AABB, adjacency helpers.
+  SmoothHCLaplacian, SmoothTaubin, Smooth (unified dispatcher), CloseHoles,
+  RemoveVerticesAndFill, FixNonManifold, Remove*/repair, normals/area/AABB, adjacency
+  helpers. Also the representation contract: `InvalidateFaces` / `SyncFaces` /
+  `InvalidateHalfMesh` / `Begin`-`EndHalfEdgePipeline` (see the root AGENTS.md).
 - `HalfMesh.h` — `halfmesh::HalfMesh`, the compact half-edge structure: 5 parallel index
-  arrays (`v_halfedges/f_halfedges/he_nexts/he_vertices/he_faces`), twin = `h^1`,
+  arrays (`vHalfedges/fHalfedges/heNexts/heVertices/heFaces`), twin = `h^1`,
   edge = `h/2`; O(1) adjacency iterators (V/F/E AdjacentX); edge ops `EFlip`, `ERemove`,
-  and collapse-validity predicates `EIsCollapseValid{Topologically,Geometrically}`.
+  and collapse-validity predicates `EIsCollapseValid{Topologically,Geometrically}`;
+  face ops `FAdd` / `FAddDisk` / `FRemoveBulk` that keep connectivity valid in place.
   `HALFMESH_TRIS=1` selects the triangle-optimised layout.
 - `Types.h` — scalar/Eigen/OpenCV type aliases (`real`, `Vector3`, `Pixel`, `Image3u`, …),
   `math::NO_ID`, and the `cv::DataType<Pixel>` registration that makes `cv::Mat_<Pixel>` work.
@@ -26,6 +30,9 @@ no origin references).
 - `OrientedBoundingBox.h` — `OBB` (used by `Mesh::RemoveFacesOutside`).
 - `AtlasCharting.h` / `AtlasPacking.h` / `Parametrize.h` — the UV pipeline API (chart
   segmentation, flattening, density + atlas packing).
+- `RectPacking.h` — `PackRectangles` / `EstimateSquareTextureSize`: the mesh-independent
+  integer rectangle bin packer behind the atlas packer (lightmaps, sprite sheets,
+  texture repacking); same two-tier skyline+shelf core as `AtlasPacking.h`.
 - `Version.h` — version constants.
 - `InteropOpenMVS.h` — opt-in `halfmesh::Mesh ↔ MVS::Mesh` converters, guarded by
   `#if __has_include(<MVS/Mesh.h>)`; a no-op (and never compiled) without openMVS on the path.

@@ -84,7 +84,7 @@ endif()
 # so an absolute path works on all CMake versions >= 3.21.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
-project(halfmesh VERSION 0.2.0 LANGUAGES CXX)
+project(halfmesh VERSION 0.3.0 LANGUAGES CXX)
 
 # vcpkg.json cannot read the version above, so it carries a manual copy —
 # fail the configure the moment the two drift apart (a version bump must
@@ -202,7 +202,7 @@ add_library(halfmesh
 	src/AtlasCharting.cpp
 	src/AtlasPacking.cpp
 	src/TextureBake.cpp
-	src/TinyGLTFImpl.cpp
+	src/GltfImageCodec.cpp
 )
 add_library(halfmesh::halfmesh ALIAS halfmesh)
 
@@ -229,6 +229,33 @@ target_link_libraries(halfmesh
 
 # tinygltf is header-only; expose its include path as a usage requirement.
 target_include_directories(halfmesh PUBLIC $<BUILD_INTERFACE:${TINYGLTF_INCLUDE_DIR}>)
+
+# tinygltf configuration (see src/GltfImageCodec.h and src/GltfImageCodec.cpp).
+#
+# TINYGLTF_NO_STB_IMAGE[_WRITE] drop the bundled stb_image encoders/decoders;
+# halfmesh supplies OpenCV-backed callbacks instead, so glTF textures go through
+# the same imgcodecs (libjpeg-turbo / libpng) as every other image the library
+# reads or writes, and stb is no longer compiled into the build at all.
+# These two are PUBLIC because they are read in tiny_gltf.h's *declaration*
+# section -- they change the default member initializers of class TinyGLTF, so
+# every TU that includes the header (MeshIO.cpp, GltfImageCodec.cpp, mesh_io_test)
+# must agree on them or it is an ODR violation. BUILD_INTERFACE-only: nothing in
+# the installed public headers includes tiny_gltf.h, so consumers of the
+# installed package must not inherit them.
+target_compile_definitions(halfmesh PUBLIC
+	$<BUILD_INTERFACE:TINYGLTF_NO_STB_IMAGE>
+	$<BUILD_INTERFACE:TINYGLTF_NO_STB_IMAGE_WRITE>
+)
+# TINYGLTF_NOEXCEPTION makes tinygltf parse JSON without try/catch (it checks the
+# parser's return value instead), and JSON_NOEXCEPTION does the same inside
+# nlohmann/json. Both are only read behind TINYGLTF_IMPLEMENTATION, i.e. in
+# GltfImageCodec.cpp alone -- nlohmann/json is not even included anywhere else --
+# so they stay PRIVATE and JSON_NOEXCEPTION cannot leak onto a consumer that
+# uses nlohmann/json itself (where it would turn its exceptions into abort()).
+target_compile_definitions(halfmesh PRIVATE
+	TINYGLTF_NOEXCEPTION
+	JSON_NOEXCEPTION
+)
 target_include_directories(halfmesh PRIVATE ${BS_THREAD_POOL_INCLUDE_DIR})
 
 halfmesh_set_warnings(halfmesh)

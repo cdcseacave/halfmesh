@@ -19,6 +19,21 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 - Formatting: the repo `.clang-format` (tabs, `ColumnLimit: 0`, opening brace on its own
   line for class/struct/function). Run `clang-format -i` before committing.
 - Every source file starts with a short MIT header block (filename + copyright + MIT note).
+- Topology authority: once `halfMesh` exists it is primary and `faces` is a derived snapshot.
+  Native mutators keep connectivity live and invalidate/regenerate `faces`; array mutators clear
+  connectivity. After editing public `faces` directly, call `InvalidateHalfMesh()` before any
+  half-edge consumer. OpenMVS-style multi-stage processing uses `BeginHalfEdgePipeline()` /
+  `EndHalfEdgePipeline()` to harvest `faces` once; ordinary public calls still return synced.
+  Writing a new op: a half-edge-native one starts `ListHalfEdges()`, then optionally
+  `InvalidateFaces()`, and ends `SyncFacesOnPublicExit()`; an array-native one starts
+  `SyncFaces()` and ends `halfMesh.Clear()`; a read-only array consumer calls `SyncFaces()`
+  (or `SyncFacesConst()` from a `const` context) and nothing else.
+- Processing targets **untextured** meshes: half-edge mutators drop face-keyed attributes.
+  A method that happens to keep them aligned is a documented bonus, never a contract —
+  see the policy table in `docs/FEATURES.md`.
+- Vertex representatives are written only through `HalfMesh::SetVHalfedge` (the `alwaysEven`
+  choke point), never `vHalfedges[v] =`. `GuaranteeAlwaysEven()` is a full in-place rebuild:
+  it is never the fix for a parity problem.
 
 ## Layout
 - `include/halfmesh/` — public API headers (+ `Util/` helpers). See its AGENTS.md.
@@ -26,12 +41,16 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 - `tests/` — gtest suite + reusable test infra (corpus/metrics/golden) + perf + python crosscheck. See its AGENTS.md.
 - `examples/` — five example CLIs (decimate / remesh / smooth / unwrap / texturebake). See its AGENTS.md.
 - `cmake/` — `Utils.cmake` (warning flags helper) + `halfmeshConfig.cmake.in` (install/export).
-- `docs/` — `TESTING.md` (layered testing strategy), `BENCHMARKS.md` (atlasbench harness
+- `docs/` — `FEATURES.md` (API tour + the representation/texture contracts),
+  `TESTING.md` (layered testing strategy), `BENCHMARKS.md` (atlasbench harness
   + results vs xatlas/libigl/pmp/CGAL/BFF), `ATLAS_SEGMENTATION_DESIGN.md` (D-Charts
-  segmenter design).
+  segmenter design), `PYTHON.md` (bindings).
 - `include/halfmesh/InteropOpenMVS.h` — opt-in converters to/from
   [openMVS](https://github.com/cdcseacave/openMVS)'s `MVS::Mesh`, guarded by
   `#if __has_include(<MVS/Mesh.h>)` (no hard dependency).
+- This repo ships no vcpkg port of itself. A consumer (e.g. openMVS) carries its
+  own `ports/halfmesh/` pinned to a released tag; that port must never patch the
+  library — a fix lands as a commit here, then a tag, then a port bump there.
 
 ## Core types
 - `halfmesh::Mesh` (`Mesh.h`) — geometry container: public `vertices`, `faces`,

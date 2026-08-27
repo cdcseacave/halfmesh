@@ -70,6 +70,19 @@ struct BakeParams
 	float raySearchDist = 0.f; // 0 => auto (5% src bbox diag)
 	unsigned numThreads = 0; // 0 => auto (hardware concurrency)
 	Accelerator accelerator = Accelerator::BVH; // source-surface query structure
+	// Restrict the bake to a subset of the target's faces: entry f is true when
+	// face f should be rasterized. Texels outside the selection keep whatever the
+	// target already carried, so a masked bake edits a texture in place -- each
+	// page target.texturesDiffuse already holds at exactly `resolution` squared is
+	// used as the starting image, and any page it does not (missing, or a
+	// different size) starts black instead.
+	// Must be either null or exactly target.faces.size() long; a wrong-sized mask
+	// is ignored with a warning rather than silently baking everything.
+	// Honored by BakeAtlas and BakeOntoAtlas, i.e. wherever the target keeps the
+	// atlas it came in with. RebakeTexture and DefragmentTexture ignore it: they
+	// repack into a *new* layout, in which the unselected texels of the old one
+	// mean nothing.
+	const std::vector<bool>* faceMask = nullptr;
 	unsigned maxDefragPatches = 65536; // DefragmentTexture only: refuse source
 	    // atlases with more UV patches than this (skyline repack cost is
 	    // superlinear in patch count; such atlases need RebakeTexture's
@@ -94,7 +107,7 @@ struct BakeResult
 // corresponding blobDims entry -- including the single entry produced for
 // an empty blobDims -- are classified against the bare floor threshold of 2. Always returns max(blobDims.size(), 1) entries.
 std::vector<bool> UVBlobsAreNormalized(const std::vector<Mesh::TexCoord>& uv,
-                                       const std::vector<Mesh::FIndex>& faceBlobs,
+                                       const std::vector<Mesh::TexIndex>& faceBlobs,
                                        const std::vector<Eigen::Vector2i>& blobDims);
 
 // (cols,rows) of each m.texturesDiffuse image: the per-blob dims the
@@ -133,7 +146,7 @@ class SameUVResolver : public SourceResolver
 {
 	public:
 	SameUVResolver(std::vector<Mesh::TexCoord> origTexcoords,
-	               std::vector<Mesh::FIndex> origBlobs,
+	               std::vector<Mesh::TexIndex> origBlobs,
 	               std::vector<Eigen::Vector2i> blobDims);
 	bool Resolve(Mesh::FIndex tgtFace, const Vector3& bary,
 	             const Vector3& pos, const Mesh::Normal& nrm,
@@ -143,7 +156,7 @@ class SameUVResolver : public SourceResolver
 
 	private:
 	std::vector<Mesh::TexCoord> texcoords; // per-corner (faces*3)
-	std::vector<Mesh::FIndex> blobs; // per-face, or empty (single blob)
+	std::vector<Mesh::TexIndex> blobs; // per-face, or empty (single blob)
 	std::vector<Eigen::Vector2i> dims; // (cols,rows) per blob
 	std::vector<bool> normalized; // per blob: snapshot UVs are [0,1]
 };
@@ -195,11 +208,28 @@ unsigned AutoAtlasResolution(const Mesh& source, unsigned maxResolution = 8192);
 // textures onto it by querying the source surface. `source` and `target` may be
 // different geometry (e.g. a decimated target). On return `target` carries the
 // new UVs and baked textures. correspondence must be Nearest or Raycast (SameUV
-// is upgraded to Raycast). Assumes faceTexcoords are absolute pixel coords.
+// is upgraded to Nearest). Assumes faceTexcoords are absolute pixel coords.
 // Preconditions are checked in every build mode: `source` must carry per-corner
 // UVs and at least one texture, and both meshes need faces — otherwise a
 // default-constructed result (numPages == 0) is returned and a warning logged.
 BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams& params);
+
+// Bake `source`'s textures onto the UV atlas `target` ALREADY carries, instead of
+// generating a new one: the counterpart to RebakeTexture for a target whose UV
+// layout is authored (an artist's, or one an earlier tool fixed up) and must be
+// preserved. Same source query as RebakeTexture -- correspondence must be Nearest
+// or Raycast, SameUV is upgraded to Nearest -- but target.faceTexcoords is read,
+// never written, and is assumed absolute pixel coords in a params.resolution
+// square. Set params.faceMask to bake only part of that atlas in place.
+// Preconditions are checked in every build mode: both meshes need faces, `source`
+// needs per-corner UVs and at least one texture, `target` needs per-corner UVs,
+// and any texture `target` already carries must be params.resolution squared --
+// its size is the only evidence of the pixel space the target UVs are in, and
+// baking at a different one would silently write to the wrong texels. To bake at
+// a new resolution, rescale the UVs and drop the stale textures first. On a
+// violation a default-constructed result (numPages == 0) is returned and a
+// warning logged.
+BakeResult BakeOntoAtlas(const Mesh& source, Mesh& target, const BakeParams& params);
 
 // Defragment (light): keep the mesh's existing UV charts (no re-parametrization),
 // repack them tightly into a single atlas at params.resolution, and resample the

@@ -18,6 +18,7 @@
 #include <unordered_set>
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 #include <BS_thread_pool.hpp>
 
@@ -35,15 +36,240 @@ using detail::ParallelForPool;
 void Mesh::ReleaseOptional()
 {
 	vertexColors = std::vector<Pixel>();
+	vertexNormals = std::vector<Normal>();
 	faceNormals = std::vector<Normal>();
 	faceTexcoords = std::vector<TexCoord>();
-	faceTexblobs = std::vector<FIndex>();
+	faceTexblobs = std::vector<TexIndex>();
 	texturesDiffuse = std::vector<Image3u>();
 	vertexFaces = std::vector<VertexFaces>();
 }
 
+void Mesh::VertexAttributesSwapPop(VIndex idx)
+{
+	if (!vertexColors.empty()) {
+		vertexColors[idx] = vertexColors.back();
+		vertexColors.pop_back();
+	}
+	if (!vertexNormals.empty()) {
+		vertexNormals[idx] = vertexNormals.back();
+		vertexNormals.pop_back();
+	}
+}
+
+void Mesh::VertexAttributesAppendFrom(VIndex source)
+{
+	if (!vertexColors.empty())
+		vertexColors.emplace_back(vertexColors[source]);
+	if (!vertexNormals.empty())
+		vertexNormals.emplace_back(vertexNormals[source]);
+}
+
+void Mesh::InvalidateFaces()
+{
+	// Only AUTHORED data is worth a warning: faceNormals and vertexFaces are
+	// derived caches every mutator is expected to drop, so including them would
+	// make the texture-policy warning fire on untextured meshes.
+	const bool droppedTexture = !faceTexcoords.empty() || !faceTexblobs.empty() || !texturesDiffuse.empty();
+	faces.clear();
+	faceTexcoords.clear();
+	faceTexblobs.clear();
+	faceNormals.clear();
+	texturesDiffuse.clear();
+	vertexFaces.clear();
+	if (droppedTexture) {
+		static std::once_flag warningFlag;
+		std::call_once(warningFlag, []() {
+			REPORT_WARNING("texture attributes dropped: processing methods expect untextured meshes");
+		});
+	}
+}
+
+void Mesh::SyncFaces()
+{
+	if (faces.empty() && !halfMesh.Empty())
+		halfMesh.FFaces(faces);
+	ASSERT(ValidateInvariants());
+}
+
+void Mesh::SyncFacesOnPublicExit()
+{
+	if (!deferFaceSync)
+		SyncFaces();
+}
+
+void Mesh::BeginHalfEdgePipeline()
+{
+	ASSERT(!deferFaceSync);
+	ListHalfEdges();
+	if (!halfMesh.Empty())
+		InvalidateFaces();
+	deferFaceSync = true;
+}
+
+void Mesh::EndHalfEdgePipeline()
+{
+	ASSERT(deferFaceSync);
+	deferFaceSync = false;
+	SyncFaces();
+}
+
+void Mesh::InvalidateHalfMesh()
+{
+	halfMesh.Clear();
+}
+
+bool Mesh::ValidateInvariants() const
+{
+	return (faces.empty() || halfMesh.Empty() || faces.size() == halfMesh.FSize()) && (halfMesh.Empty() || vertices.size() == halfMesh.VSize())
+	       && (vertexColors.empty() || vertexColors.size() == vertices.size())
+	       && (vertexNormals.empty() || vertexNormals.size() == vertices.size());
+}
+
+bool Mesh::ValidateHalfMesh() const
+{
+	if (!ValidateInvariants())
+		return false;
+	if (halfMesh.Empty())
+		return vertices.empty() && faces.empty();
+
+	const HalfMesh& live = halfMesh;
+	const std::size_t numHalfedges = live.heNexts.size();
+	const VIndex numVertices = live.VSize();
+	const FIndex numFaces = live.FSize();
+	if (numHalfedges == 0 || (numHalfedges & 1u) != 0 || live.heVertices.size() != numHalfedges || live.heFaces.size() != numHalfedges || numVertices != vertices.size() || numFaces == 0)
+		return false;
+
+	std::vector<HIndex> outgoingCount(numVertices, 0);
+	std::vector<bool> boundaryVertices(numVertices, false);
+	for (HIndex iHe = 0; iHe < numHalfedges; ++iHe) {
+		const HIndex next = live.heNexts[iHe];
+		const VIndex vertex = live.heVertices[iHe];
+		const FIndex face = live.heFaces[iHe];
+		if (next >= numHalfedges || vertex >= numVertices || (face != NO_ID && face >= numFaces))
+			return false;
+		if (live.heVertices[live.HeTwin(iHe)] != live.heVertices[next])
+			return false;
+		++outgoingCount[vertex];
+		if (face == NO_ID) {
+			if ((iHe & 1u) == 0)
+				return false;
+			boundaryVertices[vertex] = true;
+			boundaryVertices[live.HeVertex(live.HeTwin(iHe))] = true;
+		}
+	}
+
+	std::vector<bool> visitedFaceHalfedges(numHalfedges, false);
+	for (FIndex iF = 0; iF < numFaces; ++iF) {
+		const HIndex start = live.fHalfedges[iF];
+		if (start >= numHalfedges || live.heFaces[start] != iF)
+			return false;
+		HIndex current = start;
+		unsigned degree = 0;
+		do {
+			if (current >= numHalfedges || live.heFaces[current] != iF || visitedFaceHalfedges[current])
+				return false;
+			visitedFaceHalfedges[current] = true;
+			current = live.heNexts[current];
+			if (++degree > numHalfedges)
+				return false;
+		} while (current != start);
+#if HALFMESH_TRIS
+		if (degree != 3)
+			return false;
+#endif
+	}
+	for (HIndex iHe = 0; iHe < numHalfedges; ++iHe)
+		if (live.heFaces[iHe] != NO_ID && !visitedFaceHalfedges[iHe])
+			return false;
+
+	std::vector<bool> visitedBoundaryHalfedges(numHalfedges, false);
+	for (HIndex iHe = 0; iHe < numHalfedges; ++iHe) {
+		if (live.heFaces[iHe] != NO_ID || visitedBoundaryHalfedges[iHe])
+			continue;
+		const HIndex start = iHe;
+		HIndex current = start;
+		std::size_t steps = 0;
+		do {
+			if (current >= numHalfedges || live.heFaces[current] != NO_ID || visitedBoundaryHalfedges[current])
+				return false;
+			visitedBoundaryHalfedges[current] = true;
+			current = live.heNexts[current];
+			if (++steps > numHalfedges)
+				return false;
+		} while (current != start);
+	}
+
+	for (VIndex iV = 0; iV < numVertices; ++iV) {
+		const HIndex start = live.vHalfedges[iV];
+		if (start >= numHalfedges || live.heVertices[start] != iV || outgoingCount[iV] == 0)
+			return false;
+		if (live.alwaysEven && (start & 1u))
+			return false;
+		if (boundaryVertices[iV] && (live.heFaces[start] == NO_ID || live.heFaces[live.HeTwin(start)] != NO_ID))
+			return false;
+		HIndex current = start;
+		HIndex reached = 0;
+		do {
+			if (current >= numHalfedges || live.heVertices[current] != iV)
+				return false;
+			current = live.HeNextOutgoingHalfedge(current);
+			if (++reached > outgoingCount[iV])
+				return false;
+		} while (current != start);
+		if (reached != outgoingCount[iV])
+			return false;
+	}
+
+	std::vector<Face> harvestedFaces;
+	live.FFacesForValidation(harvestedFaces);
+	if (!faces.empty()) {
+		if (faces.size() != harvestedFaces.size())
+			return false;
+		for (std::size_t i = 0; i < faces.size(); ++i)
+			for (Eigen::Index v = 0; v < faces[i].rows(); ++v)
+				if (faces[i][v] != harvestedFaces[i][v])
+					return false;
+	}
+
+	HalfMesh rebuilt;
+	if (!rebuilt.BuildForValidation(numVertices, harvestedFaces) || rebuilt.VSize() != numVertices || rebuilt.FSize() != numFaces || rebuilt.ESize() != live.ESize())
+		return false;
+
+	const auto SortedAdjacentVertices = [](const HalfMesh& mesh, VIndex vertex) {
+		std::vector<VIndex> adjacent;
+		for (VIndex neighbor : mesh.VAdjacentVertices(vertex))
+			adjacent.emplace_back(neighbor);
+		std::sort(adjacent.begin(), adjacent.end());
+		return adjacent;
+	};
+	const auto SortedAdjacentFaces = [](const HalfMesh& mesh, VIndex vertex) {
+		std::vector<FIndex> adjacent;
+		for (FIndex face : mesh.VAdjacentFaces(vertex))
+			adjacent.emplace_back(face);
+		std::sort(adjacent.begin(), adjacent.end());
+		return adjacent;
+	};
+	for (VIndex iV = 0; iV < numVertices; ++iV) {
+		if (SortedAdjacentVertices(live, iV) != SortedAdjacentVertices(rebuilt, iV) || SortedAdjacentFaces(live, iV) != SortedAdjacentFaces(rebuilt, iV))
+			return false;
+	}
+
+	std::vector<std::vector<VIndex>> liveHoles, rebuiltHoles;
+	live.EnumerateHoles(liveHoles);
+	rebuilt.EnumerateHoles(rebuiltHoles);
+	const auto CanonicalizeHoles = [](std::vector<std::vector<VIndex>>& holes) {
+		for (std::vector<VIndex>& hole : holes)
+			std::sort(hole.begin(), hole.end());
+		std::sort(holes.begin(), holes.end());
+	};
+	CanonicalizeHoles(liveHoles);
+	CanonicalizeHoles(rebuiltHoles);
+	return liveHoles == rebuiltHoles;
+}
+
 void Mesh::ComputeFaceNormals()
 {
+	SyncFaces();
 	faceNormals.resize(faces.size());
 	FOREACH (idxFace, faces) {
 		// exactly-degenerate (collinear) face: .normalized() on the zero cross
@@ -57,6 +283,7 @@ void Mesh::ComputeFaceNormals()
 void Mesh::ComputeSmoothFaceNormals(float maxAngle, float currentNormalWeight, unsigned iterations)
 {
 	ListHalfEdges();
+	SyncFaces();
 	if (faceNormals.size() != faces.size())
 		ComputeFaceNormals();
 	const float cosMaxAngle = std::cos(D2R(maxAngle));
@@ -95,6 +322,7 @@ void Mesh::ComputeSmoothFaceNormals(float maxAngle, float currentNormalWeight, u
 
 std::vector<Mesh::Normal> Mesh::ComputeVertexNormals()
 {
+	SyncFaces();
 	if (faceNormals.size() != faces.size())
 		ComputeFaceNormals();
 	// Angle-weighted (Thurmer & Wuthrich 1998) pseudonormals: weight each
@@ -103,7 +331,7 @@ std::vector<Mesh::Normal> Mesh::ComputeVertexNormals()
 	// a fan of slivers on one side cannot bias the normal -- while still
 	// honoring ComputeSmoothFaceNormals output (we scale the cached face normal,
 	// not a fresh cross product).
-	std::vector<Normal> vertexNormals(vertices.size(), Normal::Zero());
+	std::vector<Normal> normals(vertices.size(), Normal::Zero());
 	FOREACH (idxFace, faces) {
 		const Face& face = faces[idxFace];
 		const Normal& faceNormal = faceNormals[idxFace];
@@ -116,16 +344,17 @@ std::vector<Mesh::Normal> Mesh::ComputeVertexNormals()
 			if (l1 <= Type(0) || l2 <= Type(0))
 				continue; // degenerate corner (zero-length edge): no angle weight
 			const Type cosAngle = std::clamp(e1.dot(e2) / (l1 * l2), Type(-1), Type(1));
-			vertexNormals[face[i]] += faceNormal * std::acos(cosAngle);
+			normals[face[i]] += faceNormal * std::acos(cosAngle);
 		}
 	}
-	for (Normal& vertexNormal : vertexNormals)
-		vertexNormal.normalize();
-	return vertexNormals;
+	for (Normal& normal : normals)
+		normal.normalize();
+	return normals;
 }
 
 real Mesh::ComputeArea() const
 {
+	SyncFacesConst();
 	real area(0);
 	for (const Face& face : faces)
 		area += ComputeFaceDoubleArea(face);
@@ -134,10 +363,28 @@ real Mesh::ComputeArea() const
 
 real Mesh::ComputeArea(const std::vector<FIndex>& indices) const
 {
+	SyncFacesConst();
 	real area(0);
 	for (FIndex idxFace : indices)
 		area += ComputeFaceDoubleArea(idxFace);
 	return area * real(0.5);
+}
+
+Mesh::Type Mesh::ComputeMeanEdgeLength()
+{
+	// A mesh with no connectivity has no edges to average; guard before
+	// ListHalfEdges(), which requires faces when vertices are present.
+	if (faces.empty() && halfMesh.Empty())
+		return 0;
+	ListHalfEdges();
+	if (halfMesh.ESize() == 0)
+		return 0;
+	real sumLength(0);
+	for (EIndex idxEdge = 0; idxEdge < halfMesh.ESize(); ++idxEdge) {
+		const auto verts = halfMesh.EVertices(idxEdge);
+		sumLength += (vertices[verts.first] - vertices[verts.second]).norm();
+	}
+	return Type(sumLength / halfMesh.ESize());
 }
 
 Eigen::AlignedBox<Mesh::Type, 3> Mesh::ComputeAABBox() const
@@ -150,6 +397,7 @@ Eigen::AlignedBox<Mesh::Type, 3> Mesh::ComputeAABBox() const
 
 void Mesh::ListVertexFaces()
 {
+	SyncFaces();
 	vertexFaces.clear();
 	vertexFaces.resize(vertices.size());
 	// First pass: count incident face-corners per vertex so each list is reserved
@@ -192,12 +440,9 @@ bool Mesh::ValidateVertexFaces()
 
 void Mesh::ListHalfEdges()
 {
-	// Freshness gate: vertex count alone misses face-only mutations (RemoveFaces
-	// leaves halfMesh untouched by design — see RemoveSmallestComponents, which
-	// keeps using the old structure mid-surgery and clears it itself). Compare
-	// BOTH counts so any face add/remove forces a rebuild here.
-	if (halfMesh.vHalfedges.size() == vertices.size() && halfMesh.FSize() == faces.size())
+	if (!halfMesh.Empty())
 		return;
+	ASSERT(!(faces.empty() && !vertices.empty()));
 	// Fast path: Build assumes a manifold mesh but now *detects* non-manifold
 	// input cheaply and returns false instead of producing a corrupt structure
 	// (which used to hang the adjacency walk).  On failure, repair to manifold
@@ -207,6 +452,7 @@ void Mesh::ListHalfEdges()
 		REPORT_WARNING("non-manifold mesh; repairing to manifold before half-edge build");
 		ListHalfEdgesSafe();
 	}
+	ASSERT(ValidateInvariants());
 }
 
 // NOTE: ListHalfEdgesSafe() and FixNonManifold() are implemented in
@@ -230,6 +476,7 @@ std::vector<Mesh::VIndex> Mesh::VAdjacentVertices(VIndex iV) const
 
 Mesh::VIndex Mesh::FVertexIdx(FIndex idxFace, VIndex iV) const
 {
+	SyncFacesConst();
 	const Face& face = faces[idxFace];
 	for (VIndex i = 0; i < 3; ++i)
 		if (face[i] == iV)
@@ -282,21 +529,30 @@ Mesh::FIndex Mesh::FEdgeAdjacentFace(FIndex idxFace, VIndex iV0, VIndex iV1) con
 
 void Mesh::ECollapse(EIndex iE)
 {
+	ASSERT(ValidateInvariants());
 	ASSERT(!halfMesh.Empty());
 	HalfMesh::RemovedData removedData;
 	halfMesh.ERemove(iE, removedData);
 	ASSERT(removedData.numVerts == 1);
 	vertices[removedData.verts[0]] = vertices.back();
 	vertices.pop_back();
-	// vertexColors moves in lockstep with the position swap-pop, mirroring
-	// RemoveUnreferencedVertices/RemoveVertices.
-	if (!vertexColors.empty()) {
-		vertexColors[removedData.verts[0]] = vertexColors.back();
-		vertexColors.pop_back();
-	}
+	// the per-vertex attributes move in lockstep with the position swap-pop,
+	// mirroring RemoveUnreferencedVertices/RemoveVertices.
+	VertexAttributesSwapPop(removedData.verts[0]);
+	InvalidateFaces();
+	// re-harvesting the whole array for one collapse is O(F); a caller collapsing
+	// many edges should scope the loop in BeginHalfEdgePipeline, which suppresses
+	// this and harvests once at the end
+	SyncFacesOnPublicExit();
+	ASSERT(ValidateInvariants());
 }
 
 Mesh::VIndex Mesh::RemoveUnreferencedVertices()
+{
+	return halfMesh.Empty() ? RemoveUnreferencedVerticesArrays() : RemoveUnreferencedVerticesHalfEdge();
+}
+
+Mesh::VIndex Mesh::RemoveUnreferencedVerticesArrays()
 {
 	if (vertexFaces.size() != vertices.size())
 		ListVertexFaces();
@@ -315,14 +571,33 @@ Mesh::VIndex Mesh::RemoveUnreferencedVertices()
 			vertices.pop_back();
 			vertexFaces[idxVert] = std::move(vertexFaces.back());
 			vertexFaces.pop_back();
-			if (!vertexColors.empty()) {
-				vertexColors[idxVert] = vertexColors.back();
-				vertexColors.pop_back();
-			}
+			VertexAttributesSwapPop(idxVert);
 			++numVerticesRemoved;
 		}
 	}
+	if (numVerticesRemoved > 0)
+		halfMesh.Clear();
 	return numVerticesRemoved;
+}
+
+Mesh::VIndex Mesh::RemoveUnreferencedVerticesHalfEdge()
+{
+	ASSERT(!halfMesh.Empty());
+	ASSERT(halfMesh.VSize() == vertices.size());
+	std::vector<VIndex> removedVerts;
+	halfMesh.VRemoveUnreferenced(removedVerts);
+	for (VIndex removed : removedVerts) {
+		vertices[removed] = vertices.back();
+		vertices.pop_back();
+		VertexAttributesSwapPop(removed);
+	}
+	if (!removedVerts.empty())
+		InvalidateFaces();
+	SyncFacesOnPublicExit();
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
+	return static_cast<VIndex>(removedVerts.size());
 }
 
 void Mesh::RemoveVertices(std::vector<VIndex>& vertexRemoves, bool updateLists)
@@ -347,12 +622,11 @@ void Mesh::RemoveVertices(std::vector<VIndex>& vertexRemoves, bool updateLists)
 			vertexFaces.pop_back();
 			vertices[idxVert] = vertices.back();
 			vertices.pop_back();
-			if (!vertexColors.empty()) {
-				vertexColors[idxVert] = vertexColors.back();
-				vertexColors.pop_back();
-			}
+			VertexAttributesSwapPop(idxVert);
 			idxVertLast = idxVert;
 		}
+		if (!vertexRemoves.empty())
+			halfMesh.Clear();
 		return;
 	}
 	std::vector<FIndex> faceRemoves;
@@ -372,17 +646,17 @@ void Mesh::RemoveVertices(std::vector<VIndex>& vertexRemoves, bool updateLists)
 		vertexFaces.pop_back();
 		vertices[idxVert] = vertices.back();
 		vertices.pop_back();
-		if (!vertexColors.empty()) {
-			vertexColors[idxVert] = vertexColors.back();
-			vertexColors.pop_back();
-		}
+		VertexAttributesSwapPop(idxVert);
 		idxVertLast = idxVert;
 	}
 	RemoveFaces(faceRemoves);
+	if (!vertexRemoves.empty())
+		halfMesh.Clear();
 }
 
 void Mesh::RemoveFaces(std::vector<FIndex>& faceRemoves, bool updateLists)
 {
+	SyncFaces();
 	const auto RemoveAt = [this](FIndex idxFace) {
 		ASSERT(idxFace < faces.size());
 		if (!faceTexcoords.empty()) {
@@ -479,6 +753,42 @@ void Mesh::RemoveFaces(std::vector<FIndex>& faceRemoves, bool updateLists)
 			idxFaceLast = idxFace;
 		}
 	}
+	if (!faceRemoves.empty())
+		halfMesh.Clear();
+}
+
+bool Mesh::RemoveFacesHalfEdgeImpl(std::vector<FIndex>& faceRemoves, std::vector<VIndex>& removedVerts, std::vector<VIndex>& splitSrcVerts)
+{
+	ASSERT(!halfMesh.Empty());
+	ASSERT(ValidateInvariants());
+	const FIndex initialFaces = halfMesh.FSize();
+	halfMesh.FRemoveBulk(faceRemoves, removedVerts, splitSrcVerts);
+	if (halfMesh.FSize() == initialFaces)
+		return false;
+	for (VIndex source : splitSrcVerts) {
+		vertices.emplace_back(vertices[source]);
+		VertexAttributesAppendFrom(source);
+	}
+	for (VIndex vertex : removedVerts) {
+		vertices[vertex] = vertices.back();
+		vertices.pop_back();
+		VertexAttributesSwapPop(vertex);
+	}
+	InvalidateFaces();
+	ASSERT(vertices.size() == halfMesh.VSize());
+	ASSERT(ValidateInvariants());
+	return true;
+}
+
+void Mesh::RemoveFacesHalfEdge(std::vector<FIndex>& faceRemoves)
+{
+	std::vector<VIndex> removedVerts;
+	std::vector<VIndex> splitSrcVerts;
+	RemoveFacesHalfEdgeImpl(faceRemoves, removedVerts, splitSrcVerts);
+	// Public exit: harvest unless a BeginHalfEdgePipeline scope owns the single
+	// final harvest. Unconditional, so a half-edge-only entry that removed
+	// nothing still leaves the caller with a face snapshot.
+	SyncFacesOnPublicExit();
 }
 
 } // namespace halfmesh

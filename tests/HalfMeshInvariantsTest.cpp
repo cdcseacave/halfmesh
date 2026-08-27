@@ -24,8 +24,10 @@
 #include "Metrics.h"
 
 #include <array>
+#include <cmath>
 #include <functional>
 #include <map>
+#include <numbers>
 #include <set>
 #include <string>
 #include <utility>
@@ -191,6 +193,91 @@ std::vector<CorpusCase> Cases()
 	    {"UVSphere", [] { return corpus::UVSphere(8, 12); }, corpus::UVSphere_Known(8, 12)},
 	    {"Torus", [] { return corpus::TorusMesh(12, 8); }, corpus::TorusMesh_Known(12, 8)},
 	};
+}
+
+bool HasOddRepresentative(const HalfMesh& hm)
+{
+	for (HalfMesh::HIndex iHe : hm.vHalfedges)
+		if (iHe & 1u)
+			return true;
+	return false;
+}
+
+void CheckBoundaryRepresentatives(const HalfMesh& hm)
+{
+	std::vector<bool> boundary(hm.VSize(), false);
+	for (HalfMesh::HIndex iHe = 0; iHe < hm.HeSize(); ++iHe) {
+		if (hm.heFaces[iHe] != math::NO_ID)
+			continue;
+		boundary[hm.HeVertex(iHe)] = true;
+		boundary[hm.HeVertex(hm.HeTwin(iHe))] = true;
+	}
+	for (HalfMesh::VIndex vertex = 0; vertex < hm.VSize(); ++vertex) {
+		if (!boundary[vertex])
+			continue;
+		const HalfMesh::HIndex representative = hm.VHalfedge(vertex);
+		EXPECT_EQ(representative & 1u, 0u) << "boundary representative parity at vertex " << vertex;
+		EXPECT_NE(hm.heFaces[representative], math::NO_ID) << "boundary representative must carry a face";
+		EXPECT_EQ(hm.heFaces[hm.HeTwin(representative)], math::NO_ID) << "boundary representative twin must be boundary";
+	}
+}
+
+void CheckReaddedFace(Mesh& mesh)
+{
+	HalfMesh& hm = mesh.halfMesh;
+	const HalfMesh::FIndex removedFace = hm.FSize() - 1;
+	const HalfMesh::Face face = hm.F(removedFace);
+	hm.FRemove(removedFace);
+	ASSERT_TRUE(hm.ConnectBorders());
+	CheckStructuralInvariants(hm);
+	CheckBoundaryRepresentatives(hm);
+
+	std::vector<std::vector<HalfMesh::VIndex>> holes;
+	hm.EnumerateHoles(holes);
+	ASSERT_EQ(holes.size(), 1u);
+	EXPECT_EQ(holes.front().size(), 3u);
+
+	EXPECT_NE(hm.FAdd(face), math::NO_ID);
+	holes.clear();
+	hm.EnumerateHoles(holes);
+	EXPECT_TRUE(holes.empty());
+	CheckStructuralInvariants(hm);
+	CheckBoundaryRepresentatives(hm);
+
+	mesh.InvalidateFaces();
+	mesh.SyncFaces();
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	HalfMesh rebuilt;
+	ASSERT_TRUE(rebuilt.Build(mesh));
+	EXPECT_EQ(rebuilt.VSize(), hm.VSize());
+	EXPECT_EQ(rebuilt.ESize(), hm.ESize());
+	EXPECT_EQ(rebuilt.FSize(), hm.FSize());
+	for (HalfMesh::VIndex vertex = 0; vertex < hm.VSize(); ++vertex) {
+		EXPECT_EQ(ToSet(rebuilt.VAdjacentVertices(vertex)), ToSet(hm.VAdjacentVertices(vertex)));
+		EXPECT_EQ(ToSet(rebuilt.VAdjacentFaces(vertex)), ToSet(hm.VAdjacentFaces(vertex)));
+	}
+}
+
+void ApplyBulkRemoval(Mesh& mesh, std::vector<Mesh::FIndex> removes,
+                      std::vector<Mesh::VIndex>* removedOut = nullptr,
+                      std::vector<Mesh::VIndex>* splitOut = nullptr)
+{
+	mesh.ListHalfEdges();
+	std::vector<Mesh::VIndex> removed;
+	std::vector<Mesh::VIndex> split;
+	mesh.halfMesh.FRemoveBulk(removes, removed, split);
+	for (Mesh::VIndex source : split)
+		mesh.vertices.emplace_back(mesh.vertices[source]);
+	for (Mesh::VIndex vertex : removed) {
+		mesh.vertices[vertex] = mesh.vertices.back();
+		mesh.vertices.pop_back();
+	}
+	mesh.InvalidateFaces();
+	mesh.SyncFaces();
+	if (removedOut != nullptr)
+		*removedOut = removed;
+	if (splitOut != nullptr)
+		*splitOut = split;
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +588,353 @@ TEST(HalfMeshInvariants, EdgeSplitIsConsistent)
 	}
 	EXPECT_TRUE(anyBecameDirty)
 	    << "expected the flip/split perturbation to clear always_even on some mesh";
+}
+
+TEST(HalfMeshInvariants, FAddAfterSplitAndFlipOnDirtyHalfMesh)
+{
+	Mesh mesh = corpus::UVSphere(8, 12);
+	mesh.ListHalfEdges();
+	HalfMesh& hm = mesh.halfMesh;
+
+	bool split = false;
+	for (HalfMesh::EIndex edge = 0; edge < hm.ESize(); ++edge) {
+		if (hm.EIsBoundary(edge))
+			continue;
+		const auto [a, b] = hm.EVertices(edge);
+		const Mesh::Vertex midpoint = (mesh.vertices[a] + mesh.vertices[b]) * 0.5f;
+		ASSERT_EQ(hm.ESplit(edge), mesh.vertices.size());
+		mesh.vertices.emplace_back(midpoint);
+		split = true;
+		break;
+	}
+	ASSERT_TRUE(split);
+
+	bool flipped = false;
+	for (unsigned pass = 0; pass < 4 && !HasOddRepresentative(hm); ++pass) {
+		for (HalfMesh::EIndex edge = 0; edge < hm.ESize(); ++edge) {
+			if (!hm.EIsFlipValid(edge, mesh.vertices))
+				continue;
+			hm.EFlip(edge);
+			flipped = true;
+			if (HasOddRepresentative(hm))
+				break;
+		}
+	}
+	ASSERT_TRUE(flipped);
+	ASSERT_FALSE(hm.alwaysEven);
+	ASSERT_TRUE(HasOddRepresentative(hm));
+	CheckReaddedFace(mesh);
+}
+
+TEST(HalfMeshInvariants, FAddAfterEdgeCollapse)
+{
+	Mesh mesh = corpus::UVSphere(8, 12);
+	mesh.ListHalfEdges();
+	HalfMesh& hm = mesh.halfMesh;
+
+	bool collapsed = false;
+	for (HalfMesh::EIndex edge = 0; edge < hm.ESize(); ++edge) {
+		const auto [a, b] = hm.EVertices(edge);
+		const Mesh::Vertex midpoint = (mesh.vertices[a] + mesh.vertices[b]) * 0.5f;
+		if (!hm.EIsCollapseValidTopologically(edge) || !hm.EIsCollapseValidGeometrically(edge, midpoint, mesh.vertices))
+			continue;
+		HalfMesh::RemovedData removed;
+		const HalfMesh::VIndex moved = hm.ERemove(edge, removed);
+		ASSERT_EQ(removed.numVerts, 1u);
+		mesh.vertices[removed.verts[0]] = mesh.vertices.back();
+		mesh.vertices.pop_back();
+		mesh.vertices[moved] = midpoint;
+		collapsed = true;
+		break;
+	}
+	ASSERT_TRUE(collapsed);
+	CheckReaddedFace(mesh);
+}
+
+TEST(HalfMeshInvariants, RejectedFAddIsBitIdentical)
+{
+	Mesh mesh = corpus::Triangle();
+	mesh.ListHalfEdges();
+	HalfMesh& hm = mesh.halfMesh;
+	const HalfMesh before = hm;
+
+	EXPECT_EQ(hm.FAdd(mesh.faces.front()), math::NO_ID);
+	EXPECT_EQ(hm.vHalfedges, before.vHalfedges);
+	EXPECT_EQ(hm.fHalfedges, before.fHalfedges);
+	EXPECT_EQ(hm.heNexts, before.heNexts);
+	EXPECT_EQ(hm.heVertices, before.heVertices);
+	EXPECT_EQ(hm.heFaces, before.heFaces);
+	EXPECT_EQ(hm.alwaysEven, before.alwaysEven);
+}
+
+TEST(HalfMeshInvariants, BoundaryRepresentativesStayCanonicalNearMutations)
+{
+	Mesh mesh = corpus::GridPlane(6);
+	mesh.ListHalfEdges();
+	HalfMesh& hm = mesh.halfMesh;
+	CheckBoundaryRepresentatives(hm);
+
+	bool split = false;
+	for (HalfMesh::EIndex edge = 0; edge < hm.ESize(); ++edge) {
+		if (!hm.EIsBoundary(edge))
+			continue;
+		const auto [a, b] = hm.EVertices(edge);
+		const Mesh::Vertex midpoint = (mesh.vertices[a] + mesh.vertices[b]) * 0.5f;
+		ASSERT_EQ(hm.ESplit(edge), mesh.vertices.size());
+		mesh.vertices.emplace_back(midpoint);
+		split = true;
+		CheckBoundaryRepresentatives(hm);
+		break;
+	}
+	ASSERT_TRUE(split);
+
+	bool flipped = false;
+	for (HalfMesh::EIndex edge = 0; edge < hm.ESize(); ++edge) {
+		const auto [a, b] = hm.EVertices(edge);
+		if ((!hm.VIsBoundary(a) && !hm.VIsBoundary(b)) || !hm.EIsFlipValid(edge, mesh.vertices))
+			continue;
+		hm.EFlip(edge);
+		flipped = true;
+		CheckBoundaryRepresentatives(hm);
+		break;
+	}
+	ASSERT_TRUE(flipped);
+
+	bool collapsed = false;
+	for (HalfMesh::EIndex edge = 0; edge < hm.ESize(); ++edge) {
+		const auto [a, b] = hm.EVertices(edge);
+		if (!hm.VIsBoundary(a) && !hm.VIsBoundary(b))
+			continue;
+		const Mesh::Vertex midpoint = (mesh.vertices[a] + mesh.vertices[b]) * 0.5f;
+		if (!hm.EIsCollapseValidTopologically(edge) || !hm.EIsCollapseValidGeometrically(edge, midpoint, mesh.vertices))
+			continue;
+		HalfMesh::RemovedData removed;
+		const HalfMesh::VIndex moved = hm.ERemove(edge, removed);
+		ASSERT_EQ(removed.numVerts, 1u);
+		mesh.vertices[removed.verts[0]] = mesh.vertices.back();
+		mesh.vertices.pop_back();
+		mesh.vertices[moved] = midpoint;
+		collapsed = true;
+		CheckBoundaryRepresentatives(hm);
+		break;
+	}
+	ASSERT_TRUE(collapsed);
+
+	mesh.InvalidateFaces();
+	mesh.SyncFaces();
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
+TEST(HalfMeshInvariants, BulkRemoveHandlesTwoAndThreeBoundaryEdges)
+{
+	Mesh quad = corpus::Quad();
+	std::vector<Mesh::FIndex> removes{0};
+	quad.ListHalfEdges();
+	quad.RemoveFacesHalfEdge(removes);
+	EXPECT_EQ(quad.faces.size(), 1u);
+	EXPECT_EQ(quad.vertices.size(), 3u);
+	EXPECT_TRUE(quad.ValidateHalfMesh());
+	CheckBoundaryRepresentatives(quad.halfMesh);
+
+	Mesh triangle = corpus::Triangle();
+	removes = {0};
+	triangle.ListHalfEdges();
+	triangle.RemoveFacesHalfEdge(removes);
+	EXPECT_TRUE(triangle.vertices.empty());
+	EXPECT_TRUE(triangle.faces.empty());
+	EXPECT_TRUE(triangle.halfMesh.Empty());
+	EXPECT_TRUE(triangle.ValidateHalfMesh());
+}
+
+TEST(HalfMeshInvariants, BulkRemoveSplitsInteriorPinch)
+{
+	Mesh mesh;
+	mesh.vertices.emplace_back(0.f, 0.f, 0.f);
+	for (int i = 0; i < 6; ++i) {
+		const float angle = static_cast<float>(i) * static_cast<float>(2.0 * std::numbers::pi / 6.0);
+		mesh.vertices.emplace_back(std::cos(angle), std::sin(angle), 0.f);
+	}
+	for (Mesh::VIndex i = 1; i <= 6; ++i)
+		mesh.faces.emplace_back(0, i, i == 6 ? 1 : i + 1);
+
+	std::vector<Mesh::VIndex> removed;
+	std::vector<Mesh::VIndex> split;
+	ApplyBulkRemoval(mesh, {0, 3}, &removed, &split);
+	EXPECT_TRUE(removed.empty());
+	ASSERT_EQ(split.size(), 1u);
+	EXPECT_EQ(split.front(), 0u);
+	EXPECT_EQ(mesh.vertices.size(), 8u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	HalfMesh rebuilt;
+	EXPECT_TRUE(rebuilt.Build(mesh)) << "pinch split must leave rebuildable topology";
+}
+
+TEST(HalfMeshInvariants, BulkRemoveSplitsBoundaryPinch)
+{
+	Mesh mesh;
+	mesh.vertices = {
+	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}, {-1.f, 1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}, {0, 2, 3}, {0, 3, 4}};
+
+	std::vector<Mesh::VIndex> removed;
+	std::vector<Mesh::VIndex> split;
+	ApplyBulkRemoval(mesh, {1}, &removed, &split);
+	EXPECT_TRUE(removed.empty());
+	ASSERT_EQ(split.size(), 1u);
+	EXPECT_EQ(split.front(), 0u);
+	EXPECT_EQ(mesh.vertices.size(), 6u);
+	EXPECT_EQ(mesh.faces.size(), 2u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	CheckBoundaryRepresentatives(mesh.halfMesh);
+}
+
+TEST(HalfMeshInvariants, BulkRemoveScatteredFacesAndWholeComponent)
+{
+	Mesh grid = corpus::GridPlane(8);
+	ApplyBulkRemoval(grid, {3, 19, 47, 82});
+	EXPECT_EQ(grid.faces.size(), 124u);
+	EXPECT_TRUE(grid.ValidateHalfMesh());
+	HalfMesh rebuiltGrid;
+	EXPECT_TRUE(rebuiltGrid.Build(grid));
+
+	Mesh components = corpus::TetrahedronMesh();
+	const Mesh second = corpus::TetrahedronMesh();
+	const Mesh::VIndex offset = static_cast<Mesh::VIndex>(components.vertices.size());
+	for (const Mesh::Vertex& vertex : second.vertices)
+		components.vertices.emplace_back(vertex + Mesh::Vertex(3.f, 0.f, 0.f));
+	for (const Mesh::Face& face : second.faces)
+		components.faces.emplace_back(face[0] + offset, face[1] + offset, face[2] + offset);
+	ApplyBulkRemoval(components, {4, 5, 6, 7});
+	EXPECT_EQ(components.vertices.size(), 4u);
+	EXPECT_EQ(components.faces.size(), 4u);
+	EXPECT_TRUE(components.ValidateHalfMesh());
+}
+
+TEST(HalfMeshInvariants, BulkRemoveReportsIsolatedVerticesDescending)
+{
+	Mesh mesh;
+	for (int component = 0; component < 3; ++component) {
+		const float x = static_cast<float>(component * 3);
+		const Mesh::VIndex base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+		mesh.vertices.emplace_back(x, 0.f, 0.f);
+		mesh.vertices.emplace_back(x + 1.f, 0.f, 0.f);
+		mesh.vertices.emplace_back(x, 1.f, 0.f);
+		mesh.faces.emplace_back(base, base + 1, base + 2);
+	}
+	std::vector<Mesh::VIndex> removed;
+	ApplyBulkRemoval(mesh, {0, 2}, &removed);
+	EXPECT_EQ(removed, (std::vector<Mesh::VIndex>{8, 7, 6, 2, 1, 0}));
+	EXPECT_EQ(mesh.vertices.size(), 3u);
+	EXPECT_EQ(mesh.faces.size(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
+TEST(HalfMeshInvariants, BulkRemoveWorksOnDirtyHalfMesh)
+{
+	Mesh mesh = corpus::UVSphere(8, 12);
+	mesh.ListHalfEdges();
+	HalfMesh& hm = mesh.halfMesh;
+	for (HalfMesh::EIndex edge = 0; edge < hm.ESize(); ++edge) {
+		if (hm.EIsBoundary(edge))
+			continue;
+		const auto [a, b] = hm.EVertices(edge);
+		const Mesh::Vertex midpoint = (mesh.vertices[a] + mesh.vertices[b]) * 0.5f;
+		ASSERT_EQ(hm.ESplit(edge), mesh.vertices.size());
+		mesh.vertices.emplace_back(midpoint);
+		break;
+	}
+	for (HalfMesh::EIndex edge = 0; edge < hm.ESize() && hm.alwaysEven; ++edge)
+		if (hm.EIsFlipValid(edge, mesh.vertices))
+			hm.EFlip(edge);
+	ASSERT_FALSE(hm.alwaysEven);
+	mesh.InvalidateFaces();
+
+	std::vector<Mesh::FIndex> removes{2, 17, 43};
+	mesh.RemoveFacesHalfEdge(removes);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	HalfMesh rebuilt;
+	EXPECT_TRUE(rebuilt.Build(mesh));
+}
+
+TEST(HalfMeshInvariants, VRemoveUnreferencedReportsDescending)
+{
+	Mesh mesh = corpus::Triangle();
+	mesh.ListHalfEdges();
+	mesh.vertices.resize(6, Mesh::Vertex::Zero());
+	mesh.halfMesh.vHalfedges.resize(6, math::NO_ID);
+	std::vector<Mesh::VIndex> removed{42};
+	mesh.halfMesh.VRemoveUnreferenced(removed);
+	EXPECT_EQ(removed, (std::vector<Mesh::VIndex>{42, 5, 4, 3}));
+	for (auto it = removed.begin() + 1; it != removed.end(); ++it) {
+		const Mesh::VIndex vertex = *it;
+		mesh.vertices[vertex] = mesh.vertices.back();
+		mesh.vertices.pop_back();
+	}
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
+TEST(HalfMeshInvariants, BulkRemoveAppendsReportsAndEmptyInputIsNoOp)
+{
+	Mesh mesh = corpus::Triangle();
+	mesh.faceTexcoords.resize(3, Mesh::TexCoord::Zero());
+	mesh.texturesDiffuse.emplace_back(1, 1);
+	mesh.ListHalfEdges();
+	const HalfMesh before = mesh.halfMesh;
+	std::vector<Mesh::FIndex> noRemoves;
+	mesh.RemoveFacesHalfEdge(noRemoves);
+	EXPECT_EQ(mesh.halfMesh.vHalfedges, before.vHalfedges);
+	EXPECT_EQ(mesh.halfMesh.fHalfedges, before.fHalfedges);
+	EXPECT_EQ(mesh.halfMesh.heNexts, before.heNexts);
+	EXPECT_EQ(mesh.halfMesh.heVertices, before.heVertices);
+	EXPECT_EQ(mesh.halfMesh.heFaces, before.heFaces);
+	EXPECT_EQ(mesh.faceTexcoords.size(), 3u);
+	EXPECT_EQ(mesh.texturesDiffuse.size(), 1u);
+
+	std::vector<Mesh::VIndex> removed{99};
+	std::vector<Mesh::VIndex> split{98};
+	std::vector<Mesh::FIndex> removes{0};
+	mesh.halfMesh.FRemoveBulk(removes, removed, split);
+	EXPECT_EQ(removed, (std::vector<Mesh::VIndex>{99, 2, 1, 0}));
+	EXPECT_EQ(split, (std::vector<Mesh::VIndex>{98}));
+}
+
+TEST(HalfMeshInvariants, BulkRemoveWrapperKeepsColorsInLockstep)
+{
+	Mesh mesh;
+	mesh.vertices = {
+	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}, {-1.f, 1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}, {0, 2, 3}, {0, 3, 4}};
+	for (uint8_t i = 0; i < mesh.vertices.size(); ++i)
+		mesh.vertexColors.emplace_back(i, i, i);
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> removes{1};
+	mesh.RemoveFacesHalfEdge(removes);
+	ASSERT_EQ(mesh.vertexColors.size(), mesh.vertices.size());
+	ASSERT_EQ(mesh.vertices.size(), 6u);
+	EXPECT_EQ(mesh.vertexColors.back(), mesh.vertexColors.front());
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
+TEST(HalfMeshInvariants, BulkRemoveEveryCubeFaceSubsetStaysValid)
+{
+	const Mesh source = corpus::CubeMesh();
+	ASSERT_EQ(source.faces.size(), 12u);
+	for (uint32_t mask = 1; mask < (1u << source.faces.size()); ++mask) {
+		SCOPED_TRACE(mask);
+		Mesh mesh = source;
+		mesh.ListHalfEdges();
+		std::vector<Mesh::FIndex> removes;
+		for (Mesh::FIndex face = 0; face < source.faces.size(); ++face)
+			if (mask & (1u << face))
+				removes.emplace_back(face);
+		mesh.RemoveFacesHalfEdge(removes);
+		EXPECT_TRUE(mesh.ValidateHalfMesh());
+		if (!mesh.halfMesh.Empty()) {
+			HalfMesh rebuilt;
+			EXPECT_TRUE(rebuilt.Build(mesh));
+		}
+	}
 }
 
 } // namespace

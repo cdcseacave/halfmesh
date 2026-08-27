@@ -286,6 +286,227 @@ TEST(MeshCore, ListHalfEdges_FAdjacentFaces)
 	EXPECT_TRUE(hasFace1);
 }
 
+TEST(MeshCore, HalfEdgeGateRequiresExplicitInvalidationAfterDirectFaceEdit)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {0, 2, 3}});
+	m.ListHalfEdges();
+	m.faces = {Mesh::Face(0, 1, 3), Mesh::Face(1, 2, 3)};
+	m.ListHalfEdges();
+	std::vector<Mesh::Face> harvested;
+	m.halfMesh.FFaces(harvested);
+	EXPECT_EQ(harvested[0][2], 2u) << "a live half-edge is trusted until explicitly invalidated";
+
+	m.InvalidateHalfMesh();
+	m.ListHalfEdges();
+	harvested.clear();
+	m.halfMesh.FFaces(harvested);
+	ASSERT_EQ(harvested.size(), m.faces.size());
+	for (size_t i = 0; i < harvested.size(); ++i)
+		for (int j = 0; j < 3; ++j)
+			EXPECT_EQ(harvested[i][j], m.faces[i][j]);
+}
+
+TEST(MeshCore, RepresentationStateRoundTrip)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {0, 2, 3}});
+	const std::vector<Mesh::Face> originalFaces = m.faces;
+	EXPECT_TRUE(m.halfMesh.Empty());
+	m.ListHalfEdges();
+	EXPECT_TRUE(m.ValidateInvariants());
+	m.InvalidateFaces();
+	EXPECT_TRUE(m.faces.empty());
+	EXPECT_FALSE(m.halfMesh.Empty());
+	EXPECT_TRUE(m.ValidateInvariants());
+	m.SyncFaces();
+	m.SyncFaces();
+	ASSERT_EQ(m.faces.size(), originalFaces.size()) << "SyncFaces must not append twice";
+	for (size_t i = 0; i < originalFaces.size(); ++i)
+		for (int j = 0; j < 3; ++j)
+			EXPECT_EQ(m.faces[i][j], originalFaces[i][j]);
+}
+
+TEST(MeshCore, RepresentationInvariantAndHalfMeshValidation)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {0, 2, 3}});
+	m.ListHalfEdges();
+	EXPECT_TRUE(m.ValidateInvariants());
+	EXPECT_TRUE(m.ValidateHalfMesh());
+	m.vertices.emplace_back(2.f, 2.f, 0.f);
+	EXPECT_FALSE(m.ValidateInvariants());
+	m.vertices.pop_back();
+	EXPECT_TRUE(m.ValidateInvariants());
+}
+
+// vertexColors is parallel to `vertices`: empty, or the same length. This is
+// what makes the ASSERT(ValidateInvariants()) already sprinkled through the
+// mutators catch a colour/vertex desync at the point it happens, rather than
+// as an out-of-bounds read somewhere downstream.
+TEST(MeshCore, RepresentationInvariantCoversVertexColors)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {1.f, 1.f, 0.f}},
+	    {{0, 1, 2}});
+	EXPECT_TRUE(m.ValidateInvariants()) << "an empty colors array is always valid";
+
+	m.vertexColors.assign(m.vertices.size(), Mesh::Pixel(1, 2, 3));
+	EXPECT_TRUE(m.ValidateInvariants());
+
+	m.vertexColors.pop_back(); // short: the desync a growing mutator would leave
+	EXPECT_FALSE(m.ValidateInvariants());
+
+	m.vertexColors.emplace_back(1, 2, 3);
+	m.vertexColors.emplace_back(1, 2, 3); // long
+	EXPECT_FALSE(m.ValidateInvariants());
+
+	m.vertexColors.pop_back();
+	EXPECT_TRUE(m.ValidateInvariants());
+}
+
+TEST(MeshCore, HalfEdgePipelineBuildsAndHarvestsOnce)
+{
+	Mesh mesh = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}});
+	HalfMesh::ResetBuildCount();
+	HalfMesh::ResetFFacesCount();
+
+	mesh.BeginHalfEdgePipeline();
+	EXPECT_EQ(HalfMesh::BuildCount(), 1u);
+	EXPECT_EQ(HalfMesh::FFacesCount(), 0u);
+	EXPECT_TRUE(mesh.faces.empty());
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(HalfMesh::FFacesCount(), 0u);
+
+	mesh.EndHalfEdgePipeline();
+	EXPECT_EQ(HalfMesh::BuildCount(), 1u);
+	EXPECT_EQ(HalfMesh::FFacesCount(), 1u);
+	EXPECT_EQ(mesh.faces.size(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(HalfMesh::FFacesCount(), 1u);
+}
+
+// Public half-edge mutators harvest on exit, but must route it through
+// SyncFacesOnPublicExit() so an enclosing pipeline scope keeps its "one harvest
+// at End" budget. RemoveFacesHalfEdge called SyncFaces() outright, forcing a
+// snapshot mid-pipeline.
+TEST(MeshCore, RemoveFacesHalfEdgeDefersHarvestInsidePipeline)
+{
+	Mesh mesh = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {2, 1, 3}});
+	mesh.BeginHalfEdgePipeline();
+	HalfMesh::ResetFFacesCount();
+
+	std::vector<Mesh::FIndex> removes = {0};
+	mesh.RemoveFacesHalfEdge(removes);
+	EXPECT_EQ(HalfMesh::FFacesCount(), 0u) << "no harvest may happen inside the scope";
+	EXPECT_TRUE(mesh.faces.empty());
+
+	mesh.EndHalfEdgePipeline();
+	EXPECT_EQ(HalfMesh::FFacesCount(), 1u);
+	EXPECT_EQ(mesh.faces.size(), 1u);
+}
+
+// Outside a pipeline the same call is a public exit: it must leave faces synced
+// whether or not anything was actually removed.
+TEST(MeshCore, RemoveFacesHalfEdgeSyncsFacesEvenWhenNothingRemoved)
+{
+	Mesh mesh = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {2, 1, 3}});
+	mesh.ListHalfEdges();
+	mesh.InvalidateFaces(); // half-edge-only entry
+	ASSERT_TRUE(mesh.faces.empty());
+
+	std::vector<Mesh::FIndex> noRemoves;
+	mesh.RemoveFacesHalfEdge(noRemoves);
+
+	EXPECT_EQ(mesh.faces.size(), 2u) << "a public exit always leaves a face snapshot";
+	EXPECT_TRUE(mesh.ValidateInvariants());
+}
+
+// ComputeMeanEdgeLength is a utility, so it has to tolerate a mesh with no
+// connectivity: ListHalfEdges() asserts when vertices are present without
+// faces, so the empty-edge guard belongs ahead of it, not after.
+TEST(MeshCore, ComputeMeanEdgeLengthOnMeshWithoutFacesReturnsZero)
+{
+	Mesh mesh;
+	mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	ASSERT_TRUE(mesh.faces.empty());
+	ASSERT_TRUE(mesh.halfMesh.Empty());
+
+	EXPECT_EQ(mesh.ComputeMeanEdgeLength(), 0.f);
+
+	Mesh empty;
+	EXPECT_EQ(empty.ComputeMeanEdgeLength(), 0.f);
+}
+
+// Building a scratch HalfMesh from a half-edge-only Mesh must harvest into its
+// own snapshot, not materialize the source's derived `faces` array behind the
+// caller's back (the source is taken by const reference).
+TEST(MeshCore, BuildFromHalfEdgeOnlyMeshLeavesSourceFacesEmpty)
+{
+	Mesh mesh = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {1.f, 1.f, 0.f}},
+	    {{0, 1, 2}, {2, 1, 3}});
+	mesh.BeginHalfEdgePipeline();
+	ASSERT_TRUE(mesh.faces.empty());
+
+	const Mesh& source = mesh;
+	HalfMesh scratch;
+	EXPECT_TRUE(scratch.Build(source));
+	EXPECT_TRUE(mesh.faces.empty());
+	EXPECT_EQ(scratch.FSize(), mesh.halfMesh.FSize());
+	EXPECT_EQ(scratch.VSize(), mesh.halfMesh.VSize());
+	EXPECT_EQ(scratch.ESize(), mesh.halfMesh.ESize());
+
+	mesh.EndHalfEdgePipeline();
+	EXPECT_EQ(mesh.faces.size(), 2u);
+}
+
+TEST(MeshCore, InvalidateFacesDropsAttributesAndWarnsOnce)
+{
+	Mesh m = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}});
+	m.ListHalfEdges();
+	m.faceNormals.emplace_back(0.f, 0.f, 1.f);
+	m.faceTexcoords.resize(3);
+	m.faceTexblobs.emplace_back(0);
+	m.texturesDiffuse.emplace_back(1, 1);
+	m.ListVertexFaces();
+	testing::internal::CaptureStderr();
+	m.InvalidateFaces();
+	const std::string firstWarning = testing::internal::GetCapturedStderr();
+	EXPECT_NE(firstWarning.find("texture attributes dropped: processing methods expect untextured meshes"), std::string::npos);
+	EXPECT_TRUE(m.faces.empty());
+	EXPECT_TRUE(m.faceNormals.empty());
+	EXPECT_TRUE(m.faceTexcoords.empty());
+	EXPECT_TRUE(m.faceTexblobs.empty());
+	EXPECT_TRUE(m.texturesDiffuse.empty());
+	EXPECT_TRUE(m.vertexFaces.empty());
+
+	// faceNormals/vertexFaces are derived caches, not authored data: dropping
+	// them is routine and must never raise the texture-policy warning
+	m.faceNormals.emplace_back(0.f, 0.f, 1.f);
+	m.ListVertexFaces();
+	testing::internal::CaptureStderr();
+	m.InvalidateFaces();
+	EXPECT_TRUE(testing::internal::GetCapturedStderr().empty());
+
+	// and the texture warning itself is one-time
+	m.faceTexcoords.resize(3);
+	testing::internal::CaptureStderr();
+	m.InvalidateFaces();
+	EXPECT_TRUE(testing::internal::GetCapturedStderr().empty());
+}
+
 // ---------------------------------------------------------------------------
 // RemoveFaces — remove face 0 from a two-face mesh; expect 1 face left.
 // updateLists=false → vertexFaces cleared.
@@ -408,6 +629,35 @@ TEST(MeshCore, RemoveUnreferencedVerticesRemapsVertexColors)
 	for (size_t i = 0; i < m.vertices.size(); ++i)
 		EXPECT_EQ(static_cast<float>(m.vertexColors[i].x()), m.vertices[i].x())
 		    << "color/vertex desync at slot " << i;
+}
+
+TEST(MeshCore, RemoveUnreferencedVerticesHalfEdgeMatchesArraysWithoutBuild)
+{
+	Mesh arrays = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {3.f, 0.f, 0.f}, {4.f, 0.f, 0.f}},
+	    {{0, 1, 2}});
+	for (uint8_t i = 0; i < 5; ++i)
+		arrays.vertexColors.emplace_back(i, i, i);
+	Mesh native = BuildMesh(
+	    {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}},
+	    {{0, 1, 2}});
+	for (uint8_t i = 0; i < 3; ++i)
+		native.vertexColors.emplace_back(i, i, i);
+	native.ListHalfEdges();
+	for (uint8_t i = 3; i < 5; ++i) {
+		native.vertices.emplace_back(static_cast<float>(i), 0.f, 0.f);
+		native.vertexColors.emplace_back(i, i, i);
+		native.halfMesh.vHalfedges.emplace_back(math::NO_ID);
+	}
+
+	EXPECT_EQ(arrays.RemoveUnreferencedVerticesArrays(), 2u);
+	HalfMesh::ResetBuildCount();
+	EXPECT_EQ(native.RemoveUnreferencedVertices(), 2u);
+	EXPECT_EQ(HalfMesh::BuildCount(), 0u);
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_EQ(native.vertexColors, arrays.vertexColors);
+	EXPECT_TRUE(native.ValidateHalfMesh());
 }
 
 // RemoveVertices' documented contract is "remove specified vertices along with
@@ -566,11 +816,8 @@ TEST(MeshCore, ReleaseOptional)
 	EXPECT_TRUE(m.texturesDiffuse.empty());
 }
 
-// The half-edge freshness gate must detect a face-count change: RemoveFaces
-// mutates faces without touching halfMesh, and before this guard the gate
-// compared vertex count only, so ListHalfEdges() kept returning the stale
-// adjacency and ComputeSmoothFaceNormals iterated face ids past
-// faceNormals.size().
+// Public array surgery must invalidate the half-edge so the exact validity gate
+// never trusts stale connectivity.
 TEST(MeshCore, HalfEdgesRebuiltAfterRemoveFaces)
 {
 	Mesh mesh;
@@ -601,7 +848,7 @@ TEST(MeshCore, HalfEdgesRebuiltAfterRemoveFaces)
 	std::vector<Mesh::FIndex> removes{3}; // all 4 vertices stay referenced
 	mesh.RemoveFaces(removes);
 	ASSERT_EQ(mesh.faces.size(), 3u);
-	mesh.ListHalfEdges(); // vertex count unchanged — only the face clause can catch this
+	mesh.ListHalfEdges();
 	EXPECT_EQ(mesh.halfMesh.FSize(), mesh.faces.size());
 	// the motivating consumer must now be safe to call as-is
 	mesh.ComputeSmoothFaceNormals();

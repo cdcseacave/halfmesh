@@ -20,6 +20,12 @@
 
 #include <tiny_gltf.h>
 
+// tinygltf is built with TINYGLTF_NO_STB_IMAGE[_WRITE] (see the top-level
+// CMakeLists), so a bare tinygltf::TinyGLTF has no image codec: the tests that
+// drive one directly install halfmesh's OpenCV-backed callbacks, exactly as
+// Mesh::LoadGLTF / Mesh::SaveGLTF do. src/ is on this target's include path.
+#include "GltfImageCodec.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -239,6 +245,7 @@ TEST(MeshIoTest, GLBUVOnlyHasTexcoord0)
 
 	// Parse back with tinygltf and verify TEXCOORD_0 is present
 	tinygltf::TinyGLTF loader;
+	halfmesh::detail::SetGltfImageCodec(loader);
 	tinygltf::Model model;
 	std::string err, warn;
 	ASSERT_TRUE(loader.LoadBinaryFromFile(&model, &err, &warn, tmpGlb))
@@ -292,6 +299,7 @@ TEST(MeshIoTest, GLBTexturedPathPreserved)
 	ASSERT_TRUE(std::filesystem::exists(tmpGlb));
 
 	tinygltf::TinyGLTF loader;
+	halfmesh::detail::SetGltfImageCodec(loader);
 	tinygltf::Model model;
 	std::string err, warn;
 	ASSERT_TRUE(loader.LoadBinaryFromFile(&model, &err, &warn, tmpGlb))
@@ -312,49 +320,352 @@ TEST(MeshIoTest, GLBTexturedPathPreserved)
 }
 
 // ---------------------------------------------------------------------------
-// glTF geometry round-trip: Save(.glb) -> Load(.glb).
+// SaveGLTF's imageFormat / embedImages parameters.
 //
-// SaveGLTF bakes a z-up->y-up node matrix into the scene, so the reloaded mesh
-// is a rigid 90 deg rotation of the original.  We therefore assert rotation
-// invariants: exact face count, preserved surface area, and a matching multiset
-// of AABB extents (the rotation only permutes/sign-flips the axes).
+// tinygltf chooses its encoder from the image filename extension, which it
+// derives from the glTF mimeType -- so asserting on the emitted URI is what
+// actually proves the format reached the encoder.  Saved as .gltf (not .glb)
+// so the JSON, and with it the URI, is readable straight out of the file.
 // ---------------------------------------------------------------------------
 namespace {
-Eigen::Vector3f SortedExtents(const halfmesh::Mesh& mesh)
+// Two disjoint triangles, one per texture blob.
+halfmesh::Mesh TwoBlobTexturedMesh()
 {
-	Eigen::Vector3f e = mesh.ComputeAABBox().sizes();
-	std::sort(e.data(), e.data() + 3);
-	return e;
+	halfmesh::Mesh mesh;
+	mesh.vertices = {
+	    halfmesh::Mesh::Vertex(0.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(1.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(0.f, 1.f, 0.f),
+	    halfmesh::Mesh::Vertex(2.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(3.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(2.f, 1.f, 0.f),
+	};
+	mesh.faces = {halfmesh::Mesh::Face(0, 1, 2), halfmesh::Mesh::Face(3, 4, 5)};
+	mesh.faceTexcoords = {
+	    {0.f, 0.f},
+	    {2.f, 0.f},
+	    {0.f, 2.f},
+	    {0.f, 0.f},
+	    {2.f, 0.f},
+	    {0.f, 2.f},
+	};
+	mesh.faceTexblobs = {0, 1}; // face-indexed on input
+	mesh.texturesDiffuse.emplace_back(cv::Mat(2, 2, CV_8UC3, cv::Scalar(200, 100, 50)));
+	mesh.texturesDiffuse.emplace_back(cv::Mat(2, 2, CV_8UC3, cv::Scalar(10, 220, 30)));
+	return mesh;
+}
+
+std::string ReadWholeFile(const std::string& path)
+{
+	std::ifstream f(path, std::ios::binary);
+	return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 } // anonymous namespace
 
+TEST(MeshIoTest, SaveGLTFEmbeddedImageFormat)
+{
+	halfmesh::Mesh mesh = TwoBlobTexturedMesh();
+	ASSERT_TRUE(mesh.HasTexture());
+
+	const std::string jpgPath =
+	    (std::filesystem::temp_directory_path() / "halfmesh_fmt_jpg.gltf").string();
+	ASSERT_TRUE(mesh.SaveGLTF(jpgPath, /*binary=*/false, halfmesh::Mesh::ImageFormat::JPG,
+	                          /*embedImages=*/true));
+	const std::string jpgJson = ReadWholeFile(jpgPath);
+	EXPECT_NE(jpgJson.find("data:image/jpeg;base64,"), std::string::npos)
+	    << "JPG + embedImages must inline a JPEG data URI";
+	EXPECT_EQ(jpgJson.find("data:image/png;base64,"), std::string::npos);
+
+	const std::string pngPath =
+	    (std::filesystem::temp_directory_path() / "halfmesh_fmt_png.gltf").string();
+	ASSERT_TRUE(mesh.SaveGLTF(pngPath, /*binary=*/false, halfmesh::Mesh::ImageFormat::PNG,
+	                          /*embedImages=*/true));
+	const std::string pngJson = ReadWholeFile(pngPath);
+	EXPECT_NE(pngJson.find("data:image/png;base64,"), std::string::npos)
+	    << "PNG + embedImages must inline a PNG data URI";
+	EXPECT_EQ(pngJson.find("data:image/jpeg;base64,"), std::string::npos);
+
+	// The default still embeds JPEG, so existing callers are unaffected.
+	const std::string defPath =
+	    (std::filesystem::temp_directory_path() / "halfmesh_fmt_default.gltf").string();
+	ASSERT_TRUE(mesh.SaveGLTF(defPath, /*binary=*/false));
+	EXPECT_NE(ReadWholeFile(defPath).find("data:image/jpeg;base64,"), std::string::npos);
+}
+
+// Each blob must land in its OWN sidecar: the images are named per blob, and a
+// shared name would have every blob overwrite, and then reference, one file.
+TEST(MeshIoTest, SaveGLTFExternalImagesArePerBlob)
+{
+	halfmesh::Mesh mesh = TwoBlobTexturedMesh();
+	ASSERT_TRUE(mesh.HasTexture());
+
+	const std::filesystem::path dir =
+	    std::filesystem::temp_directory_path() / "halfmesh_gltf_external";
+	std::filesystem::remove_all(dir);
+	std::filesystem::create_directories(dir);
+	const std::string outPath = (dir / "scene.gltf").string();
+
+	ASSERT_TRUE(mesh.SaveGLTF(outPath, /*binary=*/false, halfmesh::Mesh::ImageFormat::PNG,
+	                          /*embedImages=*/false));
+
+	const std::filesystem::path tex0 = dir / "scene_diffuse00.png";
+	const std::filesystem::path tex1 = dir / "scene_diffuse01.png";
+	EXPECT_TRUE(std::filesystem::exists(tex0)) << "missing sidecar: " << tex0;
+	EXPECT_TRUE(std::filesystem::exists(tex1)) << "missing sidecar: " << tex1;
+	EXPECT_GT(std::filesystem::file_size(tex0), 0u);
+
+	// Nothing inlined, and both sidecars referenced.
+	const std::string json = ReadWholeFile(outPath);
+	EXPECT_EQ(json.find("data:image/"), std::string::npos)
+	    << "embedImages=false must not inline any image";
+	EXPECT_NE(json.find("scene_diffuse00.png"), std::string::npos);
+	EXPECT_NE(json.find("scene_diffuse01.png"), std::string::npos);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// glTF coordinate-frame contract.
+//
+// halfmesh is z-up in memory; glTF is y-up by specification.  SaveGLTF writes
+// the vertex buffer untouched and declares the z-up -> y-up rotation as a
+// matrix on the root node; LoadGLTF flattens the hierarchy and undoes exactly
+// that.  Both matrices are signed permutations, so their product is the
+// identity in exact arithmetic -- the round-trip is asserted bit-for-bit here,
+// not by rotation invariants.  The tests below pin the three halves of the
+// contract that can drift apart independently: the round-trip, the rotation
+// still being present in the file, and a foreign y-up file landing in
+// halfmesh's frame.
+// ---------------------------------------------------------------------------
+namespace {
+
+bool SameVertex(const halfmesh::Mesh::Vertex& a, const halfmesh::Mesh::Vertex& b)
+{
+	return a.x() == b.x() && a.y() == b.y() && a.z() == b.z();
+}
+
+// The z-up -> y-up rotation SaveGLTF is required to put on the root node,
+// column-major as glTF stores it.
+const std::vector<double>& ExpectedYUpMatrix()
+{
+	static const std::vector<double> m{1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1};
+	return m;
+}
+
+// Minimal single-primitive glTF with an explicit root-node matrix, standing in
+// for a file from some other exporter.  Positions are written verbatim, so the
+// caller controls exactly what frame the file claims to be in.
+bool WriteMinimalGLTF(const std::string& path, const std::vector<float>& positions,
+                      const std::vector<uint32_t>& indices, const std::vector<double>& nodeMatrix)
+{
+	tinygltf::Model model;
+
+	tinygltf::Buffer buffer;
+	const size_t posBytes = positions.size() * sizeof(float);
+	const size_t idxBytes = indices.size() * sizeof(uint32_t);
+	buffer.data.resize(posBytes + idxBytes);
+	std::memcpy(buffer.data.data(), positions.data(), posBytes);
+	std::memcpy(buffer.data.data() + posBytes, indices.data(), idxBytes);
+	model.buffers.push_back(std::move(buffer));
+
+	tinygltf::BufferView posView;
+	posView.buffer = 0;
+	posView.byteOffset = 0;
+	posView.byteLength = posBytes;
+	tinygltf::BufferView idxView;
+	idxView.buffer = 0;
+	idxView.byteOffset = posBytes;
+	idxView.byteLength = idxBytes;
+	model.bufferViews = {std::move(posView), std::move(idxView)};
+
+	// POSITION accessors are required to carry min/max, and tinygltf's writer
+	// emits what it is given -- a validating reader would reject the file.
+	std::vector<double> lo{positions[0], positions[1], positions[2]}, hi = lo;
+	for (size_t v = 3; v < positions.size(); v += 3)
+		for (int c = 0; c < 3; ++c) {
+			lo[c] = std::min(lo[c], static_cast<double>(positions[v + c]));
+			hi[c] = std::max(hi[c], static_cast<double>(positions[v + c]));
+		}
+	tinygltf::Accessor posAcc;
+	posAcc.bufferView = 0;
+	posAcc.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+	posAcc.count = positions.size() / 3;
+	posAcc.type = TINYGLTF_TYPE_VEC3;
+	posAcc.minValues = std::move(lo);
+	posAcc.maxValues = std::move(hi);
+	tinygltf::Accessor idxAcc;
+	idxAcc.bufferView = 1;
+	idxAcc.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
+	idxAcc.count = indices.size();
+	idxAcc.type = TINYGLTF_TYPE_SCALAR;
+	model.accessors = {std::move(posAcc), std::move(idxAcc)};
+
+	tinygltf::Primitive prim;
+	prim.attributes["POSITION"] = 0;
+	prim.indices = 1;
+	prim.mode = TINYGLTF_MODE_TRIANGLES;
+	tinygltf::Mesh gltfMesh;
+	gltfMesh.primitives.push_back(std::move(prim));
+	model.meshes.push_back(std::move(gltfMesh));
+
+	tinygltf::Node node;
+	node.mesh = 0;
+	node.matrix = nodeMatrix;
+	model.nodes.push_back(std::move(node));
+
+	tinygltf::Scene scene;
+	scene.nodes.push_back(0);
+	model.scenes.push_back(std::move(scene));
+	model.defaultScene = 0;
+	model.asset.version = "2.0";
+	model.asset.generator = "halfmesh-test";
+
+	tinygltf::TinyGLTF writer;
+	halfmesh::detail::SetGltfImageCodec(writer);
+	return writer.WriteGltfSceneToFile(&model, path, /*embedImages=*/true,
+	                                   /*embedBuffers=*/true, /*prettyPrint=*/true,
+	                                   /*writeBinary=*/false);
+}
+
+} // anonymous namespace
+
+// Save -> Load must be an identity.  mesh.ply carries no UVs, so SaveGLTF takes
+// its no-split path and vertex *indices* survive too, which lets this compare
+// the arrays element-wise rather than only the corner positions.
 TEST(MeshIoTest, GLTFGeometryRoundTrip)
 {
 	halfmesh::Mesh mesh;
 	ASSERT_TRUE(mesh.Load(TestMeshPath()));
 	ASSERT_FALSE(mesh.Empty());
-
-	const std::size_t originalFaces = mesh.faces.size();
-	const halfmesh::real originalArea = mesh.ComputeArea();
-	const Eigen::Vector3f originalExt = SortedExtents(mesh);
+	ASSERT_TRUE(mesh.faceTexcoords.empty())
+	    << "fixture gained UVs: SaveGLTF would split seams and the index-wise "
+	       "comparison below would no longer be the right assertion";
 
 	const std::string tmpGlb = (std::filesystem::temp_directory_path() / "halfmesh_roundtrip.glb").string();
 	ASSERT_TRUE(mesh.Save(tmpGlb, /*binary=*/true));
 
 	halfmesh::Mesh reloaded;
 	ASSERT_TRUE(reloaded.Load(tmpGlb)) << "LoadGLTF failed for: " << tmpGlb;
-	ASSERT_FALSE(reloaded.Empty());
 
-	// Face count is exact; vertices may grow if SaveGLTF split UV seams.
-	EXPECT_EQ(reloaded.faces.size(), originalFaces);
-	EXPECT_GE(reloaded.vertices.size(), mesh.vertices.size());
+	ASSERT_EQ(reloaded.vertices.size(), mesh.vertices.size());
+	ASSERT_EQ(reloaded.faces.size(), mesh.faces.size());
 
-	// Surface area is preserved under the rigid transform.
-	EXPECT_NEAR(reloaded.ComputeArea(), originalArea, originalArea * 1e-3);
+	size_t moved = 0;
+	size_t firstMoved = 0;
+	for (size_t i = 0; i < mesh.vertices.size(); ++i)
+		if (!SameVertex(reloaded.vertices[i], mesh.vertices[i]))
+			if (moved++ == 0)
+				firstMoved = i;
+	EXPECT_EQ(moved, 0u) << "glTF round-trip is not an identity; first at vertex "
+	                     << firstMoved << ": " << mesh.vertices[firstMoved].transpose()
+	                     << " -> " << reloaded.vertices[firstMoved].transpose();
 
-	// Sorted AABB extents match (the y-up rotation only permutes the axes).
-	const Eigen::Vector3f reloadedExt = SortedExtents(reloaded);
-	EXPECT_NEAR((reloadedExt - originalExt).norm(), 0.f, originalExt.norm() * 1e-3f);
+	size_t changed = 0;
+	for (size_t i = 0; i < mesh.faces.size(); ++i)
+		if (reloaded.faces[i] != mesh.faces[i])
+			++changed;
+	EXPECT_EQ(changed, 0u) << "face indices changed across the glTF round-trip";
+}
+
+// .gltf and .glb are the same codec in a different container, so they must
+// agree exactly -- the ASCII path base64-encodes the buffer and is the one that
+// could plausibly drift.
+TEST(MeshIoTest, GLTFAsciiAndBinaryRoundTripAgree)
+{
+	halfmesh::Mesh mesh;
+	mesh.vertices = {
+	    halfmesh::Mesh::Vertex(0.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(1.5f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(0.f, 2.25f, 0.f),
+	    halfmesh::Mesh::Vertex(0.f, 0.f, -3.75f),
+	};
+	mesh.faces = {halfmesh::Mesh::Face(0, 1, 2), halfmesh::Mesh::Face(0, 2, 3)};
+
+	const auto tmp = std::filesystem::temp_directory_path();
+	const std::string asciiPath = (tmp / "halfmesh_frame_ascii.gltf").string();
+	const std::string binaryPath = (tmp / "halfmesh_frame_binary.glb").string();
+	ASSERT_TRUE(mesh.SaveGLTF(asciiPath, /*binary=*/false));
+	ASSERT_TRUE(mesh.SaveGLTF(binaryPath, /*binary=*/true));
+
+	halfmesh::Mesh fromAscii, fromBinary;
+	ASSERT_TRUE(fromAscii.Load(asciiPath));
+	ASSERT_TRUE(fromBinary.Load(binaryPath));
+
+	ASSERT_EQ(fromAscii.vertices.size(), mesh.vertices.size());
+	ASSERT_EQ(fromBinary.vertices.size(), mesh.vertices.size());
+	for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+		EXPECT_TRUE(SameVertex(fromAscii.vertices[i], mesh.vertices[i]))
+		    << ".gltf round-trip moved vertex " << i;
+		EXPECT_TRUE(SameVertex(fromBinary.vertices[i], mesh.vertices[i]))
+		    << ".glb round-trip moved vertex " << i;
+	}
+}
+
+// The rotation must stay in the *file*.  Without this, a future change could
+// make the round-trip pass by dropping the node matrix from the export, which
+// would silently start shipping y-down models to every glTF viewer.
+TEST(MeshIoTest, GLTFExportDeclaresYUpOnTheRootNode)
+{
+	halfmesh::Mesh mesh;
+	mesh.vertices = {
+	    halfmesh::Mesh::Vertex(0.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(1.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(0.f, 1.f, 0.f),
+	};
+	mesh.faces = {halfmesh::Mesh::Face(0, 1, 2)};
+
+	const std::string out = (std::filesystem::temp_directory_path() / "halfmesh_yup_contract.gltf").string();
+	ASSERT_TRUE(mesh.SaveGLTF(out, /*binary=*/false));
+
+	tinygltf::Model model;
+	tinygltf::TinyGLTF loader;
+	halfmesh::detail::SetGltfImageCodec(loader);
+	std::string err, warn;
+	ASSERT_TRUE(loader.LoadASCIIFromFile(&model, &err, &warn, out)) << err;
+	ASSERT_FALSE(model.nodes.empty());
+	ASSERT_EQ(model.nodes[0].matrix.size(), 16u)
+	    << "root node lost its z-up -> y-up matrix; exported models are no "
+	       "longer upright in glTF viewers";
+	for (size_t i = 0; i < 16; ++i)
+		EXPECT_DOUBLE_EQ(model.nodes[0].matrix[i], ExpectedYUpMatrix()[i])
+		    << "node matrix component " << i;
+}
+
+// A foreign y-up file -- data already in glTF's frame, node carrying an
+// ordinary scale/translate rather than an axis conversion -- must arrive z-up.
+// Node matrix is scale 2 then translate (1,2,3), all in y-up, so the loader
+// owes us world_yup = 2*p + (1,2,3) mapped through (x,y,z) -> (x,-z,y).
+TEST(MeshIoTest, GLTFForeignYUpFileLoadsIntoZUpFrame)
+{
+	const std::vector<float> positions{
+	    0.f, 0.f, 0.f, // -> yup (1,2,3) -> zup (1,-3,2)
+	    1.f, 0.f, 0.f, // -> yup (3,2,3) -> zup (3,-3,2)
+	    0.f, 1.f, 0.f, // -> yup (1,4,3) -> zup (1,-3,4)
+	};
+	const std::vector<uint32_t> indices{0, 1, 2};
+	const std::vector<double> nodeMatrix{2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 1, 2, 3, 1};
+
+	const std::string path = (std::filesystem::temp_directory_path() / "halfmesh_foreign_yup.gltf").string();
+	ASSERT_TRUE(WriteMinimalGLTF(path, positions, indices, nodeMatrix));
+
+	halfmesh::Mesh mesh;
+	ASSERT_TRUE(mesh.Load(path)) << "LoadGLTF failed for: " << path;
+	ASSERT_EQ(mesh.vertices.size(), 3u);
+	ASSERT_EQ(mesh.faces.size(), 1u);
+
+	const std::vector<halfmesh::Mesh::Vertex> expected{
+	    halfmesh::Mesh::Vertex(1.f, -3.f, 2.f),
+	    halfmesh::Mesh::Vertex(3.f, -3.f, 2.f),
+	    halfmesh::Mesh::Vertex(1.f, -3.f, 4.f),
+	};
+	for (size_t i = 0; i < expected.size(); ++i)
+		EXPECT_TRUE(SameVertex(mesh.vertices[i], expected[i]))
+		    << "vertex " << i << " expected " << expected[i].transpose() << " got "
+		    << mesh.vertices[i].transpose();
+
+	// The file's up axis (+Y) must have become halfmesh's (+Z): vertex 2 sits
+	// one file-unit "up" from vertex 0, scaled by 2.
+	EXPECT_FLOAT_EQ(mesh.vertices[2].z() - mesh.vertices[0].z(), 2.f);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +746,48 @@ TEST(MeshIoTest, GLTFTexturedRoundTrip)
 	for (std::size_t i = 0; i < expectedUv.size(); ++i)
 		EXPECT_NEAR((reloaded.faceTexcoords[i] - expectedUv[i]).norm(), 0.f, 1e-3f)
 		    << "UV corner " << i << " mismatch";
+}
+
+// ---------------------------------------------------------------------------
+// glTF textures go through OpenCV (tinygltf is built with TINYGLTF_NO_STB_IMAGE
+// / _WRITE), so the channel order is flipped on the way out (BGR -> RGB) and
+// back on the way in.  PNG is lossless, so a correct pair of flips round-trips
+// the texels exactly -- while a missing or doubled one swaps red and blue,
+// which the dimension-only checks above cannot see.
+// ---------------------------------------------------------------------------
+TEST(MeshIoTest, GLTFTexturePixelsSurvivePNGRoundTrip)
+{
+	halfmesh::Mesh mesh;
+	mesh.vertices = {
+	    halfmesh::Mesh::Vertex(0.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(1.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(0.f, 1.f, 0.f),
+	};
+	mesh.faces = {halfmesh::Mesh::Face(0, 1, 2)};
+	mesh.faceTexcoords = {{0.f, 0.f}, {1.f, 0.f}, {0.f, 1.f}};
+	// Every texel differs from every other, and every channel of a texel differs
+	// from its siblings: a channel swap or a row/column flip changes at least one.
+	cv::Mat tex(2, 2, CV_8UC3);
+	tex.at<cv::Vec3b>(0, 0) = cv::Vec3b(10, 128, 240);
+	tex.at<cv::Vec3b>(0, 1) = cv::Vec3b(240, 10, 128);
+	tex.at<cv::Vec3b>(1, 0) = cv::Vec3b(128, 240, 10);
+	tex.at<cv::Vec3b>(1, 1) = cv::Vec3b(30, 60, 90);
+	mesh.texturesDiffuse.emplace_back(tex);
+
+	const std::string tmp =
+	    (std::filesystem::temp_directory_path() / "halfmesh_tex_pixels.glb").string();
+	ASSERT_TRUE(mesh.SaveGLTF(tmp, /*binary=*/true, halfmesh::Mesh::ImageFormat::PNG));
+
+	halfmesh::Mesh reloaded;
+	ASSERT_TRUE(reloaded.Load(tmp));
+	ASSERT_FALSE(reloaded.texturesDiffuse.empty());
+	const cv::Mat& out = reloaded.texturesDiffuse[0];
+	ASSERT_EQ(out.type(), CV_8UC3);
+	ASSERT_EQ(out.size(), tex.size());
+	cv::Mat diff;
+	cv::compare(out, tex, diff, cv::CMP_NE);
+	EXPECT_EQ(cv::countNonZero(diff.reshape(1)), 0)
+	    << "PNG texture round-trip must be pixel-exact (BGR channel order preserved)";
 }
 
 // ---------------------------------------------------------------------------
@@ -804,6 +1157,7 @@ TEST(MeshIoAccuracy, GLTFUntexturedPrimitiveBeforeUVKeepsTexcoords)
 
 	const std::string tmp = (std::filesystem::temp_directory_path() / "halfmesh_untex_then_uv.glb").string();
 	tinygltf::TinyGLTF writer;
+	halfmesh::detail::SetGltfImageCodec(writer);
 	ASSERT_TRUE(writer.WriteGltfSceneToFile(&model, tmp, true, true, false, true));
 
 	halfmesh::Mesh mesh;
@@ -872,6 +1226,7 @@ TEST(MeshIoAccuracy, GLTFTailTightStridedAccessorImports)
 
 	const std::string tmp = (std::filesystem::temp_directory_path() / "halfmesh_tailtight.glb").string();
 	tinygltf::TinyGLTF writer;
+	halfmesh::detail::SetGltfImageCodec(writer);
 	ASSERT_TRUE(writer.WriteGltfSceneToFile(&model, tmp, true, true, false, true));
 
 	halfmesh::Mesh mesh;

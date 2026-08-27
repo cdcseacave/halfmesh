@@ -56,10 +56,16 @@ repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 --only-pl
 # vcpkg bootstraps inside the manylinux container; deps build static+PIC via
 # the x64-linux-pic overlay triplet (auto-selected by CMakeLists.txt).
 # The vcpkg tool itself is fetched by the exact pinned commit (not "--depth 1"
-# off the branch tip): vcpkg.json's "builtin-baseline" pins
-# 9e593bb18ea69cc5095e012465dcd675a822ed0d (same pin as CI's VCPKG_COMMIT),
-# and that commit is not reachable from a shallow clone of current master, so
-# vcpkg fails to `git show` versions/baseline.json at that SHA.
+# off the branch tip): a baseline commit is not reachable from a shallow clone
+# of current master, so vcpkg fails to `git show` versions/baseline.json at
+# that SHA and every dependency resolution dies.
+#
+# The commit is read out of vcpkg.json rather than written here, because the
+# copy that used to live here silently went stale the moment the baseline
+# advanced -- 0.3.0 shipped a tag whose wheels could not build for exactly
+# that reason. vcpkg.json is the single source; CI's VCPKG_COMMIT is the one
+# remaining copy, and it fails loudly (every job resolves against it) rather
+# than only on a release tag.
 #
 # pybind11 is NOT built by vcpkg — it comes from pip via [build-system]
 # requires (its vcpkg port would drag in vcpkg's own from-source CPython:
@@ -71,12 +77,15 @@ repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 --only-pl
 # ci.yml's python-bindings job) — the manylinux_2_28 image's default
 # compiler on PATH is gcc-toolset-12 (g++ 12, no <format>), so
 # gcc-toolset-13 is installed and selected explicitly via CC/CXX below.
-before-all = """
+before-all = '''
 dnf install -y curl zip unzip tar git nasm gcc-toolset-13 &&
+VCPKG_BASELINE=$(sed -n 's/.*"builtin-baseline"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' {project}/vcpkg.json) &&
+test -n "$VCPKG_BASELINE" || (echo "could not read builtin-baseline from vcpkg.json" && exit 1) &&
+echo "vcpkg baseline: $VCPKG_BASELINE" &&
 mkdir -p /opt/vcpkg && cd /opt/vcpkg && git init -q &&
 git remote add origin https://github.com/microsoft/vcpkg &&
-git fetch --depth 1 origin 9e593bb18ea69cc5095e012465dcd675a822ed0d &&
+git fetch --depth 1 origin "$VCPKG_BASELINE" &&
 git checkout -q FETCH_HEAD &&
 /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-"""
+'''
 environment = { VCPKG_ROOT = "/opt/vcpkg", CC = "/opt/rh/gcc-toolset-13/root/usr/bin/gcc", CXX = "/opt/rh/gcc-toolset-13/root/usr/bin/g++" }

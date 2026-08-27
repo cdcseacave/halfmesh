@@ -20,6 +20,7 @@
 #include <tiny_gltf.h>
 #include <BS_thread_pool.hpp>
 
+#include "GltfImageCodec.h"
 #include "ParallelFor.h"
 
 #include <algorithm>
@@ -151,6 +152,7 @@ uint8_t PlyChannelU8(const tinyply::PlyData& d, size_t i, bool& narrowed)
 // ---------------------------------------------------------------------------
 Mesh Mesh::ToTexCoordPerVertex() const
 {
+	SyncFacesConst();
 	ASSERT(HasTexture());
 	const size_t newNumVertices = vertices.size() * 4 / 3;
 	Mesh mesh;
@@ -160,13 +162,18 @@ Mesh Mesh::ToTexCoordPerVertex() const
 	mesh.faceTexcoords.reserve(newNumVertices);
 	mesh.faceTexcoords.resize(vertices.size());
 	mesh.faceTexblobs.reserve(newNumVertices);
-	mesh.faceTexblobs.resize(vertices.size(), math::NO_ID);
+	// No fill value, for the same reason faceTexcoords above needs none: a slot
+	// is read only once mapVertices[] marks that vertex seen, and that is the
+	// very branch that writes it. The old math::NO_ID never functioned as a
+	// sentinel here -- it is a uint32 constant, so it silently became 255,
+	// an ordinary blob id, once this array narrowed to TexIndex.
+	mesh.faceTexblobs.resize(vertices.size());
 	// mapVertices[i] is the next vertex in the linked list of vertices
 	// sharing the same position but potentially different texture coordinates
 	std::vector<VIndex> mapVertices(vertices.size(), math::NO_ID);
 	FOREACHIDX (FIndex, idxF, faces) {
 		const Face& face = faces[idxF];
-		const FIndex tb = FTexblob(idxF);
+		const TexIndex tb = FTexblob(idxF);
 		Face& newFace = mesh.faces[idxF];
 		for (int i = 0; i < 3; ++i) {
 			const TexCoord& tc = faceTexcoords[idxF * 3 + i];
@@ -202,7 +209,7 @@ Mesh Mesh::ToTexCoordPerVertex() const
 		}
 	}
 	if (texturesDiffuse.size() == 1)
-		mesh.faceTexblobs = std::vector<FIndex>();
+		mesh.faceTexblobs = std::vector<TexIndex>();
 	mesh.texturesDiffuse = texturesDiffuse;
 	return mesh;
 }
@@ -212,6 +219,7 @@ Mesh Mesh::ToTexCoordPerVertex() const
 // ---------------------------------------------------------------------------
 std::vector<Mesh> Mesh::ToOneMeshPerTexblob() const
 {
+	SyncFacesConst();
 	ASSERT(HasTexture());
 	ASSERT(vertices.size() == faceTexcoords.size());
 	ASSERT(faceTexblobs.empty() || vertices.size() == faceTexblobs.size());
@@ -229,7 +237,7 @@ std::vector<Mesh> Mesh::ToOneMeshPerTexblob() const
 	std::vector<VIndex> mapVertices(vertices.size(), math::NO_ID);
 	for (const Face& face : faces) {
 		ASSERT(faceTexblobs[face[0]] == faceTexblobs[face[1]] && faceTexblobs[face[1]] == faceTexblobs[face[2]]);
-		const FIndex tb = faceTexblobs[face[0]];
+		const TexIndex tb = faceTexblobs[face[0]];
 		Mesh& mesh = meshes[tb];
 		Face newFace;
 		for (int v = 0; v < 3; ++v) {
@@ -369,6 +377,11 @@ bool Mesh::LoadPLY(const std::string& fileName)
 	// native scalar type; narrow/widen where it differs from our fixed layout
 	// (a blind memcpy of e.g. double positions into float slots corrupts the
 	// mesh and overflows the heap).
+	halfMesh.Clear();
+	// A reused Mesh must not keep arrays this file does not replace: every optional
+	// array below is populated only when the PLY carries it, and a leftover one of
+	// the previous mesh's length breaks the empty-or-parallel contract.
+	ReleaseOptional();
 	bool narrowed = false;
 	{
 		this->vertices.resize(vertices->count);
@@ -490,13 +503,31 @@ bool Mesh::LoadPLY(const std::string& fileName)
 		}
 	}
 	if (texnumber) {
-		this->faceTexblobs.resize(texnumber->count);
-		const PlyCopy r = PlyCopyToIndex(*texnumber, reinterpret_cast<uint32_t*>(this->faceTexblobs.data()), texnumber->count);
+		// LoadPLY does not reset the mesh, so drop any ids left over from an
+		// earlier load up front: every bail-out below then leaves the array
+		// empty rather than stale.
+		this->faceTexblobs.clear();
+		// faceTexblobs is a uint8 array, but PLY stores texnumber as a wider
+		// int and PlyCopyToIndex writes 32-bit scalars -- pointing it at the
+		// uint8 buffer would overrun it by 4x. Land the ids in a 32-bit
+		// scratch, then narrow once the range is known to fit.
+		std::vector<uint32_t> texnumbers(texnumber->count);
+		const PlyCopy r = PlyCopyToIndex(*texnumber, texnumbers.data(), texnumber->count);
 		if (r == PlyCopy::Unsupported) {
 			REPORT_WARNING("unsupported texnumber type in {}; ignoring texture ids", fileName);
-			this->faceTexblobs.clear();
 		} else {
 			narrowed = narrowed || r == PlyCopy::Narrowed;
+			const uint32_t maxId = texnumbers.empty()
+			                           ? 0u
+			                           : *std::max_element(texnumbers.begin(), texnumbers.end());
+			if (maxId > MAX_TEXBLOB_ID) {
+				REPORT_WARNING("{}: texnumber {} exceeds the {}-blob limit; ignoring texture ids",
+				               fileName, maxId, MAX_TEXBLOBS);
+			} else {
+				this->faceTexblobs.resize(texnumbers.size());
+				for (size_t i = 0; i < texnumbers.size(); ++i)
+					this->faceTexblobs[i] = static_cast<TexIndex>(texnumbers[i]);
+			}
 		}
 	}
 	if (narrowed)
@@ -512,6 +543,7 @@ bool Mesh::LoadPLY(const std::string& fileName)
 // ---------------------------------------------------------------------------
 bool Mesh::SavePLY(const std::string& fileName, bool binary) const
 {
+	SyncFacesConst();
 	tinyply::PlyFile file;
 	file.add_properties_to_element("vertex", {"x", "y", "z"},
 	                               tinyply::Type::FLOAT32, vertices.size(),
@@ -521,26 +553,37 @@ bool Mesh::SavePLY(const std::string& fileName, bool binary) const
 		                               tinyply::Type::UINT8, vertexColors.size(),
 		                               reinterpret_cast<const uint8_t*>(vertexColors.data()), tinyply::Type::INVALID, 0);
 	}
-	std::vector<Normal> vertexNormals;
-	if (!faceNormals.empty()) {
-		vertexNormals = const_cast<Mesh&>(*this).ComputeVertexNormals();
+	// authored normals win; otherwise derive them from the face normals, as the
+	// only normals a caller can have asked for by populating that cache
+	std::vector<Normal> derived;
+	if (vertexNormals.empty() && !faceNormals.empty())
+		derived = const_cast<Mesh&>(*this).ComputeVertexNormals();
+	const std::vector<Normal>& normals = vertexNormals.empty() ? derived : vertexNormals;
+	if (!normals.empty()) {
 		file.add_properties_to_element("vertex", {"nx", "ny", "nz"},
-		                               tinyply::Type::FLOAT32, vertexNormals.size(),
-		                               reinterpret_cast<const uint8_t*>(vertexNormals.data()), tinyply::Type::INVALID, 0);
+		                               tinyply::Type::FLOAT32, normals.size(),
+		                               reinterpret_cast<const uint8_t*>(normals.data()), tinyply::Type::INVALID, 0);
 	}
 	file.add_properties_to_element("face", {"vertex_indices"},
 	                               tinyply::Type::UINT32, faces.size(),
 	                               reinterpret_cast<const uint8_t*>(faces.data()), tinyply::Type::UINT8, 3);
 	std::vector<TexCoord> normFaceTexcoords;
+	// tinyply keeps the pointer until write(), so this scratch has to outlive
+	// the block below -- declare it out here beside normFaceTexcoords.
+	std::vector<int32_t> texnumbers;
 	if (HasTextureCoordinates()) {
 		normFaceTexcoords = FTexcoordsNormalizeFlipY();
 		file.add_properties_to_element("face", {"texcoord"},
 		                               tinyply::Type::FLOAT32, faces.size(),
 		                               reinterpret_cast<const uint8_t*>(normFaceTexcoords.data()), tinyply::Type::UINT8, 2 * 3);
 		if (!faceTexblobs.empty()) {
+			// The blob ids are uint8 in memory now, but the PLY property stays
+			// INT32 so already-written files and their readers are unaffected;
+			// widen through the scratch rather than changing the on-disk type.
+			texnumbers.assign(faceTexblobs.begin(), faceTexblobs.end());
 			file.add_properties_to_element("face", {"texnumber"},
 			                               tinyply::Type::INT32 /*UINT32 breaks Meshlab*/, faces.size(),
-			                               reinterpret_cast<const uint8_t*>(faceTexblobs.data()), tinyply::Type::INVALID, 0);
+			                               reinterpret_cast<const uint8_t*>(texnumbers.data()), tinyply::Type::INVALID, 0);
 		}
 		const std::vector<int> codecParams{cv::IMWRITE_JPEG_QUALITY, 95};
 		const std::filesystem::path path(
@@ -747,6 +790,24 @@ std::vector<uint32_t> ReadIndices(const tinygltf::Model& model, const tinygltf::
 	return out;
 }
 
+// halfmesh's in-memory frame is z-up; glTF files are y-up by specification, and
+// SaveGLTF states that in the file by putting the z-up -> y-up matrix on the
+// root node.  Seeding the hierarchy walk with the inverse folds the conversion
+// into the same multiply that flattens the node transforms, so it costs
+// nothing per vertex.  Both matrices are signed permutations, so their product
+// is exactly the identity: a mesh written by SaveGLTF reloads bit-identical,
+// not merely within tolerance.
+// Maps (x, y, z) -> (x, -z, y).
+Eigen::Matrix4d YUpToZUp()
+{
+	Eigen::Matrix4d m = Eigen::Matrix4d::Zero();
+	m(0, 0) = 1;
+	m(1, 2) = -1;
+	m(2, 1) = 1;
+	m(3, 3) = 1;
+	return m;
+}
+
 // Node local transform: explicit column-major matrix, or TRS composition.
 Eigen::Matrix4d NodeLocalMatrix(const tinygltf::Node& node)
 {
@@ -770,7 +831,8 @@ Eigen::Matrix4d NodeLocalMatrix(const tinygltf::Node& node)
 	return a.matrix();
 }
 
-// Convert a tinygltf (stb-decoded, 8-bit) image to a BGR cv::Mat; empty on failure.
+// Convert a tinygltf (GltfLoadImageData-decoded, 8-bit) image to a BGR cv::Mat;
+// empty on failure.
 cv::Mat GltfImageToBGR(const tinygltf::Image& gi)
 {
 	if (gi.image.empty() || gi.width <= 0 || gi.height <= 0 || gi.bits != 8)
@@ -797,14 +859,26 @@ cv::Mat GltfImageToBGR(const tinygltf::Image& gi)
 // the node world transforms into the positions, concatenate every triangle
 // primitive of every instanced mesh, and expand the per-vertex UVs into our
 // per-face-corner `faceTexcoords` (faces.size()*3) layout.  Embedded base-color
-// images are decoded (tinygltf links stb_image) and stored as BGR in
+// images are decoded (OpenCV, via the GltfImageCodec callbacks) and stored as BGR in
 // texturesDiffuse; their UVs are converted from glTF-normalized back to our
 // absolute-pixel convention (mirror of SaveGLTF's FTexcoordsNormalize()).
+//
+// Coordinate frame: the returned mesh is z-up, halfmesh's frame everywhere
+// else.  glTF is y-up by specification, so the flattened world-space positions
+// are converted on the way in (see YUpToZUp above).  Save -> Load is therefore
+// an identity, and a y-up file from any other exporter arrives in the frame
+// the rest of the library assumes.  The corollary: a glTF that stores z-up
+// data under an identity node -- which the format does not permit, but some
+// writers emit anyway -- loads rotated.  Such a file has to be corrected by
+// its producer, since nothing in it distinguishes the two cases.
 // ---------------------------------------------------------------------------
 bool Mesh::LoadGLTF(const std::string& fileName)
 {
 	tinygltf::Model model;
 	tinygltf::TinyGLTF loader;
+	// tinygltf is built without stb_image, so it has no image decoder of its
+	// own: install the OpenCV-backed one or every textured file fails to parse.
+	detail::SetGltfImageCodec(loader);
 	std::string err, warn;
 
 	std::string::size_type extPos = fileName.rfind('.');
@@ -821,12 +895,10 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 		return false;
 	}
 
+	halfMesh.Clear();
 	vertices.clear();
 	faces.clear();
-	vertexColors.clear();
-	faceTexcoords.clear();
-	faceTexblobs.clear();
-	texturesDiffuse.clear();
+	ReleaseOptional(); // every optional array is repopulated below, or must stay empty
 
 	// Flatten the node hierarchy into a list of (mesh, world-matrix) instances.
 	struct Instance
@@ -840,7 +912,7 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 		const int sceneIdx = model.defaultScene >= 0 ? model.defaultScene : 0;
 		if (!model.scenes.empty() && sceneIdx < static_cast<int>(model.scenes.size()))
 			for (int root : model.scenes[sceneIdx].nodes)
-				stack.emplace_back(root, Eigen::Matrix4d::Identity());
+				stack.emplace_back(root, YUpToZUp());
 		while (!stack.empty()) {
 			const auto [ni, parent] = stack.back();
 			stack.pop_back();
@@ -853,10 +925,12 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 			for (int child : node.children)
 				stack.emplace_back(child, world);
 		}
-		// No (usable) scene graph: treat every mesh as an identity-placed instance.
+		// No (usable) scene graph: treat every mesh as an identity-placed instance
+		// -- still y-up, since that is what the format specifies regardless of
+		// whether the file bothered to say so with a node.
 		if (instances.empty())
 			for (size_t m = 0; m < model.meshes.size(); ++m)
-				instances.push_back({static_cast<int>(m), Eigen::Matrix4d::Identity()});
+				instances.push_back({static_cast<int>(m), YUpToZUp()});
 	}
 
 	bool anyTexcoords = false;
@@ -937,12 +1011,17 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 				if (tex >= 0 && tex < static_cast<int>(model.textures.size())) {
 					const int img = model.textures[tex].source;
 					if (img >= 0 && img < static_cast<int>(model.images.size())) {
-						if (gltfImageToSlot[img] < 0) {
+						if (gltfImageToSlot[img] < 0 && texturesDiffuse.size() < MAX_TEXBLOBS) {
 							cv::Mat mat = GltfImageToBGR(model.images[img]);
 							if (!mat.empty()) {
 								gltfImageToSlot[img] = static_cast<int>(texturesDiffuse.size());
 								texturesDiffuse.emplace_back(mat);
 							}
+						} else if (gltfImageToSlot[img] < 0) {
+							// Blob ids are uint8; past the cap there is no id left to hand out.
+							// Those faces fall back to blob 0, which is visibly wrong, so say so.
+							REPORT_WARNING("{}: more than {} textures; faces using the extras fall back to texture 0",
+							               fileName, MAX_TEXBLOBS);
 						}
 						slot = gltfImageToSlot[img];
 					}
@@ -987,7 +1066,7 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 	if (maxSlot >= 1) {
 		faceTexblobs.resize(faces.size());
 		FOREACH (f, faces)
-			faceTexblobs[f] = texblobOfFace[f] < 0 ? 0 : static_cast<FIndex>(texblobOfFace[f]);
+			faceTexblobs[f] = texblobOfFace[f] < 0 ? 0 : static_cast<TexIndex>(texblobOfFace[f]);
 	}
 
 	if (anyTexcoords && faceTexcoords.size() == faces.size() * 3) {
@@ -999,6 +1078,10 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 	} else {
 		faceTexcoords.clear();
 	}
+	// COLOR_0 is per primitive, so a file mixing colored and uncolored ones leaves
+	// the array short; the contract is empty-or-parallel, so short means empty.
+	// (NORMAL is not imported: glTF stores it per primitive in the node's local
+	// frame, and halfmesh never fabricates the array -- see Mesh::vertexNormals.)
 	if (!vertexColors.empty() && vertexColors.size() != vertices.size())
 		vertexColors.clear();
 
@@ -1033,6 +1116,7 @@ void ExtendBufferGLTF(const std::vector<T>& src, tinygltf::Buffer& dst,
 // ---------------------------------------------------------------------------
 Mesh Mesh::ToTexCoordPerVertexUVOnly() const
 {
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	ASSERT(faceTexcoords.size() == faces.size() * 3);
 	const size_t newNumVertices = vertices.size() * 4 / 3;
@@ -1075,9 +1159,21 @@ Mesh Mesh::ToTexCoordPerVertexUVOnly() const
 
 // ---------------------------------------------------------------------------
 // SaveGLTF
+//
+// Coordinate frame: writes the vertex buffer in halfmesh's own z-up frame and
+// declares the z-up -> y-up conversion as a matrix on the root node, so the
+// file is spec-conformant y-up and viewers show the model upright.  The
+// rotation lives in the file, never in the buffer; LoadGLTF undoes it.
 // ---------------------------------------------------------------------------
-bool Mesh::SaveGLTF(const std::string& fileName, bool binary) const
+bool Mesh::SaveGLTF(const std::string& fileName, bool binary,
+                    ImageFormat imageFormat, bool embedImages) const
 {
+	SyncFacesConst();
+	// Only consulted when the images are written out separately, but the name
+	// is assigned unconditionally below (see the note there).
+	const std::string stem = std::filesystem::path(fileName).stem().string();
+	const char* const imageMimeType =
+	    imageFormat == ImageFormat::PNG ? "image/png" : "image/jpeg";
 	std::vector<Mesh> meshes;
 	if (HasTexture())
 		meshes = ToTexCoordPerVertex().ToOneMeshPerTexblob();
@@ -1170,13 +1266,19 @@ bool Mesh::SaveGLTF(const std::string& fileName, bool binary) const
 
 			ASSERT(mesh.texturesDiffuse.size() == 1);
 			tinygltf::Image gltfImage;
-			gltfImage.name = "image";
+			// tinygltf builds the output filename from name + the extension it maps
+			// from mimeType, then picks its encoder from that extension -- so
+			// mimeType is what actually selects JPEG vs PNG.  The name must be
+			// unique per blob: with embedImages it goes unused (the pixels land in
+			// a base64 URI), but without it every blob would otherwise write to,
+			// and reference, one and the same file on disc.
+			gltfImage.name = HALFMESH_FORMAT("{}_diffuse{:02}", stem, gltfModel.images.size());
 			gltfImage.width = mesh.texturesDiffuse[0].cols;
 			gltfImage.height = mesh.texturesDiffuse[0].rows;
 			gltfImage.component = 3;
 			gltfImage.bits = 8;
 			gltfImage.pixel_type = TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE;
-			gltfImage.mimeType = "image/jpeg";
+			gltfImage.mimeType = imageMimeType;
 			gltfImage.image.resize(mesh.texturesDiffuse[0].size().area() * 3);
 			cv::cvtColor(mesh.texturesDiffuse[0],
 			             cv::Mat(mesh.texturesDiffuse[0].size(), CV_8UC3, gltfImage.image.data()),
@@ -1252,10 +1354,11 @@ bool Mesh::SaveGLTF(const std::string& fileName, bool binary) const
 	// The root node matrix specifies a column-major z-up to y-up transform.
 	// This transforms the source data into a y-up coordinate system as required
 	// by glTF.
-	const bool applyYUpRotation = true;
-	if (applyYUpRotation) {
-		node.matrix = {1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1};
-	}
+	// Unconditional: the z-up (halfmesh) <-> y-up (glTF) conversion is a fixed
+	// contract, not an option.  LoadGLTF undoes exactly this, so making it
+	// switchable here would let the two sides be configured into disagreement
+	// -- which is the bug this replaced.
+	node.matrix = {1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1};
 	gltfScene.nodes.emplace_back(gltfModel.nodes.size());
 	gltfModel.nodes.emplace_back(std::move(node));
 	gltfModel.meshes.emplace_back(std::move(gltfMesh));
@@ -1266,7 +1369,9 @@ bool Mesh::SaveGLTF(const std::string& fileName, bool binary) const
 	gltfModel.defaultScene = 0;
 
 	tinygltf::TinyGLTF gltf;
-	constexpr bool embedImages = true;
+	// tinygltf is built without stb_image_write, so it has no image encoder of
+	// its own: install the OpenCV-backed one or the textures are dropped.
+	detail::SetGltfImageCodec(gltf);
 	constexpr bool embedBuffers = true;
 	constexpr bool prettyPrint = true;
 	return gltf.WriteGltfSceneToFile(&gltfModel, fileName, embedImages, embedBuffers,
@@ -1278,6 +1383,7 @@ bool Mesh::SaveGLTF(const std::string& fileName, bool binary) const
 // ---------------------------------------------------------------------------
 bool Mesh::Save(const std::string& fileName, bool binary) const
 {
+	SyncFacesConst();
 	const std::string::size_type extPos = fileName.rfind('.');
 	const std::string ext(extPos != fileName.npos ? fileName.substr(extPos) : "");
 	if (ext == ".ply") {
@@ -1355,6 +1461,7 @@ bool Mesh::ExportSeamEdges(std::vector<std::pair<VIndex, VIndex>> seamEdges,
 // ---------------------------------------------------------------------------
 bool Mesh::ExportSeamEdges(const std::string& fileName, bool binary) const
 {
+	SyncFacesConst();
 	ASSERT(halfMesh.vHalfedges.size() == vertices.size());
 	std::vector<uint32_t> facePatchIds;
 	ListTexPatchFaces(facePatchIds);
@@ -1383,6 +1490,7 @@ bool Mesh::ExportSeamEdges(const std::string& fileName, bool binary) const
 // ---------------------------------------------------------------------------
 uint32_t Mesh::ListTexPatchFaces(std::vector<uint32_t>& facePatchIds) const
 {
+	SyncFacesConst();
 	ASSERT(faceTexcoords.size() == faces.size() * 3);
 	ASSERT(halfMesh.vHalfedges.size() == vertices.size());
 	facePatchIds = std::vector<uint32_t>(faces.size(), math::NO_ID);
@@ -1421,6 +1529,7 @@ uint32_t Mesh::ListTexPatchFaces(std::vector<uint32_t>& facePatchIds) const
 // ---------------------------------------------------------------------------
 std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalize() const
 {
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	if (faceTexcoords.size() == faces.size() * 3) {
@@ -1454,6 +1563,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalize() const
 // ---------------------------------------------------------------------------
 std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalizeFlipY() const
 {
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	// Untextured UV-atlas meshes (GenerateAtlas output) already carry normalized
@@ -1501,6 +1611,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalizeFlipY() const
 // ---------------------------------------------------------------------------
 std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalize() const
 {
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	if (faceTexcoords.size() == faces.size() * 3) {
@@ -1534,6 +1645,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalize() const
 // ---------------------------------------------------------------------------
 std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalizeFlipY() const
 {
+	SyncFacesConst();
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	// Exact inverse of FTexcoordsNormalizeFlipY's no-texture path: an untextured

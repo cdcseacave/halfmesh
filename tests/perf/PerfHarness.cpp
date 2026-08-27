@@ -217,6 +217,7 @@ static void record(const std::string& label, double sec, unsigned n)
 constexpr unsigned SMALL_TARGET = 50000;
 constexpr unsigned MED_TARGET = 200000;
 constexpr unsigned LARGE_TARGET = 800000;
+constexpr unsigned TRUCK_TARGET = 5000000;
 
 // Wall-clock upper bound per op on largest mesh (generous: 120 s)
 constexpr double MAX_WALL_SECONDS = 120.0;
@@ -265,6 +266,21 @@ TEST(PerfHarness, Build_800k)
 	EXPECT_LT(dt, MAX_WALL_SECONDS) << "Build_800k blew wall-clock bound";
 }
 
+TEST(PerfHarness, Build_5m)
+{
+	unsigned actual = 0;
+	halfmesh::Mesh m = hmtest::corpus::LargeMesh(TRUCK_TARGET, &actual);
+	halfmesh::HalfMesh hm;
+	const auto t0 = Clock::now();
+	ASSERT_TRUE(hm.Build(m));
+	const double dt = elapsedS(t0);
+	record("Build_5m", dt, actual);
+	std::cout << "  Build_5m: " << dt << " s\n";
+
+	EXPECT_GE(actual, TRUCK_TARGET);
+	EXPECT_LT(dt, MAX_WALL_SECONDS) << "Build_5m blew wall-clock bound";
+}
+
 // ===================== Scaling assertion: Build ============================
 TEST(PerfHarness, ScalingAssertion_Build)
 {
@@ -287,6 +303,66 @@ TEST(PerfHarness, ScalingAssertion_Build)
 	std::cout << "Build scaling exponent alpha ≈ " << alpha << "\n";
 	EXPECT_LT(ratio, 8.0)
 	    << "Build time grew " << ratio << "x for 4x faces — possible O(n^2)";
+}
+
+TEST(PerfHarness, PrebuiltRepairPipelinePerformsZeroBuilds)
+{
+	halfmesh::Mesh mesh = hmtest::corpus::UVSphere(24, 36);
+	mesh.ListHalfEdges();
+	halfmesh::HalfMesh::ResetBuildCount();
+	mesh.RemoveSpuriousComponents(100.f);
+	mesh.RemoveSpikes();
+	mesh.RemoveDegenerateFaces();
+	mesh.RemoveUnreferencedVertices();
+	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 0u);
+	EXPECT_FALSE(mesh.halfMesh.Empty());
+}
+
+TEST(PerfHarness, SimulatedCleanPerformsOneBuildAndOneFaceHarvest)
+{
+	halfmesh::Mesh mesh = hmtest::corpus::UVSphere(16, 24);
+	halfmesh::HalfMesh::ResetBuildCount();
+	halfmesh::HalfMesh::ResetFFacesCount();
+	mesh.BeginHalfEdgePipeline();
+	mesh.RemoveSpuriousComponents(100.f);
+	mesh.RemoveSpikes();
+	mesh.Simplify(0.8f);
+	mesh.CloseHoles();
+	mesh.SmoothTaubin(1);
+	halfmesh::Mesh::RemeshParams params;
+	params.SetEdgeLength(mesh.ComputeMeanEdgeLength());
+	params.iterations = 1;
+	mesh.RemeshIsotropic(params);
+	EXPECT_TRUE(mesh.faces.empty());
+	mesh.EndHalfEdgePipeline();
+
+	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 1u);
+	EXPECT_EQ(halfmesh::HalfMesh::FFacesCount(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
+TEST(PerfHarness, TruckScaleNativeCleaningPerformsOneBuildAndOneFaceHarvest)
+{
+	unsigned actual = 0;
+	halfmesh::Mesh mesh = hmtest::corpus::LargeMesh(TRUCK_TARGET, &actual);
+	halfmesh::HalfMesh::ResetBuildCount();
+	halfmesh::HalfMesh::ResetFFacesCount();
+	const auto t0 = Clock::now();
+	mesh.BeginHalfEdgePipeline();
+	mesh.RemoveSpuriousComponents(100.f);
+	mesh.RemoveSpikes();
+	mesh.CloseHoles();
+	mesh.RemoveUnreferencedVertices();
+	mesh.EndHalfEdgePipeline();
+	const double dt = elapsedS(t0);
+	record("NativeClean_5m", dt, actual);
+	std::cout << "  NativeClean_5m: " << dt << " s\n";
+
+	EXPECT_GE(actual, TRUCK_TARGET);
+	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 1u);
+	EXPECT_EQ(halfmesh::HalfMesh::FFacesCount(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_LT(dt, MAX_WALL_SECONDS);
 }
 
 // ======================== Simplify (50k and 200k) ==========================
@@ -432,6 +508,21 @@ TEST(PerfHarness, CloseHoles_200k)
 }
 
 // ======================== KD-tree build + queries ==========================
+
+TEST(PerfHarness, PrebuiltCloseHolesWithoutFillsPerformsZeroBuilds)
+{
+	unsigned actual = 0;
+	halfmesh::Mesh mesh = hmtest::corpus::LargeMesh(MED_TARGET, &actual);
+	mesh.ListHalfEdges();
+	halfmesh::HalfMesh::ResetBuildCount();
+	const auto t0 = Clock::now();
+	EXPECT_EQ(mesh.CloseHoles(), 0u);
+	const double dt = elapsedS(t0);
+	record("CloseHoles_Prebuild_NoFill", dt, actual);
+	std::cout << "  CloseHoles_Prebuild_NoFill: " << dt << " s\n";
+	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 0u);
+	EXPECT_LT(dt, MAX_WALL_SECONDS);
+}
 // KD-tree speedup assertion: kd-tree queries must be >= 10x faster than brute-force
 TEST(PerfHarness, KdTree_50k_BuildAndQuery)
 {

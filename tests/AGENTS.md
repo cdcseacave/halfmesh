@@ -28,6 +28,13 @@ Per-component unit tests live at the top level: `HalfMeshTest`, `MeshCoreTest`,
 2. **Invariants & accuracy** — `HalfMeshInvariantsTest` (twin/next/orbit, Euler, adjacency
    vs brute force) + `MeshSimplifyTest` accuracy (both modes, watertight/genus preserved,
    no slivers, Hausdorff bound, determinism). Use `halfmesh_metrics`/`halfmesh_corpus`.
+   **Every half-edge-native mutator must be followed by `EXPECT_TRUE(m.ValidateHalfMesh())`**
+   — it harvests the faces, rebuilds a scratch `HalfMesh`, and compares structural
+   invariants and semantic topology (faces, adjacency, boundary loops, counts) against
+   the rebuild. That is O(F log F), so the library itself only asserts the cheap
+   `ValidateInvariants()`; the expensive check lives here. Never compare the raw
+   half-edge arrays after an in-place mutation: edge numbering, face anchors and vertex
+   representatives are canonical only right after a fresh `Build`.
 3. **Golden regression** — `tests/golden/` (current output vs committed frozen fixtures).
 4. **Cross-checks** — `tests/crosscheck/` (libigl; `-DHALFMESH_BUILD_CROSSCHECKS=ON`) and
    `tests/python/` (trimesh + Khronos glTF-Validator; optional/dev, skip-if-absent).
