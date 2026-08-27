@@ -172,22 +172,36 @@ jobs:
 
       - *vcpkg-cache-step
 
-      - name: Configure (ASan + UBSan Debug)
+      # Debug, but at -O1 rather than the default -O0. The build type is what
+      # keeps NDEBUG undefined, and therefore what keeps every
+      # ASSERT(ValidateInvariants()) live -- which is most of what this job
+      # buys after the half-edge representation contract landed. Switching to
+      # RelWithDebInfo to gain the optimizer would define NDEBUG and silently
+      # compile all of that back out, so override the Debug flags instead.
+      # -O0 was costing ~7x: the same 515 tests run in 2m under Release and
+      # ~19m under TSan/RelWithDebInfo (the heavier instrumentation) against
+      # ~2h14m here. -O1 is also what ASan's own documentation recommends.
+      - name: Configure (ASan + UBSan, Debug at -O1)
         run: >
           cmake -S . -B build-san
           -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
           -DHALFMESH_BUILD_TESTS=ON
           -DHALFMESH_SANITIZE=ON
           -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS_DEBUG="-O1 -g"
 
       - name: Build
         run: cmake --build build-san -j
 
+      # -j3, not -j4: the runner has 4 cores but ASan's redzones multiply the
+      # footprint of every concurrent test process. Five tests are 61% of the
+      # suite's serial time (SegmentQuality/Parametrize on the real mesh), so
+      # the packing win is most of what is available here.
       - name: Test (under ASan/UBSan)
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build-san --output-on-failure
+        run: ctest --test-dir build-san -j3 --output-on-failure
 
   # ===========================================================================
   # Job 2b: tsan  [ADVISORY — promote to blocking after first clean runs]
@@ -214,22 +228,32 @@ jobs:
 
       - *vcpkg-cache-step
 
+      # CMAKE_CXX_FLAGS_RELWITHDEBINFO is spelled out to drop the -DNDEBUG that
+      # CMake puts there by default; without this the whole ASSERT family --
+      # including every ASSERT(ValidateInvariants()) -- is compiled out, and
+      # this job was racing the threaded paths with the contract checks
+      # disabled. -UNDEBUG in CMAKE_CXX_FLAGS would not work: CMake appends the
+      # per-config flags after it, so the -DNDEBUG would win.
       - name: Configure (TSan RelWithDebInfo)
         run: >
           cmake -S . -B build-tsan
           -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
           -DHALFMESH_BUILD_TESTS=ON
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g"
           -DCMAKE_CXX_FLAGS="-fsanitize=thread"
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
 
       - name: Build
         run: cmake --build build-tsan -j
 
+      # -j3 for the same reason as the ASan job, and because re-enabling the
+      # assertions above adds work to every mutator exit in a leg that was
+      # already 19 minutes of serial testing.
       - name: Test (under TSan)
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: ctest --test-dir build-tsan --output-on-failure
+        run: ctest --test-dir build-tsan -j3 --output-on-failure
 
   # ===========================================================================
   # Job 2c: valgrind-memcheck  [ADVISORY — promote to blocking after triage]
