@@ -138,8 +138,28 @@ extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
   INT32 for MeshLab compatibility.
 - **glTF** flattens the node hierarchy into world space on load (`POSITION`,
   `TEXCOORD_0`, `COLOR_0`, base-color textures); on save it writes one
-  primitive per texture blob with embedded JPEG textures, `KHR_materials_unlit`
-  and a z-up → y-up root rotation.
+  primitive per texture blob, `KHR_materials_unlit`, and a z-up → y-up root
+  rotation. `SaveGLTF`'s `imageFormat` / `embedImages` choose JPEG or PNG and
+  whether textures ride inside the file or sit beside it.
+- **Coordinate frame** — **halfmesh is z-up in memory; glTF files are y-up**,
+  and the conversion happens at this boundary and nowhere else. `SaveGLTF`
+  writes the vertex buffer in halfmesh's own frame and declares the
+  z-up → y-up rotation as a matrix on the root node; `LoadGLTF` flattens the
+  hierarchy and undoes exactly that. So save → load is an identity (bit-exact:
+  both matrices are signed permutations, so their product is exactly the
+  identity), while viewers still show the model upright because the rotation
+  is in the file. PLY has no such convention and is read and written raw, in
+  halfmesh's frame — which means a PLY and a glTF exported from the same mesh
+  hold *different coordinates on disc*, and agree only once the glTF's node
+  transform is applied.
+
+  The conversion is fixed, not a parameter: a knob would let the two sides be
+  configured into disagreement, which is the defect this contract replaced.
+  A y-up glTF from any exporter therefore lands in halfmesh's frame correctly.
+  The corollary is that a glTF storing z-up data under an identity node — which
+  the format does not permit, but some writers emit anyway — loads rotated;
+  nothing in such a file distinguishes it from a conformant one, so it has to
+  be fixed by its producer.
 - **UV conventions** (worth reading twice): in-memory textured meshes store
   *absolute pixel* UVs with no Y flip; PLY on disk stores normalized+Y-flipped;
   glTF stores `(pixel + 0.5)/size`. The `FTexcoords{Normalize,UnNormalize}[FlipY]`

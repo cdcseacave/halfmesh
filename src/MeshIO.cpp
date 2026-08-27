@@ -782,6 +782,24 @@ std::vector<uint32_t> ReadIndices(const tinygltf::Model& model, const tinygltf::
 	return out;
 }
 
+// halfmesh's in-memory frame is z-up; glTF files are y-up by specification, and
+// SaveGLTF states that in the file by putting the z-up -> y-up matrix on the
+// root node.  Seeding the hierarchy walk with the inverse folds the conversion
+// into the same multiply that flattens the node transforms, so it costs
+// nothing per vertex.  Both matrices are signed permutations, so their product
+// is exactly the identity: a mesh written by SaveGLTF reloads bit-identical,
+// not merely within tolerance.
+// Maps (x, y, z) -> (x, -z, y).
+Eigen::Matrix4d YUpToZUp()
+{
+	Eigen::Matrix4d m = Eigen::Matrix4d::Zero();
+	m(0, 0) = 1;
+	m(1, 2) = -1;
+	m(2, 1) = 1;
+	m(3, 3) = 1;
+	return m;
+}
+
 // Node local transform: explicit column-major matrix, or TRS composition.
 Eigen::Matrix4d NodeLocalMatrix(const tinygltf::Node& node)
 {
@@ -835,6 +853,15 @@ cv::Mat GltfImageToBGR(const tinygltf::Image& gi)
 // images are decoded (tinygltf links stb_image) and stored as BGR in
 // texturesDiffuse; their UVs are converted from glTF-normalized back to our
 // absolute-pixel convention (mirror of SaveGLTF's FTexcoordsNormalize()).
+//
+// Coordinate frame: the returned mesh is z-up, halfmesh's frame everywhere
+// else.  glTF is y-up by specification, so the flattened world-space positions
+// are converted on the way in (see YUpToZUp above).  Save -> Load is therefore
+// an identity, and a y-up file from any other exporter arrives in the frame
+// the rest of the library assumes.  The corollary: a glTF that stores z-up
+// data under an identity node -- which the format does not permit, but some
+// writers emit anyway -- loads rotated.  Such a file has to be corrected by
+// its producer, since nothing in it distinguishes the two cases.
 // ---------------------------------------------------------------------------
 bool Mesh::LoadGLTF(const std::string& fileName)
 {
@@ -877,7 +904,7 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 		const int sceneIdx = model.defaultScene >= 0 ? model.defaultScene : 0;
 		if (!model.scenes.empty() && sceneIdx < static_cast<int>(model.scenes.size()))
 			for (int root : model.scenes[sceneIdx].nodes)
-				stack.emplace_back(root, Eigen::Matrix4d::Identity());
+				stack.emplace_back(root, YUpToZUp());
 		while (!stack.empty()) {
 			const auto [ni, parent] = stack.back();
 			stack.pop_back();
@@ -890,10 +917,12 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 			for (int child : node.children)
 				stack.emplace_back(child, world);
 		}
-		// No (usable) scene graph: treat every mesh as an identity-placed instance.
+		// No (usable) scene graph: treat every mesh as an identity-placed instance
+		// -- still y-up, since that is what the format specifies regardless of
+		// whether the file bothered to say so with a node.
 		if (instances.empty())
 			for (size_t m = 0; m < model.meshes.size(); ++m)
-				instances.push_back({static_cast<int>(m), Eigen::Matrix4d::Identity()});
+				instances.push_back({static_cast<int>(m), YUpToZUp()});
 	}
 
 	bool anyTexcoords = false;
@@ -1118,6 +1147,11 @@ Mesh Mesh::ToTexCoordPerVertexUVOnly() const
 
 // ---------------------------------------------------------------------------
 // SaveGLTF
+//
+// Coordinate frame: writes the vertex buffer in halfmesh's own z-up frame and
+// declares the z-up -> y-up conversion as a matrix on the root node, so the
+// file is spec-conformant y-up and viewers show the model upright.  The
+// rotation lives in the file, never in the buffer; LoadGLTF undoes it.
 // ---------------------------------------------------------------------------
 bool Mesh::SaveGLTF(const std::string& fileName, bool binary,
                     ImageFormat imageFormat, bool embedImages) const
@@ -1308,10 +1342,11 @@ bool Mesh::SaveGLTF(const std::string& fileName, bool binary,
 	// The root node matrix specifies a column-major z-up to y-up transform.
 	// This transforms the source data into a y-up coordinate system as required
 	// by glTF.
-	const bool applyYUpRotation = true;
-	if (applyYUpRotation) {
-		node.matrix = {1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1};
-	}
+	// Unconditional: the z-up (halfmesh) <-> y-up (glTF) conversion is a fixed
+	// contract, not an option.  LoadGLTF undoes exactly this, so making it
+	// switchable here would let the two sides be configured into disagreement
+	// -- which is the bug this replaced.
+	node.matrix = {1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1};
 	gltfScene.nodes.emplace_back(gltfModel.nodes.size());
 	gltfModel.nodes.emplace_back(std::move(node));
 	gltfModel.meshes.emplace_back(std::move(gltfMesh));

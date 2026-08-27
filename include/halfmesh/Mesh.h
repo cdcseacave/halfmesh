@@ -140,6 +140,20 @@ class Mesh
 
 	// import/export PLY/GLTF mesh
 	// Load dispatches on the file extension: .ply -> LoadPLY, .glb/.gltf -> LoadGLTF
+	//
+	// Coordinate frame. halfmesh is z-up in memory, everywhere, always. glTF is
+	// y-up by specification, so the conversion happens at the glTF boundary and
+	// nowhere else: SaveGLTF writes z-up vertices and declares the z-up -> y-up
+	// rotation as a matrix on the root node; LoadGLTF flattens the node
+	// hierarchy and then undoes it. Save -> Load is bit-exact (both matrices
+	// are signed permutations, so the product is exactly the identity), and
+	// viewers still show the model upright because the rotation is in the file.
+	// PLY has no such convention and is read and written raw, in halfmesh's
+	// frame. The conversion is fixed, not a parameter -- a knob would let the
+	// two sides be configured into disagreement, which is the defect this
+	// contract replaced. A y-up glTF from any exporter therefore lands in the
+	// library's frame correctly; a glTF carrying z-up data under an identity
+	// node (non-conformant, but some writers emit it) loads rotated.
 	bool Load(const std::string& fileName);
 	bool LoadPLY(const std::string& fileName);
 	bool LoadGLTF(const std::string& fileName);

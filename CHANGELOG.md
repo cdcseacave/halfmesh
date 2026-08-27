@@ -125,6 +125,24 @@ harvest; `tests/perf` asserts both counts.
   copied — peak footprint is the larger mesh plus one array instead of both at
   once — and the halfmesh->MVS side also drops the half-edge structure and the
   incident-face cache.
+- **glTF save → load is now an identity.** `SaveGLTF` has always written the
+  vertex buffer in halfmesh's z-up frame and put the z-up → y-up rotation on
+  the root node, but `LoadGLTF` applied that node matrix like any other and
+  returned the mesh rotated 90° about X — so the library could not read back
+  what it had just written, and glTF was unusable as a lossless interchange
+  format. `LoadGLTF` now converts back to z-up after flattening the hierarchy.
+  The rotation stays in the *file*, so exports remain upright in Blender,
+  three.js and Cesium.
+
+  **halfmesh is z-up in memory and its glTF files are y-up** is now a stated
+  contract (`Mesh::Load` header comment, `docs/FEATURES.md`) rather than
+  something implied by a `const bool` inside `SaveGLTF`. It is fixed, not
+  selectable — a knob would let the two sides be configured into disagreement.
+  **A y-up glTF from any exporter now loads correctly; a glTF carrying z-up
+  data under an identity node — non-conformant, but emitted by some writers,
+  including openMVS's own pre-halfmesh exporter — will load rotated and must be
+  corrected by its producer.** PLY is unaffected: it has no up-axis convention
+  and is still read and written raw.
 - **vcpkg `builtin-baseline` advanced** to `0ac8df3b98e3afcd8bf075fa74a6bd2c32613345`
   (2026-08-24), which carries the corrected `tinygltf` 3.0.0#1 archive hash.
   `vcpkg-overlay-ports/` (the tinygltf hotfix plus a local-source `halfmesh`
