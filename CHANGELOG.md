@@ -107,6 +107,24 @@ harvest; `tests/perf` asserts both counts.
   `BeginHalfEdgePipeline` to avoid the per-call harvest.
 - Atlas packing: `PackAtlas` and the fit-to-resolution probe run through the
   shared packer; behavior matches 0.2.0.
+- **`faceTexblobs` is `std::vector<Mesh::TexIndex>` (uint8)** rather than
+  `FIndex`, matching openMVS's `MVS::Mesh::TexIndex` — whose texture list is
+  indexed by that same type, so 255 blobs was always the ceiling. The array is
+  4x smaller and `ConvertMesh` becomes a straight copy in both directions;
+  `Mesh::MAX_TEXBLOBS` spells out where the limit comes from, and `LoadGLTF`
+  now caps and says so instead of silently folding the extra textures onto
+  blob 0. The PLY on-disc property stays `int32`, so existing files and their
+  readers are unaffected.
+- **`Mesh::SaveGLTF` takes `imageFormat` and `embedImages`**, defaulted to the
+  previous embedded-JPEG behavior; `Mesh::ImageFormat` maps onto the glTF
+  mimeType, which is what tinygltf picks its encoder from. Non-embedded images
+  are named per blob (`<stem>_diffuse<NN>`, matching `SavePLY`) instead of
+  every blob overwriting and referencing one `image` file.
+- **openMVS interop gained consuming overloads.** `ConvertMesh` now has an
+  rvalue form in each direction that frees every source array as soon as it is
+  copied — peak footprint is the larger mesh plus one array instead of both at
+  once — and the halfmesh->MVS side also drops the half-edge structure and the
+  incident-face cache.
 - **vcpkg `builtin-baseline` advanced** to `0ac8df3b98e3afcd8bf075fa74a6bd2c32613345`
   (2026-08-24), which carries the corrected `tinygltf` 3.0.0#1 archive hash.
   `vcpkg-overlay-ports/` (the tinygltf hotfix plus a local-source `halfmesh`
@@ -268,5 +286,6 @@ Initial release.
   UV-atlas and remeshing benchmarks (`HALFMESH_BUILD_BENCH`), ASan+UBSan
   (`HALFMESH_SANITIZE`), and verbose atlas diagnostics (`HALFMESH_ATLAS_DEBUG`).
 
+[0.3.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.1.0

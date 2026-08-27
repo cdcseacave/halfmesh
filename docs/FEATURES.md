@@ -86,7 +86,7 @@ std::vector<Face>     faces;          // Eigen::Matrix<uint32_t,3,1>
 std::vector<Pixel>    vertexColors;   // BGR uint8, per vertex (optional, see below)
 std::vector<Normal>   faceNormals;    // per-face cache (optional)
 std::vector<TexCoord> faceTexcoords;  // per corner (faces*3) or per vertex
-std::vector<FIndex>   faceTexblobs;   // per-face texture id (optional)
+std::vector<TexIndex> faceTexblobs;   // per-face texture id, uint8 (optional)
 std::vector<Image3u>  texturesDiffuse;// one cv::Mat_<Pixel> per texture blob
 HalfMesh halfMesh;                    // optional connectivity (built on demand)
 ```
@@ -486,8 +486,13 @@ compiled only when `<MVS/Mesh.h>` is on the include path (a no-op otherwise):
 `ConvertMesh(const MVS::Mesh&, halfmesh::Mesh&)` and the reverse transfer
 geometry, per-vertex colors, per-face normals, per-corner UVs, per-face
 texture indices and diffuse textures between the two libraries with zero
-build-time coupling. openMVS's per-vertex normals have no halfmesh
-counterpart and are not transferred.
+build-time coupling.
+
+Each direction also has an rvalue overload — `ConvertMesh(MVS::Mesh&&, ...)`
+and `ConvertMesh(halfmesh::Mesh&&, ...)` — that frees every source array as
+soon as it is copied, so a large conversion peaks at the larger mesh plus one
+array rather than holding both representations at once. openMVS's per-vertex
+normals have no halfmesh counterpart and are not transferred.
 
 ## Utilities
 
