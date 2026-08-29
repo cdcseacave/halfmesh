@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0]
+
+### Failure-localized repair carve, fold-rescue slits, always-on merge blacklist, per-size padding — all opt-in, defaults unchanged
+
+- **Repair carve** (§6.1, `ParametrizeParams::repairCarveRings`, opt-in,
+  default `0`): a folding chart is first split by carving off the faces
+  within N `TopoNeighbor` rings of the diagnosed failure — one small extra
+  chart instead of a blind-PCA-bisection cascade — falling back to bisection
+  when the failure isn't localized (region ≥ half the chart). The
+  termination guarantee is unchanged.
+- **Fold-rescue slits** (§6.2, `ParametrizeParams::foldRescueSlits`, opt-in,
+  default `0`): a folding chart is cut from its worst interior vertex to the
+  boundary and re-flattened, up to N times, before any split — the chart
+  ships as ONE chart with one extra seam instead of ≥2 padded rects. Lives
+  inside `FlattenChart` so the repair verdict and the shipped map agree on
+  every path, exactly the `cutToDisk` contract.
+- **Post-repair merge fold-blacklist** (§6.3, always on, no knob): a
+  candidate pair that demonstrably re-folds after merging is memoized (keyed
+  by the two sides' smallest global face ids, invariant under relabelling)
+  so later merge rounds never retry it — removes accepted-then-resplit
+  churn from the post-repair merge↔repair rounds.
+- **Triangle coverage metric** (`AtlasResult::coverage`): the fraction of the
+  texel budget actually under UV geometry, as opposed to `occupancy`
+  (padded-rect fill, which reads high with many small charts). Exposed via
+  `atlasbench` and the Python `unwrap()` return dict.
+- **Per-size padding** (§6.5, `AtlasParams::tinyChartSide` /
+  `debrisChartFaces`, opt-in, both default `0`/off): charts under an
+  unpadded-bbox-side or face-count trigger get a 1-texel gutter instead of
+  the uniform `padding`, so a uniform gutter stops being a multiplicative
+  tax on exactly the charts that matter least. Packing-only — never changes
+  the chart partition.
+- **`atlasbench` CLI**: `--repair-carve-rings`, `--fold-rescue-slits`,
+  `--tiny-chart-side`, `--debris-chart-faces` flags forwarding to the knobs
+  above.
+- **Python**: `unwrap()` gains `repair_carve_rings`, `fold_rescue_slits`,
+  `tiny_chart_side`, `debris_chart_faces` keyword args, same pattern as the
+  0.3.1 knobs, defaults `0`/`0.0` matching the C++ defaults (behavior
+  preserving).
+- **Defaults unchanged.** A measurement sweep (`docs/BENCHMARKS.md` §4) on
+  the one mesh available on the development machine (`tests/data/mesh.ply`;
+  no Truck-class mesh — the spec §7 success-criterion mesh class — was
+  available there) found `repairCarveRings=2` + `foldRescueSlits=2` combined
+  measured *worse* than either knob alone (real flipped triangles and a
+  ~200 000× symmetric-Dirichlet blowup, not just a chart-count trade), and
+  carve-ring sensitivity is non-monotonic. `repairCarveRings` and
+  `foldRescueSlits` stay `0` (off); the padding knobs stay opt-in. **No
+  golden re-freeze** — `tests/golden/` fixtures are unaffected. The Truck-class
+  sweep remains to be run on a machine that has that data (spec §7).
+
 ## [0.3.1]
 
 ### Python: segmentation knobs on `unwrap()` + padding-default fix
