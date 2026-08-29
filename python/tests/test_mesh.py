@@ -123,6 +123,54 @@ def test_unwrap_accepts_segmentation_knobs(tmp_path):
     assert unwrapped.has_texcoords
 
 
+def test_unwrap_accepts_repair_and_padding_knobs(tmp_path):
+    """The 0.4.0 knobs (repair carve / fold-rescue slits / per-size padding)
+    are keyword-addressable and keep the atlas valid, with defaults matching
+    the C++ ParametrizeParams/AtlasParams defaults (all off/0).
+
+    A cube is developable and tiny, so these knobs cannot change its chart
+    count much -- this pins the argument names and value plumbing, not the
+    segmentation/packing behavior (docs/BENCHMARKS.md section 4 covers the
+    measured sweep and why the defaults stayed off).
+    """
+    v, f = _cube_arrays()
+    src = str(tmp_path / "cube.ply")
+    hm.Mesh.from_arrays(v, f).save(src)
+
+    out_default = str(tmp_path / "cube_uv_default.ply")
+    meta_default = hm.unwrap(src, out_default, resolution=1024, padding=2)
+
+    out = str(tmp_path / "cube_uv.ply")
+    meta = hm.unwrap(
+        src,
+        out,
+        resolution=1024,
+        padding=2,
+        repair_carve_rings=2,
+        fold_rescue_slits=2,
+        tiny_chart_side=8.0,
+        debris_chart_faces=100,
+    )
+    assert meta["charts"] >= 1
+    # Defaults (all knobs 0/off) must reproduce the same result as omitting
+    # them entirely -- the new keyword args are additive, not order-sensitive.
+    meta_explicit_default = hm.unwrap(
+        src,
+        str(tmp_path / "cube_uv_explicit_default.ply"),
+        resolution=1024,
+        padding=2,
+        repair_carve_rings=0,
+        fold_rescue_slits=0,
+        tiny_chart_side=0.0,
+        debris_chart_faces=0,
+    )
+    assert meta_explicit_default == meta_default
+
+    unwrapped = hm.Mesh()
+    unwrapped.load(out)
+    assert unwrapped.has_texcoords
+
+
 def test_unwrap_raises_on_missing_input(tmp_path):
     with pytest.raises(RuntimeError):
         hm.unwrap(str(tmp_path / "nope.ply"), str(tmp_path / "out.ply"))

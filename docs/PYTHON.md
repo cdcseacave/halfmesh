@@ -164,7 +164,7 @@ array ops above.
 - `has_texcoords: bool` — whether the mesh carries per-face-corner UVs
   (read-only).
 
-### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0) -> dict`
+### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0, repair_carve_rings=0, fold_rescue_slits=0, tiny_chart_side=0.0, debris_chart_faces=0) -> dict`
 
 File-based UV-atlas generation: load `input_path` → weld/clean prelude
 (`RemoveDuplicateVertices` + `RemoveDegenerateFaces` +
@@ -189,6 +189,30 @@ re-deriving it at the Python boundary.
   (`ParametrizeParams::developableMaxUvDistortion`); `0` disables, on-values
   must exceed the 4.0 isometry floor (4.4 is the sane setting). See
   `docs/BENCHMARKS.md` §4 for the attribution matrix of these knobs.
+- `repair_carve_rings` — failure-localized repair split
+  (`ParametrizeParams::repairCarveRings`): `0` disables (the default — blind
+  PCA bisection of folding charts); when `> 0`, a folding chart is first split
+  by carving off the faces within this many `TopoNeighbor` rings of the
+  diagnosed failure, falling back to PCA bisection when the failure isn't
+  localized. `2` is the sane on-value. **Default `0` (off)** — see
+  `docs/BENCHMARKS.md` §4 for the Task 9 sweep and why it stayed off.
+- `fold_rescue_slits` — fold-rescue slit count
+  (`ParametrizeParams::foldRescueSlits`): `0` disables (the default); when
+  `> 0`, a folding chart is slit from its worst interior vertex to the
+  boundary and re-flattened, up to this many times, instead of being split
+  into multiple charts. `2` is the sane on-value. **Default `0` (off)** —
+  combined with `repair_carve_rings` this measured *worse* than either knob
+  alone on the one mesh available for the Task 9 sweep (see
+  `docs/BENCHMARKS.md` §4); do not enable both without re-checking that
+  sweep on your mesh.
+- `tiny_chart_side` — per-size padding trigger, max unpadded chart bounding
+  side in texels (`AtlasParams::tinyChartSide`): charts at or under this size
+  get a 1-texel gutter instead of `padding`. `0` disables (the default).
+  Packing-only — never changes the chart partition.
+- `debris_chart_faces` — per-size padding trigger, chart face-count
+  (`AtlasParams::debrisChartFaces`): charts with this many faces or fewer get
+  a 1-texel gutter instead of `padding`. `0` disables (the default).
+  Packing-only — never changes the chart partition.
 
 Returns a `dict`:
 
