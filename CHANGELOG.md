@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1]
+
+### Python: segmentation knobs on `unwrap()` + padding-default fix
+
+- `unwrap()` gains `max_cone_error` (→ `ParametrizeParams::developableMaxConeError`),
+  `cut_to_disk` (→ `cutToDisk`) and `max_uv_distortion`
+  (→ `developableMaxUvDistortion`), all behavior-preserving by default.
+  `cut_to_disk` is the chart-count reducer on hole-riddled MVS meshes.
+- The binding's `padding` default drops 4 → 2, matching `AtlasParams::padding`.
+  The binding was silently overriding the documented C++ default; the doubled
+  gutter cost a texture consumer 1.26 dB of bake PSNR at 4096² (bug fix, not a
+  tuning change).
+
 ## [0.3.0]
 
 ### Half-edge–primary mesh processing
