@@ -343,6 +343,17 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 // under the flip repair to begin with), so this real mesh — which measurably
 // engages both the repair wave and the carve path — is where the invariants
 // are checked against a partition carve actually shaped.
+//
+// Extended (Task 6, §6.2) with two more knob combinations on the SAME
+// baseline (nBase) and mesh copy pattern — foldRescueSlits alone, then
+// combined with repairCarveRings — one extra detail::SegmentCharts
+// invocation per combination, no extra baseline recomputation. Real,
+// build-stable evidence that the rescue mechanism actually engages on this
+// mesh lives in tests/FlattenTest.cpp's
+// FoldRescueSlitRescuesAtLeastOneRealMeshChart (measured: 3 of 133 charts
+// folding under the pre-repair segmentation get rescued); this test instead
+// pins the aggregate, end-to-end property — the shipped chart count with the
+// knob(s) on can only match or improve vs. the shipped default.
 TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 {
 	Mesh mesh;
@@ -365,4 +376,35 @@ TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 	ExpectValidPartition(fcCarve, nCarve, meshC.faces.size());
 	EXPECT_TRUE(AllChartsConnectedTopo(meshC, fcCarve, nCarve))
 	    << "the carve-produced partition must still be topo-connected per chart";
+
+	// §6.2 curvature-slit fold rescue: same one-extra-SegmentCharts-call pattern
+	// as the carve run above, reusing nBase as the baseline (no second baseline
+	// recomputation). A rescued chart ships as ONE chart with an extra seam
+	// instead of being split, so — like the carve knob — this can only match or
+	// reduce the final chart count.
+	halfmesh::ParametrizeParams slits;
+	slits.foldRescueSlits = 2;
+	std::vector<unsigned> fcSlits;
+	Mesh meshS = mesh;
+	const unsigned nSlits = halfmesh::SegmentCharts(meshS, slits, fcSlits);
+	std::printf("[segment-quality] slits: nBase=%u nSlits=%u\n", nBase, nSlits);
+	EXPECT_LE(nSlits, nBase); // the whole point; equality allowed (no rescuable folds → no change)
+	ExpectValidPartition(fcSlits, nSlits, meshS.faces.size());
+	EXPECT_TRUE(AllChartsConnectedTopo(meshS, fcSlits, nSlits))
+	    << "the slit-rescue partition must still be topo-connected per chart";
+
+	// Both knobs together (§6.1 carve + §6.2 slit compose — see
+	// Parametrize.CarveAndFoldRescueSlitsKeepsPartitionContracts): one more
+	// SegmentCharts call, same baseline reuse.
+	halfmesh::ParametrizeParams both;
+	both.repairCarveRings = 2;
+	both.foldRescueSlits = 2;
+	std::vector<unsigned> fcBoth;
+	Mesh meshCS = mesh;
+	const unsigned nBoth = halfmesh::SegmentCharts(meshCS, both, fcBoth);
+	std::printf("[segment-quality] carve+slits: nBase=%u nBoth=%u\n", nBase, nBoth);
+	EXPECT_LE(nBoth, nBase);
+	ExpectValidPartition(fcBoth, nBoth, meshCS.faces.size());
+	EXPECT_TRUE(AllChartsConnectedTopo(meshCS, fcBoth, nBoth))
+	    << "the carve+slit-rescue partition must still be topo-connected per chart";
 }

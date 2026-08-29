@@ -30,6 +30,13 @@
 
 #include "Corpus.h"
 
+// Internal Module A<->B bridge header (src/ on this target's include path — see
+// tests/CMakeLists.txt): brings in the cache-aware detail::SegmentCharts /
+// detail::ParametrizeCharts overloads + detail::ChartFlattenCache the
+// public-path equivalence test below calls directly (mirrors
+// tests/FlattenTest.cpp's / tests/AtlasTest.cpp's use of the same header).
+#include "ChartFlattenCache.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -307,6 +314,58 @@ TEST(Parametrize, CarveRingsKeepsPartitionContracts)
 	    << "the carve knob must not break the flip-free guarantee";
 }
 
+// §6.2 curvature-slit fold rescue (foldRescueSlits > 0) must preserve every
+// partition contract the split-only repair does: validity, topo-connectivity,
+// the flip-free guarantee. Same fixture as the tests above — the rescue only
+// changes what happens INSIDE FlattenChart before the repair's fold verdict,
+// never the segmentation/repair invariants. (This fixture does not exercise
+// the rescue mechanism itself — MakeWavyGrid(10,10) segments to a single chart
+// that never even folds, per Task 5's own review finding for the analogous
+// carve knob — so this is a knob-doesn't-corrupt smoke test; the real
+// engagement coverage is tests/FlattenTest.cpp's
+// FoldRescueSlitRescuesAtLeastOneRealMeshChart and
+// tests/SegmentQualityTest.cpp's mesh.ply runs.)
+TEST(Parametrize, FoldRescueSlitsKeepsPartitionContracts)
+{
+	Mesh m = MakeWavyGrid(10, 10);
+	m.ListHalfEdges();
+	m.ComputeFaceNormals();
+
+	ParametrizeParams params;
+	params.foldRescueSlits = 2;
+	std::vector<unsigned> fc;
+	const unsigned n = SegmentCharts(m, params, fc);
+
+	ExpectValidPartition(fc, n, m.faces.size());
+	EXPECT_GE(n, 1u);
+	EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n));
+	EXPECT_EQ(CountFlattenFlips(m, fc, n, params), 0)
+	    << "the fold-rescue-slit knob must not break the flip-free guarantee";
+}
+
+// Both §6.1 (repairCarveRings) and §6.2 (foldRescueSlits) knobs together: they
+// compose (carve/bisect splits a chart the repair rejects; the slit rescue
+// runs INSIDE FlattenChart before that verdict is even reached) — same
+// partition contracts must hold with both on at once.
+TEST(Parametrize, CarveAndFoldRescueSlitsKeepsPartitionContracts)
+{
+	Mesh m = MakeWavyGrid(10, 10);
+	m.ListHalfEdges();
+	m.ComputeFaceNormals();
+
+	ParametrizeParams params;
+	params.repairCarveRings = 2;
+	params.foldRescueSlits = 2;
+	std::vector<unsigned> fc;
+	const unsigned n = SegmentCharts(m, params, fc);
+
+	ExpectValidPartition(fc, n, m.faces.size());
+	EXPECT_GE(n, 1u);
+	EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n));
+	EXPECT_EQ(CountFlattenFlips(m, fc, n, params), 0)
+	    << "carve + fold-rescue-slit together must not break the flip-free guarantee";
+}
+
 // ---------------------------------------------------------------------------
 // mesh.ply: realistic sanity — valid, connected, FLIP-FREE, a reasonable count,
 // and the count responds to the cone-error budget (tighter ⇒ at least as many).
@@ -582,6 +641,45 @@ TEST(Parametrize, ShippedChartsAreGloballyInjective)
 		}
 		ASSERT_GT(totalCovered, 0) << name;
 		EXPECT_LE(totalOverlap, totalCovered / 1000) << name;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §6.2 public-path equivalence: the fold-rescue slit mutates the chart's
+// ChartMesh (CutAlongEdges duplicates vertices) INSIDE FlattenChart, so the
+// repair's cached-verdict path (detail::ChartFacesFold -> ChartFlattenCache)
+// and the public no-cache path (SegmentCharts -> ParametrizeCharts, which
+// re-runs FlattenChart from scratch on a cache miss) must reproduce the
+// IDENTICAL cut + reflatten sequence and hence bitwise-identical output — the
+// cutToDisk contract this task's brief calls out explicitly. Uses SaddleFan:
+// this equivalence holds regardless of whether the rescue actually succeeds
+// in eliminating SaddleFan's fold (it doesn't — see
+// tests/FlattenTest.cpp's FoldRescueSlitRescuesAtLeastOneRealMeshChart for why
+// and for a fixture where it does) — both paths run the SAME deterministic
+// attempt-cut-reflatten loop on the SAME input and must therefore agree.
+// ---------------------------------------------------------------------------
+TEST(Parametrize, RescueSlitPublicPathMatchesCachedPipeline)
+{
+	Mesh mesh = hmtest::corpus::SaddleFan();
+	halfmesh::ParametrizeParams params;
+	params.foldRescueSlits = 2;
+	// Public two-call path (no flatten cache):
+	Mesh meshA = mesh;
+	std::vector<unsigned> fcA;
+	const unsigned nA = halfmesh::SegmentCharts(meshA, params, fcA);
+	halfmesh::ParametrizeCharts(meshA, fcA, nA, params);
+	// Cached pipeline path (GenerateAtlas without pack interference — call the
+	// detail pair directly, mirroring GenerateAtlas):
+	Mesh meshB = mesh;
+	std::vector<unsigned> fcB;
+	halfmesh::detail::ChartFlattenCache cache;
+	const unsigned nB = halfmesh::detail::SegmentCharts(meshB, params, fcB, &cache);
+	halfmesh::detail::ParametrizeCharts(meshB, fcB, nB, params, &cache);
+	ASSERT_EQ(nA, nB);
+	ASSERT_EQ(meshA.faceTexcoords.size(), meshB.faceTexcoords.size());
+	for (size_t i = 0; i < meshA.faceTexcoords.size(); ++i) {
+		EXPECT_EQ(meshA.faceTexcoords[i].x(), meshB.faceTexcoords[i].x()) << i;
+		EXPECT_EQ(meshA.faceTexcoords[i].y(), meshB.faceTexcoords[i].y()) << i;
 	}
 }
 

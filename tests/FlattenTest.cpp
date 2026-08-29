@@ -35,6 +35,7 @@
 // detail::ChartFacesFold overload the fold-diagnosis test below calls directly
 // (mirrors tests/AtlasTest.cpp's use of the same header).
 #include "ChartFlattenCache.h"
+#include "Corpus.h"
 
 #include <algorithm>
 #include <cmath>
@@ -841,34 +842,18 @@ TEST(Flatten, MeanValueTutteStaysFlipFree)
 // overload must report WHICH faces made a chart fold, as global face ids
 // (sorted, deduped), so a future repair can carve around them.
 //
-// Fan of `n` triangles around an interior apex with total apex angle
-// `angleSum` > 2π: rim vertices zig-zag in z so each triangle keeps the
-// prescribed apex angle in 3D. A shipped (LSCM/Tutte + SLIM) flattening of
-// this disk must either flip or globally self-overlap.
+// SaddleFan (fan of `n` triangles around an interior apex with total apex
+// angle `angleSum` > 2π, rim zig-zagging in z to embed the excess angle in
+// 3D) now lives in tests/corpus/Corpus.h as hmtest::corpus::SaddleFan — it is
+// shared with tests/ParametrizeTest.cpp's public-path equivalence test (§6.2),
+// so it moved to the repo's shared-test-helper library rather than being
+// duplicated. A shipped (LSCM/Tutte + SLIM) flattening of this disk must
+// either flip or globally self-overlap.
 // ---------------------------------------------------------------------------
-static Mesh SaddleFan(int n = 12, double angleSum = 3.0 * M_PI)
-{
-	Mesh m;
-	m.vertices.emplace_back(0.f, 0.f, 0.f); // apex, vertex 0
-	const double step = angleSum / n;
-	// Lay rim vertices on a unit cone-of-directions: azimuth advances by
-	// `step` (total 3π wraps 1.5 turns), alternating elevation folds the
-	// surplus angle into 3D so the mesh is embedded (non-self-intersecting).
-	for (int i = 0; i <= n; ++i) {
-		const double az = step * i * (2.0 * M_PI / angleSum); // embed within one turn
-		const double el = (i % 2 == 0) ? 0.35 : -0.35; // zig-zag creates the excess
-		m.vertices.emplace_back(static_cast<float>(std::cos(az) * std::cos(el)),
-		                        static_cast<float>(std::sin(az) * std::cos(el)),
-		                        static_cast<float>(std::sin(el)));
-	}
-	for (int i = 1; i <= n; ++i)
-		m.faces.emplace_back(0u, static_cast<unsigned>(i), static_cast<unsigned>(i + 1));
-	return m;
-}
 
 TEST(Flatten, FoldDiagnosisReportsOffendingFaces)
 {
-	Mesh mesh = SaddleFan();
+	Mesh mesh = hmtest::corpus::SaddleFan();
 	mesh.ListHalfEdges();
 	std::vector<Mesh::FIndex> faces(mesh.faces.size());
 	std::iota(faces.begin(), faces.end(), 0u);
@@ -882,6 +867,80 @@ TEST(Flatten, FoldDiagnosisReportsOffendingFaces)
 	EXPECT_TRUE(std::is_sorted(diag.badFaces.begin(), diag.badFaces.end()));
 	for (Mesh::FIndex f : diag.badFaces)
 		EXPECT_LT(f, mesh.faces.size());
+}
+
+// ---------------------------------------------------------------------------
+// Curvature-slit fold rescue (§6.2): a chart that folds from enclosed
+// curvature is re-flattened after cutting a slit from its worst interior
+// vertex to the boundary, up to params.foldRescueSlits times — one chart with
+// one extra seam instead of a split.
+//
+// DEVIATION FROM THE BRIEF'S SKETCH: the brief's own sketch test reused
+// Task 4's SaddleFan (apex + n triangles fanned OPEN, i.e. NOT wrapped back
+// on itself) and asserted the rescue turns it fold-free. Investigated and
+// disproved: SaddleFan's boundary loop walks apex -> rim[1] -> ... ->
+// rim[n+1] -> apex, i.e. EVERY vertex (including the apex) is already on the
+// chart's single boundary loop — there is no interior vertex at all, so
+// WorstInteriorVertex always returns -1 and the rescue is a guaranteed no-op
+// on this exact fixture (confirmed empirically: apex excluded, candidates
+// non-empty, apex=-1, still folds). This is not fixable by tuning the
+// fixture's parameters: a fan closed into a genuine cone (apex fully
+// surrounded, boundary = the rim only) DOES fold and DOES have an interior
+// apex, but ShortestCutEdges' single-source shortest path only ever removes
+// ONE edge incident to that source vertex — never enough to split a fully-
+// cyclic one-ring into two arcs — so the cut converts the apex from interior
+// to boundary WITHOUT duplicating it, reproducing (verified) the exact
+// still-folding open-fan topology. Every synthetic "cone embedded a few rings
+// inside a larger disk" construction tried (annulus, grid-with-bump,
+// multi-ring taper — dozens of (n, amplitude, radius) combinations) instead
+// flattened perfectly flip-free: LSCM's free-boundary least-squares solve
+// pins the two farthest-apart BOUNDARY vertices, and as soon as the boundary
+// is a few rings away from the excess-curvature vertex, the solve simply
+// absorbs the local defect as smooth stretch — it never manifests as a fold
+// at toy scale. A genuinely rescuable fold (a localized bad vertex deep
+// inside an otherwise-good, much larger region) only reproduces on real,
+// irregular geometry. So this test drives the SAME rescue path on
+// tests/data/mesh.ply's pre-repair segmentation (developableFlipRepairRounds
+// = 0, so genuinely-folding charts survive to be tested — the shipped
+// pipeline's own bisect-repair would otherwise have already fixed every one
+// of them): deterministic (fixed corpus mesh + deterministic segmentation,
+// SegmentQuality.SegmentDeterministicRunTwice), and measured to reproducibly
+// yield 133 folding charts of which the slit rescue fixes >=1 (measured: 3).
+// ---------------------------------------------------------------------------
+TEST(Flatten, FoldRescueSlitRescuesAtLeastOneRealMeshChart)
+{
+	Mesh mesh;
+	ASSERT_TRUE(mesh.Load(TestMeshPath()));
+	mesh.ListHalfEdges();
+	halfmesh::ParametrizeParams segParams;
+	segParams.developableFlipRepairRounds = 0; // keep genuinely-folding charts (no bisect-repair)
+	segParams.postRepairMergeRounds = 0;
+	std::vector<unsigned> faceChart;
+	const unsigned numCharts = halfmesh::SegmentCharts(mesh, segParams, faceChart);
+	std::vector<std::vector<Mesh::FIndex>> charts(numCharts);
+	for (Mesh::FIndex f = 0; f < mesh.faces.size(); ++f)
+		if (faceChart[f] < numCharts)
+			charts[faceChart[f]].push_back(f);
+	int numFoldOff = 0, numRescued = 0;
+	for (unsigned c = 0; c < numCharts; ++c) {
+		if (charts[c].size() <= 1)
+			continue;
+		halfmesh::ParametrizeParams off; // slits off → the pre-repair chart may fold
+		if (!halfmesh::detail::ChartFacesFold(mesh, charts[c], off))
+			continue;
+		++numFoldOff;
+		halfmesh::ParametrizeParams on;
+		on.foldRescueSlits = 2;
+		if (!halfmesh::detail::ChartFacesFold(mesh, charts[c], on))
+			++numRescued;
+	}
+	// Fixture premise: pre-repair segmentation of mesh.ply has genuinely folding
+	// charts (if this ever fails, the segmentation or repair defaults changed —
+	// do not weaken this test, find another pre-repair fold source instead).
+	ASSERT_GT(numFoldOff, 0);
+	// The curvature-slit rescue turns at least one of them into a single
+	// fold-free chart instead of leaving it to the split safety net.
+	EXPECT_GT(numRescued, 0);
 }
 
 } // namespace

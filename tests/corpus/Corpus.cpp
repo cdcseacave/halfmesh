@@ -524,6 +524,34 @@ halfmesh::Mesh LargeMesh(unsigned targetFaces, unsigned* actualFaces)
 }
 
 // ============================================================
+// FOLD-INDUCING FIXTURES
+// ============================================================
+
+// n triangles fanned around apex (vertex 0); rim wraps angleSum radians of
+// azimuth while a zig-zag elevation embeds the excess angle in 3D so the
+// mesh stays embedded (non-self-intersecting) — see Corpus.h for the
+// fold-under-shipped-flatten premise this fixture relies on.
+halfmesh::Mesh SaddleFan(int n, double angleSum)
+{
+	halfmesh::Mesh m;
+	m.vertices.emplace_back(0.f, 0.f, 0.f); // apex, vertex 0
+	const double step = angleSum / n;
+	// Lay rim vertices on a unit cone-of-directions: azimuth advances by
+	// `step` (total 3π wraps 1.5 turns), alternating elevation folds the
+	// surplus angle into 3D so the mesh is embedded (non-self-intersecting).
+	for (int i = 0; i <= n; ++i) {
+		const double az = step * i * (2.0 * M_PI / angleSum); // embed within one turn
+		const double el = (i % 2 == 0) ? 0.35 : -0.35; // zig-zag creates the excess
+		m.vertices.emplace_back(static_cast<float>(std::cos(az) * std::cos(el)),
+		                        static_cast<float>(std::sin(az) * std::cos(el)),
+		                        static_cast<float>(std::sin(el)));
+	}
+	for (int i = 1; i <= n; ++i)
+		AddFace(m, 0u, static_cast<uint32_t>(i), static_cast<uint32_t>(i + 1));
+	return m;
+}
+
+// ============================================================
 // DIRTY MESH SYNTHESIZERS
 // ============================================================
 

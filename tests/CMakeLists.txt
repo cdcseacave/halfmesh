@@ -215,7 +215,12 @@ target_link_libraries(mesh_holes_test PRIVATE
 halfmesh_discover_tests(mesh_holes_test)
 
 # parametrize_test: D-Charts chart segmentation
+# Needs src/ on the include path for ChartFlattenCache.h: the public-path
+# equivalence test (§6.2) reaches the cache-aware detail::SegmentCharts /
+# detail::ParametrizeCharts overloads directly (no public header — mirrors
+# atlas_test/flatten_test's src/ include).
 add_executable(parametrize_test ParametrizeTest.cpp)
+target_include_directories(parametrize_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(parametrize_test PRIVATE
     GTest::gtest
     GTest::gtest_main
@@ -228,11 +233,13 @@ halfmesh_discover_tests(parametrize_test)
 # Needs src/ on the include path for ChartFlattenCache.h: the fold-diagnosis
 # test reaches detail::FoldDiagnosis + the 5-arg detail::ChartFacesFold overload
 # directly (no public header — mirrors atlas_test/internals_test's src/ include).
+# Links halfmesh_corpus for the shared fold-rescue fixture (hmtest::corpus::SaddleFan).
 add_executable(flatten_test FlattenTest.cpp)
 target_include_directories(flatten_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(flatten_test PRIVATE
     GTest::gtest
     GTest::gtest_main
+    halfmesh_corpus
     halfmesh::halfmesh
 )
 halfmesh_discover_tests(flatten_test)

@@ -21,6 +21,7 @@
 #include <halfmesh/Mesh.h>
 #include <halfmesh/HalfMesh.h>
 
+#include <cmath> // M_PI (SaddleFan default angleSum)
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -99,6 +100,21 @@ KnownTopology TorusMesh_Known(unsigned majorSegs, unsigned minorSegs);
 // Large mesh: fine UV sphere with ~targetFaces faces (for perf tests).
 // Returns actual face count in actualFaces (written by the function).
 halfmesh::Mesh LargeMesh(unsigned targetFaces, unsigned* actualFaces = nullptr);
+
+// ============================================================
+// FOLD-INDUCING FIXTURES
+// ============================================================
+
+// Saddle fan: n triangles fanned around an interior apex (vertex 0) whose
+// rim wraps `angleSum` radians of azimuth (> 2π by default) while a zig-zag
+// elevation embeds the excess angle in 3D (non-self-intersecting). The apex's
+// angle-sum exceeds 2π (a saddle point / enclosed negative curvature), which
+// folds under a shipped SLIM/ARAP flatten — used by the flatten fold-rescue
+// tests (Flatten/Parametrize suites). Fixture premise: SaddleFan(12, 3π)
+// folds under the shipped flatten (measured: 10/12 faces flagged) — if this
+// ever stops folding, raise the zig-zag amplitude / angleSum, do not weaken
+// the tests that rely on it.
+halfmesh::Mesh SaddleFan(int n = 12, double angleSum = 3.0 * M_PI);
 
 // ============================================================
 // UV GROUND-TRUTH HELPERS FOR DEVELOPABLE GENERATORS

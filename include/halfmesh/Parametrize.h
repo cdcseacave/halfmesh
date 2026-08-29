@@ -161,6 +161,19 @@ struct ParametrizeParams
 	// sliver), so the hard flip-free guarantee is preserved.
 	bool cutToDisk = false;
 
+	// Fold-rescue slits (0 = off, the default). When > 0 and the flattened
+	// chart folds (flipped triangles or global self-overlap), FlattenChart
+	// cuts a slit from the worst interior vertex (largest quantized angle
+	// defect; among fold-incident vertices when the failure is localized) to
+	// the boundary and re-flattens, up to this many times — the chart ships
+	// as ONE chart with one extra seam instead of being split into ≥2 padded
+	// rects. Deterministic pure function of the chart geometry, so the repair
+	// verdict and the shipped map agree on every path (the cutToDisk
+	// contract). Charts still folding after the last slit fall through to the
+	// repair's carve/bisect safety net — the flip-free guarantee holds. 2 is
+	// the sane on-value.
+	unsigned foldRescueSlits = 0;
+
 	// Per-chart UV flattening method. After a Tutte (convex-boundary Laplacian)
 	// injective initialization, the chart UVs are refined by a local/global solver:
 	//   - ARAP (Liu 2008): per-triangle closest-rotation fit + constant
