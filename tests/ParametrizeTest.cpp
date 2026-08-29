@@ -283,6 +283,30 @@ TEST(Parametrize, DistanceTermKeepsPartitionContracts)
 	    << "distance term must not break the flip-free guarantee";
 }
 
+// §6.1 failure-localized carve (repairCarveRings > 0) must preserve every
+// partition contract the blind-bisection repair does: validity, topo-connectivity,
+// the flip-free guarantee. Same fixture as WavyGridFlipFree/DistanceTermKeeps...
+// above — carving is an alternate split strategy inside the same repair loop, so
+// it can only ever change WHICH pieces a folding chart is split into, never the
+// invariants the loop enforces.
+TEST(Parametrize, CarveRingsKeepsPartitionContracts)
+{
+	Mesh m = MakeWavyGrid(10, 10);
+	m.ListHalfEdges();
+	m.ComputeFaceNormals();
+
+	ParametrizeParams params;
+	params.repairCarveRings = 2;
+	std::vector<unsigned> fc;
+	const unsigned n = SegmentCharts(m, params, fc);
+
+	ExpectValidPartition(fc, n, m.faces.size());
+	EXPECT_GE(n, 1u);
+	EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n));
+	EXPECT_EQ(CountFlattenFlips(m, fc, n, params), 0)
+	    << "the carve knob must not break the flip-free guarantee";
+}
+
 // ---------------------------------------------------------------------------
 // mesh.ply: realistic sanity — valid, connected, FLIP-FREE, a reasonable count,
 // and the count responds to the cone-error budget (tighter ⇒ at least as many).

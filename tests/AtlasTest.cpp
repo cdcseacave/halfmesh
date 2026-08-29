@@ -29,8 +29,13 @@
 // detail::SegmentCharts overload the stats test below calls directly.
 #include "ChartFlattenCache.h"
 
+// Test mesh corpus (hmtest::corpus): GridPlane feeds the carve-seam test below
+// (halfmesh_corpus is linked for this target — see tests/CMakeLists.txt).
+#include "Corpus.h"
+
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <limits>
@@ -44,6 +49,12 @@ namespace detail {
 // Test seam: 3-arg fold verdict (defined in src/Parametrize.cpp).
 bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
                     const ParametrizeParams& params);
+// Test seam (§6.1, defined in src/AtlasCharting.cpp): delegate to
+// CarveFailureRegion with a default-params SegmentState built from `mesh`.
+// Mirrors the ComputeSegmentationSeeds seam pattern below.
+bool CarveFailureRegionForTest(Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
+                               const std::vector<Mesh::FIndex>& badFaces, unsigned rings,
+                               std::vector<Mesh::FIndex>& A, std::vector<Mesh::FIndex>& B);
 } // namespace detail
 } // namespace halfmesh
 
@@ -1513,6 +1524,34 @@ TEST(SegmentCharts, SegmentationStatsPopulatedOnChallengeMesh)
 		EXPECT_GE(r.merges, r.dirtyCharts ? 1u : 0u);
 		EXPECT_LE(r.resplitCharts, r.dirtyCharts);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Test — §6.1 failure-localized carve seam (detail::CarveFailureRegionForTest,
+// defined in src/AtlasCharting.cpp): on a 20x20 grid, carving 2 TopoNeighbor
+// rings around one corner face must produce {small local region, the rest},
+// covering every face exactly once. A non-localized failure (every face is
+// "bad") must fall back (return false) — the repair then uses BisectFaces.
+// ---------------------------------------------------------------------------
+TEST(AtlasTest, CarveFailureRegionSplitsAroundBadFaces)
+{
+	Mesh mesh = hmtest::corpus::GridPlane(20);
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> faces(mesh.faces.size());
+	std::iota(faces.begin(), faces.end(), 0u);
+	const std::vector<Mesh::FIndex> bad = {0u}; // one corner face
+	std::vector<Mesh::FIndex> A, B;
+	ASSERT_TRUE(detail::CarveFailureRegionForTest(mesh, faces, bad, 2u, A, B));
+	EXPECT_FALSE(A.empty());
+	EXPECT_FALSE(B.empty());
+	EXPECT_EQ(A.size() + B.size(), faces.size());
+	// A contains the bad face and stays local: within 2 rings of one corner
+	// face of a large grid, far fewer than half the faces.
+	EXPECT_NE(std::find(A.begin(), A.end(), 0u), A.end());
+	EXPECT_LT(A.size(), faces.size() / 4);
+	// Not-localized failure falls back (returns false): bad = every face.
+	std::vector<Mesh::FIndex> A2, B2;
+	EXPECT_FALSE(detail::CarveFailureRegionForTest(mesh, faces, faces, 2u, A2, B2));
 }
 
 TEST(RectPacking, UsesCvRectsAndPreservesInputOrder)

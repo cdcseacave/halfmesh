@@ -120,6 +120,16 @@ struct ParametrizeParams
 	// 0 restores the pre-2026-08 behavior.
 	unsigned postRepairMergeRounds = 2;
 
+	// Failure-localized repair splitting (0 = off, the default: blind PCA
+	// bisection, the current behavior). When > 0, a folding chart is first
+	// split by carving off the faces within this many TopoNeighbor rings of
+	// the offending triangles (the FoldDiagnosis), so one localized failure
+	// costs ONE small extra chart instead of a bisection cascade; the carve
+	// falls back to the PCA bisection when the failure is not localized
+	// (region ≥ half the chart) — the termination guarantee is unchanged.
+	// 2 is the sane on-value.
+	unsigned repairCarveRings = 0;
+
 	// Distortion-bounded split (0 disables — the default; flip-only repair, the
 	// current SOTA behavior). When > 0 it is a symmetric-Dirichlet cap τ that
 	// EXTENDS the flip-repair: a chart that is flip-FREE but whose SHIPPED map

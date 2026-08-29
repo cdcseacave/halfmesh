@@ -1131,6 +1131,96 @@ void BisectFaces(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
 	}
 }
 
+// Is `region` a single topo-connected blob (edges staying inside `region`)?
+// Shared by CarveFailureRegion to confirm BOTH the carved-off piece and what
+// remains are each one connected blob, not a scatter of fragments — the
+// property its own bisection-vs-cascade trade-off assumes (see below).
+bool IsTopoConnected(const SegmentState& s, const std::unordered_set<Mesh::FIndex>& region)
+{
+	if (region.empty())
+		return true;
+	std::unordered_set<Mesh::FIndex> visited;
+	std::queue<Mesh::FIndex> q;
+	const Mesh::FIndex seed = *region.begin();
+	visited.insert(seed);
+	q.push(seed);
+	while (!q.empty()) {
+		const Mesh::FIndex f = q.front();
+		q.pop();
+		for (HIndex he : s.hm.FAdjacentHalfedges(f)) {
+			const FIndex nb = s.TopoNeighbor(he);
+			if (nb != NONE && region.count(nb) && visited.insert(nb).second)
+				q.push(nb);
+		}
+	}
+	return visited.size() == region.size();
+}
+
+// Carve the failure out of a folding chart: A = the faces within `rings`
+// TopoNeighbor hops of any offending face (the FoldDiagnosis), B = the rest.
+// One localized failure then costs one small chart, where the PCA bisection
+// halves the chart and cascades. Returns false — caller falls back to
+// BisectFaces — when the failure is not localized (region ≥ half the chart,
+// or A/B are not each a single topo-connected blob — see below) or a side
+// would be empty; the repair's termination argument is untouched because
+// every successful carve still yields strictly smaller pieces.
+bool CarveFailureRegion(const SegmentState& s, const std::vector<Mesh::FIndex>& faces,
+                        const std::vector<Mesh::FIndex>& badFaces, unsigned rings,
+                        std::vector<Mesh::FIndex>& A, std::vector<Mesh::FIndex>& B)
+{
+	if (badFaces.empty() || badFaces.size() * 2 >= faces.size())
+		return false;
+	std::unordered_set<Mesh::FIndex> inChart(faces.begin(), faces.end());
+	std::unordered_map<Mesh::FIndex, unsigned> depth; // face -> BFS ring
+	std::queue<Mesh::FIndex> q;
+	for (Mesh::FIndex f : badFaces) // sorted by contract → deterministic seed order
+		if (inChart.count(f) && depth.emplace(f, 0u).second)
+			q.push(f);
+	if (depth.empty())
+		return false;
+	while (!q.empty()) {
+		const Mesh::FIndex f = q.front();
+		q.pop();
+		const unsigned d = depth[f];
+		if (d >= rings)
+			continue;
+		for (HIndex he : s.hm.FAdjacentHalfedges(f)) {
+			const FIndex nb = s.TopoNeighbor(he);
+			if (nb != NONE && inChart.count(nb) && depth.emplace(nb, d + 1u).second)
+				q.push(nb);
+		}
+	}
+	if (depth.size() * 2 >= faces.size())
+		return false; // not localized — the blind bisection handles it better
+	// Both pieces must themselves be single connected blobs — this method
+	// carves off THE (singular) neighborhood containing the failure, not a
+	// scatter of disjoint ring-islands around a widespread diagnosis, and not
+	// an ear that snakes through the chart and severs the remainder. Either
+	// would hand the caller's ConnectedComponents many fragments from ONE
+	// "carve" — exactly the cascade this method exists to avoid — so decline
+	// (fall back to BisectFaces) the same as a non-localized failure. Measured
+	// on the challenge fixture: without this guard a scattered diagnosis
+	// averages ~10 components per carve and the final chart count regresses
+	// above the blind-bisection baseline; with it, carve measurably beats
+	// bisection (SegmentQualityTest.cpp, CarveNeverIncreasesChartCountOnChallengeMesh).
+	std::unordered_set<Mesh::FIndex> aSet;
+	aSet.reserve(depth.size());
+	for (const auto& kv : depth)
+		aSet.insert(kv.first);
+	if (!IsTopoConnected(s, aSet))
+		return false;
+	std::unordered_set<Mesh::FIndex> bSet;
+	bSet.reserve(faces.size() - depth.size());
+	for (Mesh::FIndex f : faces)
+		if (!depth.count(f))
+			bSet.insert(f);
+	if (!IsTopoConnected(s, bSet))
+		return false;
+	for (Mesh::FIndex f : faces) // faces sorted → A and B stay sorted
+		(depth.count(f) ? A : B).push_back(f);
+	return !A.empty() && !B.empty();
+}
+
 unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params,
                                 std::vector<unsigned>& chart, unsigned numCharts,
                                 detail::ChartFlattenCache* cache,
@@ -1195,10 +1285,14 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 		// (cut ChartMesh + UVs) in this wave's slot for ParametrizeCharts to reuse.
 		std::vector<char> folds(fn, 0);
 		std::vector<detail::ChartFlattenSlot> slots(cache != nullptr ? fn : std::size_t{0});
+		// Per-wave fold-diagnosis slots (§6.1): allocated only when the carve knob
+		// is on, so an off caller pays zero cost (empty vector, nullptr passed
+		// below). Disjoint slot per frontier index — same write discipline as folds/slots.
+		std::vector<detail::FoldDiagnosis> diags(params.repairCarveRings > 0 ? fn : std::size_t{0});
 		pool.detach_blocks(std::size_t{0}, fn, [&](std::size_t begin, std::size_t end) {
 			for (std::size_t i = begin; i < end; ++i) {
 				const unsigned c = frontier[i];
-				if (fl[c].size() > 2 && detail::ChartFacesFold(mesh, fl[c], params, cache != nullptr ? &slots[i] : nullptr))
+				if (fl[c].size() > 2 && detail::ChartFacesFold(mesh, fl[c], params, cache != nullptr ? &slots[i] : nullptr, params.repairCarveRings > 0 ? &diags[i] : nullptr))
 					folds[i] = 1; // ≤2 faces cannot fold → skip the flatten
 			}
 		});
@@ -1218,7 +1312,21 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 			}
 			const unsigned c = frontier[i];
 			std::vector<Mesh::FIndex> A, B;
-			BisectFaces(mesh, fl[c], A, B);
+			// §6.1 failure-localized carve: try carving off the small neighborhood
+			// around the fold diagnosis first — one localized failure then costs
+			// ONE small extra chart instead of the PCA bisection's binary-tree
+			// cascade. Falls back to the unconditional bisect when the knob is off,
+			// there is no diagnosis (chart folded via the safety-net path), or the
+			// carve itself declines (failure not localized — see CarveFailureRegion).
+			bool carved = false;
+			if (params.repairCarveRings > 0 && !diags[i].badFaces.empty())
+				carved = CarveFailureRegion(s, fl[c], diags[i].badFaces,
+				                            params.repairCarveRings, A, B);
+			if (!carved) {
+				A.clear();
+				B.clear();
+				BisectFaces(mesh, fl[c], A, B);
+			}
 			if (A.empty() || B.empty())
 				continue;
 			std::vector<std::vector<Mesh::FIndex>> comps = ConnectedComponents(s, A, mark);
@@ -1447,6 +1555,25 @@ std::vector<Mesh::FIndex> ComputeSegmentationSeeds(Mesh& mesh, const Parametrize
 	    std::lround(static_cast<float>(numRegions) * params.seedExtraMult));
 	AddFarthestSeeds(s, seeds, extra);
 	return seeds;
+}
+
+// Test-only seam (not in any public header — declared by AtlasTest with an extern
+// forward declaration): delegate to CarveFailureRegion (§6.1) with a
+// default-params SegmentState built from `mesh`. Mirrors ComputeSegmentationSeeds
+// above exactly (SyncFaces/ListHalfEdges/ComputeFaceNormals, then Precompute).
+bool CarveFailureRegionForTest(Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
+                               const std::vector<Mesh::FIndex>& badFaces, unsigned rings,
+                               std::vector<Mesh::FIndex>& A, std::vector<Mesh::FIndex>& B)
+{
+	mesh.SyncFaces();
+	if (mesh.halfMesh.Empty())
+		mesh.ListHalfEdges();
+	if (mesh.faceNormals.size() != mesh.faces.size())
+		mesh.ComputeFaceNormals();
+	const ParametrizeParams params;
+	SegmentState s(mesh, params);
+	Precompute(s);
+	return CarveFailureRegion(s, faces, badFaces, rings, A, B);
 }
 } // namespace detail
 

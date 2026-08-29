@@ -241,11 +241,13 @@ halfmesh_discover_tests(flatten_test)
 # Needs src/ on the include path for ChartFlattenCache.h: the segmentation-stats
 # test reaches detail::SegmentCharts's cache-aware overload + AtlasSegmentStats
 # directly (no public header — mirrors internals_test/mesh_io_test's src/ include).
+# Links halfmesh_corpus for the carve-seam test (hmtest::corpus::GridPlane).
 add_executable(atlas_test AtlasTest.cpp)
 target_include_directories(atlas_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(atlas_test PRIVATE
     GTest::gtest
     GTest::gtest_main
+    halfmesh_corpus
     halfmesh::halfmesh
 )
 halfmesh_discover_tests(atlas_test)

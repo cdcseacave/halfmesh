@@ -243,3 +243,25 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 	Measure("UVSphere-off", sphere, off);
 	Measure("UVSphere-on", sphere, on);
 }
+
+// §6.1 failure-localized carve: a property, not exact counts (build-flag
+// sensitive — see file header). Carving a folding chart into {small local
+// region, the rest} instead of blindly PCA-bisecting it can only ever match or
+// reduce the final chart count on a real mesh: a localized failure that used
+// to cascade into several bisection fragments now costs one extra chart.
+TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
+{
+	Mesh mesh;
+	if (!mesh.Load(TestMeshPath())) {
+		GTEST_SKIP() << "tests/data/mesh.ply not found";
+	}
+	halfmesh::ParametrizeParams base; // bisect (default)
+	halfmesh::ParametrizeParams carve;
+	carve.repairCarveRings = 2;
+	std::vector<unsigned> fcBase, fcCarve;
+	Mesh meshB = mesh, meshC = mesh;
+	const unsigned nBase = halfmesh::SegmentCharts(meshB, base, fcBase);
+	const unsigned nCarve = halfmesh::SegmentCharts(meshC, carve, fcCarve);
+	std::printf("[segment-quality] carve: nBase=%u nCarve=%u\n", nBase, nCarve);
+	EXPECT_LE(nCarve, nBase); // the whole point; equality allowed (no folds → no carves)
+}
