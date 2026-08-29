@@ -198,6 +198,7 @@ Returns a `dict`:
 | `pages` | number of atlas pages the charts were packed into |
 | `width`, `height` | final atlas page dimensions in texels |
 | `occupancy` | fraction of atlas area covered by charts, `[0, 1]` (0 only for a degenerate empty atlas) |
+| `coverage` | fraction of the texel budget under actual UV triangles, `[0, 1]` — the honest density number (`occupancy` is padded-rect fill and reads far higher with many small charts) |
 | `fit_attempts` | number of fit-to-resolution packing probes it took to fit the target page size |
 | `vertices`, `faces` | vertex/face counts of the (welded) output mesh |
 

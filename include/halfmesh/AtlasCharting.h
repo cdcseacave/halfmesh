@@ -201,6 +201,13 @@ struct AtlasResult
 	unsigned height = 0; // page height in texels
 	unsigned numPages = 1; // number of atlas pages (>1 on multi-atlas overflow)
 	float occupancy = 0.f; // packed chart area (with padding) / total atlas area [0,1]
+	// TRIANGLE coverage: Σ(UV triangle areas in final normalized atlas space) /
+	// numPages ∈ [0,1] — the fraction of the texel budget actually under
+	// geometry. `occupancy` above is PADDED-RECT occupancy: it contains the
+	// per-chart bbox waste and the padding tax, so with many small charts it
+	// reads high (~0.8) while coverage can be 4–13× lower. Consumers choosing an
+	// atlas resolution for a target texel density must use THIS number.
+	float coverage = 0.f;
 	// fit-to-resolution probe packs performed (0 = fitToResolution off). A
 	// converging fit takes 1-2; values near the internal cap (8) mean the
 	// shrink loop struggled — a diagnosability hook for huge chart counts.

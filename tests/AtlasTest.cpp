@@ -1184,6 +1184,50 @@ TEST(GenerateAtlas, ExplicitDensityOverflowsToMultiPage)
 }
 
 // ---------------------------------------------------------------------------
+// Test 11b — GenerateAtlas reports true triangle coverage (§6.4): rect
+// occupancy (~0.82 by construction of the fit solve) is blind to per-chart
+// bbox waste and the padding tax, so consumers sizing an atlas resolution
+// from occupancy alone overestimate texel density. Cross-checked against a
+// direct triangle-area integral of the final, normalized output UVs (no
+// rasterization needed).
+// ---------------------------------------------------------------------------
+TEST(GenerateAtlas, ReportsTriangleCoverage)
+{
+	const std::string path = TestMeshPath();
+	if (!std::filesystem::exists(path))
+		GTEST_SKIP() << "mesh.ply not found at " << path;
+
+	Mesh mesh;
+	ASSERT_TRUE(mesh.Load(path)) << "Failed to load " << path;
+	ASSERT_FALSE(mesh.faces.empty());
+
+	ParametrizeParams pparams;
+	pparams.flattenIterations = 3; // fast for tests
+
+	AtlasParams aparams;
+	aparams.resolution = 256;
+
+	const AtlasResult result = GenerateAtlas(mesh, pparams, aparams);
+
+	// Triangle coverage: real texels under UV triangles. Always positive for a
+	// non-degenerate atlas, never above the padded-rect occupancy (rects contain
+	// their triangles plus padding), never above 1.
+	EXPECT_GT(result.coverage, 0.f);
+	EXPECT_LE(result.coverage, result.occupancy + 1e-3f);
+	EXPECT_LE(result.coverage, 1.f);
+
+	// Cross-check against a direct rasterization-free integral of the output UVs.
+	double tri = 0.0;
+	for (size_t fi = 0; fi < mesh.faces.size(); ++fi) {
+		const auto& t0 = mesh.faceTexcoords[fi * 3 + 0];
+		const auto& t1 = mesh.faceTexcoords[fi * 3 + 1];
+		const auto& t2 = mesh.faceTexcoords[fi * 3 + 2];
+		tri += 0.5 * std::abs(double(t1.x() - t0.x()) * (t2.y() - t0.y()) - double(t2.x() - t0.x()) * (t1.y() - t0.y()));
+	}
+	EXPECT_NEAR(result.coverage, static_cast<float>(tri / result.numPages), 1e-4f);
+}
+
+// ---------------------------------------------------------------------------
 // Test 12 — cache parity: Parametrize()'s shared flip-repair -> flatten cache
 // (src/ChartFlattenCache.h, the GenerateAtlas call site ~src/AtlasCharting.cpp:1417
 // and the lookup/consume site ~src/Parametrize.cpp:2042-2095) must be perfectly

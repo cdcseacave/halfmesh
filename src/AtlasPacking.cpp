@@ -970,6 +970,21 @@ AtlasResult PackAtlas(Mesh& mesh,
 		}
 	}
 
+	// True triangle coverage of the final map (see AtlasResult::coverage).
+	double triArea = 0.0;
+	for (size_t fi = 0; fi < nf; ++fi) {
+		if (faceChart[fi] >= numCharts)
+			continue;
+		const TexCoord& t0 = mesh.faceTexcoords[fi * 3 + 0];
+		const TexCoord& t1 = mesh.faceTexcoords[fi * 3 + 1];
+		const TexCoord& t2 = mesh.faceTexcoords[fi * 3 + 2];
+		triArea += 0.5 * std::abs(static_cast<double>(t1.x() - t0.x()) * (t2.y() - t0.y())
+		                          - static_cast<double>(t2.x() - t0.x()) * (t1.y() - t0.y()));
+	}
+	result.coverage = (numPages > 0)
+	                      ? std::min(1.f, static_cast<float>(triArea / numPages))
+	                      : 0.f;
+
 	return result;
 }
 
