@@ -645,18 +645,19 @@ TEST(Parametrize, ShippedChartsAreGloballyInjective)
 }
 
 // ---------------------------------------------------------------------------
-// §6.2 public-path equivalence: the fold-rescue slit mutates the chart's
-// ChartMesh (CutAlongEdges duplicates vertices) INSIDE FlattenChart, so the
-// repair's cached-verdict path (detail::ChartFacesFold -> ChartFlattenCache)
-// and the public no-cache path (SegmentCharts -> ParametrizeCharts, which
-// re-runs FlattenChart from scratch on a cache miss) must reproduce the
-// IDENTICAL cut + reflatten sequence and hence bitwise-identical output — the
-// cutToDisk contract this task's brief calls out explicitly. Uses SaddleFan:
-// this equivalence holds regardless of whether the rescue actually succeeds
-// in eliminating SaddleFan's fold (it doesn't — see
-// tests/FlattenTest.cpp's FoldRescueSlitRescuesAtLeastOneRealMeshChart for why
-// and for a fixture where it does) — both paths run the SAME deterministic
-// attempt-cut-reflatten loop on the SAME input and must therefore agree.
+// §6.2 public-path equivalence, the DECLINES-to-cut path: on SaddleFan,
+// WorstInteriorVertex returns -1 on the very first rescue attempt (every
+// vertex, including the apex, is already on the chart's one boundary loop —
+// see tests/FlattenTest.cpp's FoldRescueSlitRescuesAtLeastOneRealMeshChart for
+// the full investigation), so the rescue loop hits its
+// `if (apex < 0 || dst.empty()) return true;` bailout and NEVER calls
+// ShortestCutEdges/CutAlongEdges/a second flattenOnce — this test pins that
+// the fold-rescue machinery being wired in (params.foldRescueSlits > 0, the
+// judgedFolds plumbing, ChartFolds' skip-mapFolds branch) does not itself
+// introduce a cached-vs-uncached divergence, even when it declines to act.
+// It does NOT exercise the actual vertex-duplicating cut — that is pinned
+// separately, against a real mesh.ply chart that IS genuinely rescued, by
+// Parametrize.RescueSlitPublicPathMatchesCachedPipelineWithRealCut below.
 // ---------------------------------------------------------------------------
 TEST(Parametrize, RescueSlitPublicPathMatchesCachedPipeline)
 {
@@ -680,6 +681,97 @@ TEST(Parametrize, RescueSlitPublicPathMatchesCachedPipeline)
 	for (size_t i = 0; i < meshA.faceTexcoords.size(); ++i) {
 		EXPECT_EQ(meshA.faceTexcoords[i].x(), meshB.faceTexcoords[i].x()) << i;
 		EXPECT_EQ(meshA.faceTexcoords[i].y(), meshB.faceTexcoords[i].y()) << i;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §6.2 public-path equivalence, a REAL cut: the SaddleFan test above only
+// pins the rescue's DECLINE path (no interior vertex found, no cut). This
+// test proves the "verdict ≡ shipped map" contract for the case that
+// actually matters — a chart where the slit rescue performs the real
+// ShortestCutEdges/CutAlongEdges vertex-duplicating mutation and then
+// re-flattens — using the exact tests/data/mesh.ply pre-repair-segmentation
+// setup (developableFlipRepairRounds = 0, postRepairMergeRounds = 0) that
+// tests/FlattenTest.cpp's FoldRescueSlitRescuesAtLeastOneRealMeshChart already
+// measured to reproducibly rescue 3 of 133 pre-repair charts. Structure
+// follows Parametrize.CachedPipelineMatchesUncachedTwoCallPipeline
+// (tests/AtlasTest.cpp:1307): both entry-point pairs on fresh copies of the
+// same input, a vacuity guard before the pin, then exact bitwise equality.
+//
+// The vacuity guard reuses the SAME partition (fcUncached/nUncached) the
+// equivalence pin below checks — not a separately re-derived one — via the
+// identical per-chart detail::ChartFacesFold(off) vs. (on) comparison
+// FoldRescueSlitRescuesAtLeastOneRealMeshChart uses, so a future change that
+// makes this partition's rescue silently degrade to a no-op is caught here
+// too, not just there.
+// ---------------------------------------------------------------------------
+TEST(Parametrize, RescueSlitPublicPathMatchesCachedPipelineWithRealCut)
+{
+	Mesh base;
+	if (!base.Load(TestMeshPath())) {
+		GTEST_SKIP() << "tests/data/mesh.ply not found";
+	}
+	// Repair non-manifold defects ONCE on `base`, before copying: ListHalfEdges
+	// on a raw mesh.ply copy silently fixes ~459 non-manifold issues (changing
+	// the face count), and doing that independently on each of the two copies
+	// below would leave `base.faces.size()` stale for the size assertions.
+	base.ListHalfEdges();
+	halfmesh::ParametrizeParams params;
+	params.developableFlipRepairRounds = 0; // keep genuinely-folding pre-repair charts
+	params.postRepairMergeRounds = 0;
+	params.foldRescueSlits = 2;
+
+	// Public two-call path (no flatten cache):
+	Mesh uncached = base;
+	std::vector<unsigned> fcUncached;
+	const unsigned nUncached = halfmesh::SegmentCharts(uncached, params, fcUncached);
+	halfmesh::ParametrizeCharts(uncached, fcUncached, nUncached, params);
+
+	// Cached pipeline path (mirrors GenerateAtlas: the cache-aware detail pair):
+	Mesh cached = base;
+	std::vector<unsigned> fcCached;
+	halfmesh::detail::ChartFlattenCache cache;
+	const unsigned nCached = halfmesh::detail::SegmentCharts(cached, params, fcCached, &cache);
+	halfmesh::detail::ParametrizeCharts(cached, fcCached, nCached, params, &cache);
+
+	// Vacuity guard: at least one chart in THIS partition must actually be
+	// rescued by a real cut, or the comparison below degrades into the no-op
+	// path already pinned by RescueSlitPublicPathMatchesCachedPipeline.
+	std::vector<std::vector<Mesh::FIndex>> charts(nUncached);
+	for (Mesh::FIndex f = 0; f < uncached.faces.size(); ++f)
+		if (fcUncached[f] < nUncached)
+			charts[fcUncached[f]].push_back(f);
+	int numRescued = 0;
+	for (unsigned c = 0; c < nUncached; ++c) {
+		if (charts[c].size() <= 1)
+			continue;
+		halfmesh::ParametrizeParams off; // slits off → this pre-repair chart may fold
+		if (!halfmesh::detail::ChartFacesFold(uncached, charts[c], off))
+			continue;
+		halfmesh::ParametrizeParams on;
+		on.foldRescueSlits = 2;
+		if (!halfmesh::detail::ChartFacesFold(uncached, charts[c], on))
+			++numRescued;
+	}
+	ASSERT_GT(numRescued, 0)
+	    << "fixture must actually engage a real vertex-duplicating rescue cut, "
+	       "or this comparison proves nothing beyond the no-op path already "
+	       "pinned by RescueSlitPublicPathMatchesCachedPipeline";
+
+	// Guard against vacuity on the pipeline outputs themselves (mirrors
+	// CachedPipelineMatchesUncachedTwoCallPipeline).
+	ASSERT_GT(nUncached, 0u) << "expected at least one chart";
+	ASSERT_FALSE(uncached.faceTexcoords.empty());
+	ASSERT_EQ(nUncached, nCached) << "chart count differs cached vs uncached";
+	ASSERT_EQ(uncached.faceTexcoords.size(), base.faces.size() * 3);
+	ASSERT_EQ(uncached.faceTexcoords.size(), cached.faceTexcoords.size());
+
+	// The actual pin: EXACT (bitwise) equality, corner-for-corner.
+	for (size_t i = 0; i < uncached.faceTexcoords.size(); ++i) {
+		EXPECT_EQ(uncached.faceTexcoords[i].x(), cached.faceTexcoords[i].x())
+		    << "UV.x differs at corner " << i;
+		EXPECT_EQ(uncached.faceTexcoords[i].y(), cached.faceTexcoords[i].y())
+		    << "UV.y differs at corner " << i;
 	}
 }
 

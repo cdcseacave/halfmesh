@@ -1600,6 +1600,11 @@ int WorstInteriorVertex(const ChartMesh& cm, const std::vector<char>& onBoundary
 		if (onBoundary[v])
 			return;
 		const long long q = qdefect(v);
+		// The `v < best` tie-break is belt-and-suspenders: both call sites below
+		// (the `candidates` scan and the `v = 0..n` fallback) already visit
+		// vertices in strictly ascending id order, so the first vertex to reach a
+		// given max `q` always wins on its own — a later, larger id can never
+		// satisfy this clause against an already-smaller `best`.
 		if (q > bestQ || (q == bestQ && v < best)) {
 			bestQ = q;
 			best = v;
@@ -1857,6 +1862,10 @@ bool FlattenChart(ChartMesh& cm, const ParametrizeParams& params,
 	// One flatten attempt on whatever `cm`/`uv` currently hold: cut-to-disk if
 	// enabled, init (LSCM/Tutte), local/global refine. Hoisted into a lambda so
 	// the fold-rescue loop below can re-invoke it, unchanged, after slitting.
+	// The lambda's own `cm`/`uv` parameters intentionally shadow FlattenChart's
+	// outer `cm`/`uv` — every call site below passes those exact outer objects,
+	// so the shadowing is harmless and keeps the lambda's body a verbatim,
+	// unmodified copy of the original single-shot function.
 	const auto flattenOnce = [&params](ChartMesh& cm, std::vector<Vec2>& uv) -> bool {
 		if (cm.faces.empty())
 			return false;
