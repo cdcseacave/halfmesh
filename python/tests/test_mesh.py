@@ -95,6 +95,33 @@ def test_unwrap_generates_a_packed_atlas(tmp_path):
     assert unwrapped.has_texcoords
 
 
+def test_unwrap_accepts_segmentation_knobs(tmp_path):
+    """The segmentation knobs are keyword-addressable and keep the atlas valid.
+
+    A cube is developable, so the knobs cannot change its chart count much --
+    this pins the argument names and value plumbing, not the segmentation
+    behavior (docs/BENCHMARKS.md section 4 covers that).
+    """
+    v, f = _cube_arrays()
+    src = str(tmp_path / "cube.ply")
+    hm.Mesh.from_arrays(v, f).save(src)
+
+    out = str(tmp_path / "cube_uv.ply")
+    meta = hm.unwrap(
+        src,
+        out,
+        resolution=1024,
+        padding=2,
+        max_cone_error=0.1,
+        cut_to_disk=True,
+        max_uv_distortion=4.4,
+    )
+    assert meta["charts"] >= 1
+    unwrapped = hm.Mesh()
+    unwrapped.load(out)
+    assert unwrapped.has_texcoords
+
+
 def test_unwrap_raises_on_missing_input(tmp_path):
     with pytest.raises(RuntimeError):
         hm.unwrap(str(tmp_path / "nope.ply"), str(tmp_path / "out.ply"))

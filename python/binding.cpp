@@ -200,7 +200,7 @@ PYBIND11_MODULE(_halfmesh, m)
 	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)
 	    .def("__repr__", [](Mesh& self) { self.SyncFaces(); return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
 
-	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation) {
+	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion) {
 		Mesh mesh;
 		unsigned charts = 0;
 		halfmesh::AtlasResult result;
@@ -216,6 +216,9 @@ PYBIND11_MODULE(_halfmesh, m)
 			mesh.RemoveUnreferencedVertices();
 
 			halfmesh::ParametrizeParams pparams; // defaults tuned for MVS-like meshes
+			pparams.developableMaxConeError = max_cone_error;
+			pparams.cutToDisk = cut_to_disk;
+			pparams.developableMaxUvDistortion = max_uv_distortion;
 			halfmesh::AtlasParams aparams;
 			aparams.resolution = resolution;
 			aparams.padding = padding;
@@ -235,6 +238,6 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["fit_attempts"] = result.fitAttempts;
 		meta["vertices"] = mesh.vertices.size();
 		meta["faces"] = mesh.faces.size();
-		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 4u, py::arg("allow_rotation") = true, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. "
+		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("max_cone_error") = 0.05f, py::arg("cut_to_disk") = false, py::arg("max_uv_distortion") = 0.f, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. "
 	                                                                                                                                                                                                                                                                                            "Returns {charts, pages, width, height, occupancy, fit_attempts, vertices, faces}.");
 }

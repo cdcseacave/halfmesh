@@ -164,7 +164,7 @@ array ops above.
 - `has_texcoords: bool` — whether the mesh carries per-face-corner UVs
   (read-only).
 
-### `unwrap(input_path, output_path, resolution=4096, padding=4, allow_rotation=True) -> dict`
+### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0) -> dict`
 
 File-based UV-atlas generation: load `input_path` → weld/clean prelude
 (`RemoveDuplicateVertices` + `RemoveDegenerateFaces` +
@@ -177,8 +177,18 @@ half-texel offset in glTF) inside halfmesh's own `Save`, instead of
 re-deriving it at the Python boundary.
 
 - `resolution` — target atlas page size in texels (square pages).
-- `padding` — texel padding between packed charts.
+- `padding` — texel padding between packed charts (same default as `AtlasParams::padding`).
 - `allow_rotation` — whether the packer may rotate charts for a tighter fit.
+- `max_cone_error` — segmentation cone-fit budget
+  (`ParametrizeParams::developableMaxConeError`): larger ⇒ fewer, larger
+  charts at slightly more distortion.
+- `cut_to_disk` — Seamster cut-to-disk (`ParametrizeParams::cutToDisk`):
+  slit closed / multiply-connected charts into one disk instead of
+  bisecting them; the chart-count reducer on hole-riddled MVS meshes.
+- `max_uv_distortion` — symmetric-Dirichlet cap
+  (`ParametrizeParams::developableMaxUvDistortion`); `0` disables, on-values
+  must exceed the 4.0 isometry floor (4.4 is the sane setting). See
+  `docs/BENCHMARKS.md` §4 for the attribution matrix of these knobs.
 
 Returns a `dict`:
 
