@@ -1554,6 +1554,51 @@ TEST(AtlasTest, CarveFailureRegionSplitsAroundBadFaces)
 	EXPECT_FALSE(detail::CarveFailureRegionForTest(mesh, faces, faces, 2u, A2, B2));
 }
 
+// ---------------------------------------------------------------------------
+// Test — the connectivity guard's DECLINE path specifically. The size guard
+// (badFaces >= half the chart) above never exercises it: a scattered/snaking
+// failure region can be well under half the chart by AREA yet still sever
+// the chart into disconnected pieces. On a 20x20 grid, a single full-width
+// quad row (40 of 800 faces) floods (rings=2) to 5 rows — 200 faces, 25% of
+// the chart, comfortably under the size guard — but the band spans the
+// ENTIRE grid width, so removing it severs the remainder into two pieces
+// (the rows above vs. below). The connectivity guard must decline (return
+// false), matching the method's own name: carving off THE (singular)
+// topo-connected neighborhood, not a cut that fragments the rest.
+// A same-size (40-face) but CORNER-localized cluster is the positive
+// control: same badFaces count, same rings, no severing — must still carve.
+// ---------------------------------------------------------------------------
+TEST(AtlasTest, CarveFailureRegionDeclinesWhenRemainderWouldSplit)
+{
+	Mesh mesh = hmtest::corpus::GridPlane(20);
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> faces(mesh.faces.size());
+	std::iota(faces.begin(), faces.end(), 0u);
+	constexpr unsigned n = 20;
+
+	std::vector<Mesh::FIndex> band; // full-width row j=9 (40 faces)
+	for (unsigned i = 0; i < n; ++i) {
+		band.push_back(2u * (9u * n + i));
+		band.push_back(2u * (9u * n + i) + 1u);
+	}
+	std::vector<Mesh::FIndex> A, B;
+	EXPECT_FALSE(detail::CarveFailureRegionForTest(mesh, faces, band, 2u, A, B))
+	    << "a full-width band severs the remainder — the connectivity guard must decline";
+
+	std::vector<Mesh::FIndex> corner; // 2 rows x 10 cols in one corner (40 faces)
+	for (unsigned j = 0; j < 2; ++j)
+		for (unsigned i = 0; i < 10; ++i) {
+			corner.push_back(2u * (j * n + i));
+			corner.push_back(2u * (j * n + i) + 1u);
+		}
+	std::vector<Mesh::FIndex> A2, B2;
+	ASSERT_TRUE(detail::CarveFailureRegionForTest(mesh, faces, corner, 2u, A2, B2))
+	    << "a same-size corner-localized cluster must still carve";
+	EXPECT_FALSE(A2.empty());
+	EXPECT_FALSE(B2.empty());
+	EXPECT_EQ(A2.size() + B2.size(), faces.size());
+}
+
 TEST(RectPacking, UsesCvRectsAndPreservesInputOrder)
 {
 	const std::vector<cv::Rect> rects{

@@ -1203,6 +1203,9 @@ bool CarveFailureRegion(const SegmentState& s, const std::vector<Mesh::FIndex>& 
 	// averages ~10 components per carve and the final chart count regresses
 	// above the blind-bisection baseline; with it, carve measurably beats
 	// bisection (SegmentQualityTest.cpp, CarveNeverIncreasesChartCountOnChallengeMesh).
+	// These two extra BFS passes are paid only here — on an ATTEMPTED carve
+	// that already passed the size guard above — never on the (default) off
+	// path or on a chart that isn't folding.
 	std::unordered_set<Mesh::FIndex> aSet;
 	aSet.reserve(depth.size());
 	for (const auto& kv : depth)

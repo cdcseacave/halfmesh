@@ -22,14 +22,22 @@
 #include <gtest/gtest.h>
 
 #include <halfmesh/AtlasCharting.h>
+#include <halfmesh/HalfMesh.h>
 #include <halfmesh/Mesh.h>
 #include <halfmesh/Parametrize.h>
 
 #include "Corpus.h"
 #include "Metrics.h"
 
+// Internal Module A<->B bridge header (src/ on this target's include path —
+// see tests/CMakeLists.txt): brings in detail::AtlasSegmentStats + the
+// cache-aware detail::SegmentCharts overload the carve-vs-bisect test below
+// uses to confirm the repair wave actually engaged on the carve run.
+#include "ChartFlattenCache.h"
+
 #include <cstdio>
 #include <filesystem>
+#include <queue>
 #include <string>
 #include <vector>
 
@@ -138,6 +146,80 @@ QualityRow Measure(const char* name, const Mesh& input,
 	            name, row.charts, row.seam, row.compactMean, row.occupancy,
 	            row.pages);
 	return row;
+}
+
+// ---------------------------------------------------------------------------
+// Partition/connectivity invariants — same contract ParametrizeTest.cpp's
+// ExpectValidPartition/AllChartsConnectedTopo pin on synthetic fixtures.
+// Duplicated locally (per-TU helper, same convention as this file's own
+// TestMeshPath) rather than shared: both are small, and the synthetic
+// fixtures never actually drive CarveFailureRegion (see
+// Parametrize.CarveRingsKeepsPartitionContracts's own comment), so this real
+// mesh is where these invariants are checked against a partition the carve
+// mechanism actually produced.
+// ---------------------------------------------------------------------------
+void ExpectValidPartition(const std::vector<unsigned>& fc, unsigned n, size_t numFaces)
+{
+	ASSERT_EQ(fc.size(), numFaces);
+	ASSERT_GE(n, 1u);
+	std::vector<char> seen(n, 0);
+	for (unsigned c : fc) {
+		ASSERT_LT(c, n) << "chart id out of range";
+		seen[c] = 1;
+	}
+	for (unsigned c = 0; c < n; ++c)
+		EXPECT_TRUE(seen[c]) << "chart " << c << " is empty (ids not compact)";
+}
+
+bool AllChartsConnectedTopo(const Mesh& m, const std::vector<unsigned>& fc, unsigned n)
+{
+	const halfmesh::HalfMesh& hm = m.halfMesh;
+	const size_t nf = m.faces.size();
+	const bool hasTexblobs = m.faceTexblobs.size() == m.faces.size();
+	auto topoNb = [&](halfmesh::HalfMesh::HIndex iHe) -> halfmesh::HalfMesh::FIndex {
+		const halfmesh::HalfMesh::HIndex tw = hm.HeTwin(iHe);
+		if (hm.HeIsBoundary(iHe) || hm.HeIsBoundary(tw))
+			return math::NO_ID;
+		if (hm.EDegree(hm.HeEdge(iHe)) != 2)
+			return math::NO_ID;
+		const halfmesh::HalfMesh::FIndex nb = hm.HeFace(tw);
+		if (nb == math::NO_ID)
+			return math::NO_ID;
+		if (hasTexblobs && m.faceTexblobs[hm.HeFace(iHe)] != m.faceTexblobs[nb])
+			return math::NO_ID;
+		return nb;
+	};
+	std::vector<char> visited(nf, 0);
+	for (unsigned c = 0; c < n; ++c) {
+		size_t seed = nf, total = 0;
+		for (size_t f = 0; f < nf; ++f)
+			if (fc[f] == c) {
+				if (seed == nf)
+					seed = f;
+				++total;
+			}
+		if (seed == nf)
+			continue; // empty chart — ExpectValidPartition already flags this
+		std::queue<size_t> q;
+		q.push(seed);
+		visited[seed] = 1;
+		size_t count = 1;
+		while (!q.empty()) {
+			const size_t f = q.front();
+			q.pop();
+			for (halfmesh::HalfMesh::HIndex iHe : hm.FAdjacentHalfedges(static_cast<halfmesh::HalfMesh::FIndex>(f))) {
+				const halfmesh::HalfMesh::FIndex nb = topoNb(iHe);
+				if (nb == math::NO_ID || visited[nb] || fc[nb] != c)
+					continue;
+				visited[nb] = 1;
+				++count;
+				q.push(nb);
+			}
+		}
+		if (count != total)
+			return false; // chart c is disconnected via topo edges
+	}
+	return true;
 }
 
 } // namespace
@@ -249,6 +331,18 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 // region, the rest} instead of blindly PCA-bisecting it can only ever match or
 // reduce the final chart count on a real mesh: a localized failure that used
 // to cascade into several bisection fragments now costs one extra chart.
+//
+// Also asserts the carve run actually ENGAGES the repair wave (repairSplits >
+// 0 via the cache-aware detail::SegmentCharts + AtlasSegmentStats overload —
+// same single segmentation call, just with a stats out-param, not a third
+// invocation), and that its resulting partition still satisfies the same
+// validity/connectivity contract Parametrize.CarveRingsKeepsPartitionContracts
+// pins on a synthetic fixture. That synthetic fixture never actually drives
+// CarveFailureRegion (its own comment notes the split strategy only changes
+// WHICH pieces a folding chart lands in — and the fixture there never folds
+// under the flip repair to begin with), so this real mesh — which measurably
+// engages both the repair wave and the carve path — is where the invariants
+// are checked against a partition carve actually shaped.
 TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 {
 	Mesh mesh;
@@ -261,7 +355,14 @@ TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 	std::vector<unsigned> fcBase, fcCarve;
 	Mesh meshB = mesh, meshC = mesh;
 	const unsigned nBase = halfmesh::SegmentCharts(meshB, base, fcBase);
-	const unsigned nCarve = halfmesh::SegmentCharts(meshC, carve, fcCarve);
-	std::printf("[segment-quality] carve: nBase=%u nCarve=%u\n", nBase, nCarve);
+	halfmesh::detail::AtlasSegmentStats statsCarve;
+	const unsigned nCarve = halfmesh::detail::SegmentCharts(meshC, carve, fcCarve, nullptr, &statsCarve);
+	std::printf("[segment-quality] carve: nBase=%u nCarve=%u repairSplits=%u\n",
+	            nBase, nCarve, statsCarve.repairSplits);
 	EXPECT_LE(nCarve, nBase); // the whole point; equality allowed (no folds → no carves)
+	EXPECT_GT(statsCarve.repairSplits, 0u)
+	    << "fixture must actually engage the repair wave, or this comparison is vacuous";
+	ExpectValidPartition(fcCarve, nCarve, meshC.faces.size());
+	EXPECT_TRUE(AllChartsConnectedTopo(meshC, fcCarve, nCarve))
+	    << "the carve-produced partition must still be topo-connected per chart";
 }
