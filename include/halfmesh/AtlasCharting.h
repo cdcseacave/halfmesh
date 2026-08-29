@@ -127,6 +127,17 @@ struct AtlasParams
 	// into the output UVs. Default on (matches xatlas's rotateChartsToAxis).
 	bool orientCharts = true;
 
+	// Per-size padding (both 0 = off: uniform `padding` everywhere, the
+	// current behavior). Charts matching either trigger get a 1-texel gutter
+	// instead of `padding` — with very many tiny charts the uniform gutter is
+	// a multiplicative tax on exactly the charts that matter least, and the
+	// bleed risk it guards against is proportional to chart area. Under
+	// fitToResolution the tiny-side trigger is re-evaluated against each fit
+	// probe's SCALED trial size, not the original chart size, so a chart's pad
+	// tier can change from one probe to the next as the global scale converges.
+	float tinyChartSide = 0.f; // trigger: max UNPADDED rect side ≤ this many texels
+	unsigned debrisChartFaces = 0; // trigger: chart has ≤ this many faces
+
 	// Fit the whole atlas into ~one page of `resolution` texels: PackAtlas
 	// applies a single global UV scale so the total padded chart area ≈ one
 	// page, then packs.  Without it, the per-chart texel density is fixed and

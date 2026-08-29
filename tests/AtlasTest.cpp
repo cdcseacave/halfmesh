@@ -1417,6 +1417,104 @@ TEST(PackAtlas, NonFitModeGrowsPageForOversizedChart)
 	}
 }
 
+// K disjoint unit quads (2 triangles each), spaced 3 world units apart so each
+// is trivially its own connected component -- used as a crafted multi-chart
+// fixture (one chart per quad, assigned by hand) for the per-size padding test.
+static Mesh DisjointQuads(int k)
+{
+	Mesh m;
+	for (int i = 0; i < k; ++i) {
+		const float x = static_cast<float>(i) * 3.f;
+		const unsigned b = static_cast<unsigned>(m.vertices.size());
+		m.vertices.emplace_back(x, 0.f, 0.f);
+		m.vertices.emplace_back(x + 1.f, 0.f, 0.f);
+		m.vertices.emplace_back(x + 1.f, 1.f, 0.f);
+		m.vertices.emplace_back(x, 1.f, 0.f);
+		m.faces.emplace_back(b, b + 1, b + 2);
+		m.faces.emplace_back(b, b + 2, b + 3);
+	}
+	return m;
+}
+
+// §6.5: tiny charts (max unpadded side <= tinyChartSide) get a 1-texel gutter
+// instead of the uniform `padding`. With K=64 identical 4-texel charts packed
+// (no fitToResolution) at a page side of 64, the padded rect area at a 4-texel
+// gutter (64 * 12*12 = 9216) does not fit one 64*64=4096 page (needs several),
+// while the same charts at a 1-texel gutter (64 * 6*6 = 2304) fit one page --
+// LESS wasted page area for the SAME geometry, so triangle coverage (Σ triangle
+// area / numPages, see AtlasResult::coverage) must go up. (`resolution` is
+// chosen small enough to force this multi-page split for the uniform case;
+// PackRects only grows the page beyond `resolution` for a single oversized
+// chart, never for aggregate content, so at a resolution that dwarfs every
+// individual padded chart -- e.g. 128 -- both paddings fit one page and
+// coverage cannot differ; that would falsely pass a no-op implementation.)
+// Also verifies the per-chart pad vector cannot make charts bleed into each
+// other: every padded chart bbox must stay disjoint from every other chart's
+// on the same page.
+TEST(AtlasTest, TinyChartPaddingRaisesCoverage)
+{
+	constexpr int K = 64;
+	Mesh mesh = DisjointQuads(K);
+	std::vector<unsigned> faceChart(mesh.faces.size());
+	for (size_t f = 0; f < faceChart.size(); ++f)
+		faceChart[f] = static_cast<unsigned>(f / 2);
+	// identical 4-texel-square local UVs per chart
+	mesh.faceTexcoords.assign(mesh.faces.size() * 3, Mesh::TexCoord(0.f, 0.f));
+	for (size_t f = 0; f < mesh.faces.size(); f += 2) {
+		const Mesh::TexCoord q[4] = {{0.f, 0.f}, {4.f, 0.f}, {4.f, 4.f}, {0.f, 4.f}};
+		mesh.faceTexcoords[f * 3 + 0] = q[0];
+		mesh.faceTexcoords[f * 3 + 1] = q[1];
+		mesh.faceTexcoords[f * 3 + 2] = q[2];
+		mesh.faceTexcoords[(f + 1) * 3 + 0] = q[0];
+		mesh.faceTexcoords[(f + 1) * 3 + 1] = q[2];
+		mesh.faceTexcoords[(f + 1) * 3 + 2] = q[3];
+	}
+	halfmesh::AtlasParams uniform;
+	uniform.resolution = 64; // small enough that padding=4 needs >1 page; see comment above
+	uniform.padding = 4;
+	Mesh meshU = mesh;
+	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform);
+	halfmesh::AtlasParams tiny = uniform;
+	tiny.tinyChartSide = 8.f; // every 4-texel chart qualifies → pad 1
+	Mesh meshT = mesh;
+	const auto rT = halfmesh::PackAtlas(meshT, faceChart, K, tiny);
+	EXPECT_GT(rT.coverage, rU.coverage); // less gutter, same triangles
+
+	// charts must not overlap: padded bboxes pairwise disjoint per page.
+	// Compute each chart's final UV bbox in texels from meshT.faceTexcoords,
+	// then an O(K^2) pairwise interval-disjointness test per page (K=64: trivial).
+	struct Bbox
+	{
+		float minX = std::numeric_limits<float>::max();
+		float minY = std::numeric_limits<float>::max();
+		float maxX = std::numeric_limits<float>::lowest();
+		float maxY = std::numeric_limits<float>::lowest();
+	};
+	std::vector<Bbox> bbox(K);
+	for (size_t f = 0; f < meshT.faces.size(); ++f) {
+		const unsigned c = faceChart[f];
+		for (int k = 0; k < 3; ++k) {
+			const Mesh::TexCoord& uv = meshT.faceTexcoords[f * 3 + k];
+			const float px = uv.x() * static_cast<float>(rT.width);
+			const float py = uv.y() * static_cast<float>(rT.height);
+			bbox[c].minX = std::min(bbox[c].minX, px);
+			bbox[c].maxX = std::max(bbox[c].maxX, px);
+			bbox[c].minY = std::min(bbox[c].minY, py);
+			bbox[c].maxY = std::max(bbox[c].maxY, py);
+		}
+	}
+	for (int i = 0; i < K; ++i) {
+		for (int j = i + 1; j < K; ++j) {
+			if (rT.chartPage[i] != rT.chartPage[j])
+				continue; // different pages can never overlap
+			const bool overlapX = bbox[i].minX < bbox[j].maxX && bbox[j].minX < bbox[i].maxX;
+			const bool overlapY = bbox[i].minY < bbox[j].maxY && bbox[j].minY < bbox[i].maxY;
+			EXPECT_FALSE(overlapX && overlapY)
+			    << "charts " << i << " and " << j << " overlap on page " << rT.chartPage[i];
+		}
+	}
+}
+
 // Deterministic "staircase terrain": an n×n grid whose vertex heights are
 // quantized random levels — many high-angle-defect vertices, like a
 // tetra-extracted MVS surface. Cone-Lloyd fragments it, flip repair splits
