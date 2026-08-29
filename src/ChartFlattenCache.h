@@ -142,6 +142,11 @@ struct AtlasSegmentStats
 		unsigned dirtyCharts = 0; // merged charts handed to the repair wave
 		unsigned resplitCharts = 0; // dirty charts the repair split back
 		unsigned chartsAfter = 0; // count after the round's repair
+		// Task 7: merged pairs (minFidA, minFidB — smallest global face id on
+		// each side, invariant under Compact() relabelling) whose merged chart
+		// this round's repair wave split right back, i.e. folded. Blacklisted
+		// for every later round, so a key here never repeats across stats.rounds.
+		std::vector<std::pair<Mesh::FIndex, Mesh::FIndex>> refoldedPairs;
 	};
 	std::vector<MergeRound> rounds; // one per post-repair merge round
 };

@@ -41,6 +41,7 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1524,6 +1525,34 @@ TEST(SegmentCharts, SegmentationStatsPopulatedOnChallengeMesh)
 		EXPECT_GE(r.merges, r.dirtyCharts ? 1u : 0u);
 		EXPECT_LE(r.resplitCharts, r.dirtyCharts);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Test — Task 7 post-repair fold-blacklist: a merged pair whose resulting
+// chart the repair wave split right back (a "fold") is recorded per-round in
+// MergeRound::refoldedPairs, keyed by the two sides' smallest global face ids
+// (invariant under the Compact() id relabelling that happens between rounds).
+// The blacklist must make that memoized pair unavailable to every later
+// round, so no key may ever appear twice across stats.rounds.
+// ---------------------------------------------------------------------------
+TEST(AtlasTest, PostRepairMergeNeverRetriesAFoldedUnion)
+{
+	const std::string path = TestMeshPath();
+	if (!std::filesystem::exists(path))
+		GTEST_SKIP() << "mesh.ply not found at " << path;
+
+	Mesh mesh;
+	ASSERT_TRUE(mesh.Load(path)) << "Failed to load " << path;
+
+	ParametrizeParams params;
+	std::vector<unsigned> faceChart;
+	detail::AtlasSegmentStats stats;
+	detail::SegmentCharts(mesh, params, faceChart, nullptr, &stats);
+
+	std::set<std::pair<Mesh::FIndex, Mesh::FIndex>> seen;
+	for (const auto& r : stats.rounds)
+		for (const auto& p : r.refoldedPairs)
+			EXPECT_TRUE(seen.insert(p).second) << "pair re-merged after folding";
 }
 
 // ---------------------------------------------------------------------------

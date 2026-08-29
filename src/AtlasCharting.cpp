@@ -474,9 +474,22 @@ unsigned EnforceConnectivity(const SegmentState& s, std::vector<unsigned>& chart
 void ComputeVertexDefect(const SegmentState& s, std::vector<double>& dabs,
                          std::vector<unsigned>& vtotal);
 
+// Pair key for two chart identities, keyed by each side's smallest global face
+// id (order-independent, minFidA < minFidB) — the same identity trick as
+// ChartFlattenCache: invariant under the Compact() id relabelling that
+// happens between post-repair merge rounds (Task 7).
+unsigned long long PairKey(Mesh::FIndex minFidA, Mesh::FIndex minFidB)
+{
+	if (minFidA > minFidB)
+		std::swap(minFidA, minFidB);
+	return (static_cast<unsigned long long>(minFidA) << 32) | static_cast<unsigned long long>(minFidB);
+}
+
 unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params,
                           std::vector<unsigned>& chart, unsigned numCharts, double budget,
-                          detail::AtlasSegmentStats::MergeRound* mr = nullptr)
+                          detail::AtlasSegmentStats::MergeRound* mr = nullptr,
+                          const std::unordered_set<unsigned long long>* blockedPairs = nullptr,
+                          std::vector<std::tuple<Mesh::FIndex, Mesh::FIndex, unsigned>>* mergedPairs = nullptr)
 {
 	if (numCharts <= 1 || budget <= 0.0)
 		return numCharts;
@@ -487,6 +500,9 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 	std::vector<double> W(numCharts, 0.0), sz(numCharts, 0.0);
 	std::vector<Normal> s1(numCharts, Normal::Zero());
 	std::vector<Eigen::Matrix3d> s2(numCharts, Eigen::Matrix3d::Zero());
+	// Per-chart smallest global face id (Task 7 pair identity) — faces are
+	// visited in global id order, so the first write per chart is its minimum.
+	std::vector<Mesh::FIndex> minFid(numCharts, std::numeric_limits<Mesh::FIndex>::max());
 	for (FIndex f = 0; f < s.numFaces; ++f) {
 		const unsigned c = chart[f];
 		const double w = s.weights[f];
@@ -495,6 +511,8 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		s1[c] += w * n;
 		s2[c].noalias() += w * (n * n.transpose());
 		sz[c] += 1.0;
+		if (f < minFid[c])
+			minFid[c] = f;
 	}
 
 	// --- Anti-fold cap: a high-curvature (cone/saddle) vertex must NEVER become
@@ -581,6 +599,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		for (unsigned idx : hdAtRoot[a])
 			hdAtRoot[b].insert(idx);
 		hdAtRoot[a].clear();
+		minFid[b] = std::min(minFid[a], minFid[b]);
 		return b;
 	};
 
@@ -614,6 +633,8 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		b = find(b);
 		if (a == b)
 			return;
+		if (blockedPairs != nullptr && blockedPairs->count(PairKey(minFid[a], minFid[b])) != 0)
+			return; // Task 7: this identity pair already folded in an earlier round
 		const double e = combinedError(a, b);
 		if (e > budget) {
 			if (mr != nullptr)
@@ -641,6 +662,11 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		const unsigned ar = find(a), br = find(b);
 		if (ar == br)
 			continue;
+		// Re-check at pop time, not just at push time: chain absorptions between
+		// this entry's push and pop can drift ar/br's identity (minFid) onto a
+		// pair that became blocked only after the push (Task 7).
+		if (blockedPairs != nullptr && blockedPairs->count(PairKey(minFid[ar], minFid[br])) != 0)
+			continue;
 		const double cur = combinedError(ar, br);
 		if (cur > budget) {
 			if (mr != nullptr)
@@ -656,16 +682,42 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 				++mr->pairsEncloseRejected;
 			continue; // would enclose a cone/saddle vertex → fold; skip
 		}
+		// Capture the pair's identity (each side's smallest global face id)
+		// BEFORE doMerge folds ar's moments (incl. minFid) into br — mergedPairs
+		// reports root ids for now; translated to compacted chart ids below.
+		Mesh::FIndex fa = 0, fb = 0;
+		if (mergedPairs != nullptr) {
+			fa = minFid[ar];
+			fb = minFid[br];
+		}
 		const unsigned r = doMerge(ar, br);
 		if (mr != nullptr)
 			++mr->merges;
+		if (mergedPairs != nullptr)
+			mergedPairs->emplace_back(fa, fb, r); // 3rd field: pre-Compact root id (translated below)
 		for (unsigned n : adj[r])
 			tryPush(r, n);
 	}
 
 	for (FIndex f = 0; f < s.numFaces; ++f)
 		chart[f] = find(chart[f]);
-	return Compact(chart);
+	// Translate mergedPairs' pre-Compact root ids to the shipped compacted chart
+	// ids: pick one representative face per root (chart[] already holds final
+	// roots above), then re-read chart[] after Compact() remaps in place — same
+	// root always maps to the same new id, so the representative's new id IS
+	// the merged chart's compacted id.
+	std::unordered_map<unsigned, Mesh::FIndex> rootFace;
+	if (mergedPairs != nullptr)
+		for (FIndex f = 0; f < s.numFaces; ++f)
+			rootFace.try_emplace(chart[f], f);
+	const unsigned nc = Compact(chart);
+	if (mergedPairs != nullptr)
+		for (auto& [fa, fb, root] : *mergedPairs) {
+			const auto it = rootFace.find(find(root));
+			ASSERT(it != rootFace.end());
+			root = chart[it->second];
+		}
+	return nc;
 }
 
 // -------------------------------------------------------------------------
@@ -1440,13 +1492,23 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 		// left behind (nothing else ever merges again), then repair ONLY the
 		// merged charts — a merge that re-folds is split right back, so the
 		// fold-free guarantee is preserved and a round can never regress.
+		//
+		// Task 7 fold-blacklist (always on, internal only, no knob): rounds
+		// otherwise churn — a pair merges, folds, gets bisected right back by
+		// the repair wave, then a later round re-tries the SAME pair. foldedUnions
+		// memoizes every pair (keyed by each side's smallest global face id, see
+		// PairKey) that has demonstrably folded, across all rounds of this call,
+		// so DevelopableMerge's tryPush can skip it from then on.
+		std::unordered_set<unsigned long long> foldedUnions;
 		for (unsigned round = 0; round < params.postRepairMergeRounds; ++round) {
 			const unsigned before = numCharts;
 			std::vector<unsigned> pre(chart);
 			AtlasSegmentStats::MergeRound roundStats;
+			std::vector<std::tuple<Mesh::FIndex, Mesh::FIndex, unsigned>> mergedPairs;
 			numCharts = DevelopableMerge(s, params, chart, numCharts,
 			                             static_cast<double>(params.developableMaxConeError),
-			                             stats != nullptr ? &roundStats : nullptr);
+			                             stats != nullptr ? &roundStats : nullptr,
+			                             &foldedUnions, &mergedPairs);
 			// Charts containing faces from ≥2 pre-merge charts are the merged
 			// ("dirty") ones — the only ones whose fold verdict changed.
 			std::vector<unsigned> firstPre(numCharts, NONE);
@@ -1490,13 +1552,26 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 			// Compact() — which renumbers every id by first-face-appearance order and
 			// so cannot be used to detect a resplit via a before/after id diff: an
 			// untouched dirty chart can still change id purely because some OTHER
-			// chart's split shifted the global numbering).
+			// chart's split shifted the global numbering). Collected unconditionally
+			// (not gated on stats): the fold-blacklist below needs it regardless of
+			// whether the caller wants instrumentation.
 			std::vector<unsigned> splitFrontierIds;
 			numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, &dirty,
 			                                   stats != nullptr ? &stats->repairSplits : nullptr,
-			                                   stats != nullptr ? &splitFrontierIds : nullptr);
+			                                   &splitFrontierIds);
+			const std::unordered_set<unsigned> splitSet(splitFrontierIds.begin(), splitFrontierIds.end());
+			// Blacklist maintenance: mergedPairs reports (minFidA, minFidB,
+			// compactedChartId) for this round's merges in the SAME post-Compact
+			// numbering `dirty`/`splitSet` use. A merged chart the repair wave just
+			// split back folded — memoize its pair key so it is never retried.
+			for (const auto& [fa, fb, compactedId] : mergedPairs) {
+				if (splitSet.count(compactedId) == 0)
+					continue; // shipped merged — not a fold, stays available to future rounds
+				foldedUnions.insert(PairKey(fa, fb));
+				if (stats != nullptr)
+					roundStats.refoldedPairs.emplace_back(fa, fb);
+			}
 			if (stats != nullptr) {
-				const std::unordered_set<unsigned> splitSet(splitFrontierIds.begin(), splitFrontierIds.end());
 				unsigned resplit = 0;
 				for (unsigned d : dirty)
 					if (splitSet.count(d) != 0)
