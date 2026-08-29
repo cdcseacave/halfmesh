@@ -1135,7 +1135,8 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
                                 std::vector<unsigned>& chart, unsigned numCharts,
                                 detail::ChartFlattenCache* cache,
                                 const std::vector<unsigned>* frontierIn = nullptr,
-                                unsigned* splitCount = nullptr)
+                                unsigned* splitCount = nullptr,
+                                std::vector<unsigned>* splitFrontierIds = nullptr)
 {
 	const Mesh& mesh = s.mesh;
 
@@ -1225,6 +1226,12 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 				comps.push_back(std::move(cb));
 			if (comps.size() <= 1)
 				continue; // no real split (degenerate) — avoid an infinite loop
+			// Genuine bisection of frontier id c (this call's ids are stable pre-Compact
+			// when frontierIn restricts processing — see the precondition note above —
+			// so recording the raw id here, rather than diffing chart[] against the
+			// trailing Compact()'d result, can't pick up an id-renumbering false positive).
+			if (splitFrontierIds != nullptr)
+				splitFrontierIds->push_back(c);
 			fl[c] = std::move(comps[0]); // first piece keeps id c (faces already labelled c)
 			next.push_back(c);
 			for (std::size_t j = 1; j < comps.size(); ++j) {
@@ -1344,27 +1351,46 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 			for (unsigned c = 0; c < numCharts; ++c)
 				if (dirtyFlag[c])
 					dirty.push_back(c);
-			if (dirty.empty())
+			if (dirty.empty()) {
+				// Nothing merged, but tryPush/pop still did real rejection work this
+				// round (budget/enclose vetoes) — record it (dirtyCharts=0,
+				// resplitCharts=0 vacuously) so an all-rejected round is still
+				// visible in stats->rounds instead of silently vanishing.
+				if (stats != nullptr) {
+					roundStats.dirtyCharts = 0;
+					roundStats.resplitCharts = 0;
+					roundStats.chartsAfter = numCharts;
+					stats->rounds.push_back(roundStats);
+#ifdef HM_ATLAS_DEBUG
+					std::cerr << "[re-merge] round " << round << ": " << before << " -> " << numCharts
+					          << " charts (no merges accepted)"
+					          << " pushed=" << roundStats.pairsPushed
+					          << " budget-rejects=" << roundStats.pairsBudgetRejected
+					          << " enclose-rejects=" << roundStats.pairsEncloseRejected
+					          << " merges=" << roundStats.merges << "\n";
+#endif
+				}
 				break; // nothing merged — converged
+			}
 			if (stats != nullptr)
 				roundStats.dirtyCharts = static_cast<unsigned>(dirty.size());
-			// Snapshot right before the repair call so a dirty chart id that gets
-			// bisected back apart (a face labelled c before now carries a
-			// different id) can be told apart from one the repair left alone.
-			std::vector<unsigned> preRepair;
-			if (stats != nullptr)
-				preRepair = chart;
+			// Ask RepairDevelopableFlips which of THIS call's frontier ids it actually
+			// bisected (recorded in its serial harvest, before its trailing whole-array
+			// Compact() — which renumbers every id by first-face-appearance order and
+			// so cannot be used to detect a resplit via a before/after id diff: an
+			// untouched dirty chart can still change id purely because some OTHER
+			// chart's split shifted the global numbering).
+			std::vector<unsigned> splitFrontierIds;
 			numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, &dirty,
-			                                   stats != nullptr ? &stats->repairSplits : nullptr);
+			                                   stats != nullptr ? &stats->repairSplits : nullptr,
+			                                   stats != nullptr ? &splitFrontierIds : nullptr);
 			if (stats != nullptr) {
-				const std::unordered_set<unsigned> dirtySet(dirty.begin(), dirty.end());
-				std::unordered_set<unsigned> resplitIds;
-				for (FIndex f = 0; f < s.numFaces; ++f) {
-					const unsigned pc = preRepair[f];
-					if (dirtySet.count(pc) != 0 && chart[f] != pc)
-						resplitIds.insert(pc);
-				}
-				roundStats.resplitCharts = static_cast<unsigned>(resplitIds.size());
+				const std::unordered_set<unsigned> splitSet(splitFrontierIds.begin(), splitFrontierIds.end());
+				unsigned resplit = 0;
+				for (unsigned d : dirty)
+					if (splitSet.count(d) != 0)
+						++resplit;
+				roundStats.resplitCharts = resplit;
 				roundStats.chartsAfter = numCharts;
 				stats->rounds.push_back(roundStats);
 			}
