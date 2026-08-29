@@ -112,6 +112,11 @@ struct BenchConfig
 	float vdefect = -1.f; // developableMaxVertexDefect (radians)
 	float maxDistortion = -1.f; // developableMaxUvDistortion (sym-Dir cap; 0=off; <0 = default)
 	bool cutToDisk = false; // Seamster cut-to-disk instead of disk-split (fewer MVS charts)
+	// repair / packing knobs (0.4.0); <0 = library default (all default to 0/off)
+	int repairCarveRings = -1; // ParametrizeParams::repairCarveRings (failure-localized repair split)
+	int foldRescueSlits = -1; // ParametrizeParams::foldRescueSlits (fold-rescue slit count)
+	float tinyChartSide = -1.f; // AtlasParams::tinyChartSide (per-size padding trigger, unpadded side texels)
+	int debrisChartFaces = -1; // AtlasParams::debrisChartFaces (per-size padding trigger, face count)
 };
 
 } // namespace hmbench

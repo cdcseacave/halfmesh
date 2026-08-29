@@ -48,6 +48,19 @@ inline void ApplyParamOverrides(halfmesh::ParametrizeParams& pp, const BenchConf
 		pp.developableMaxUvDistortion = cfg.maxDistortion;
 	if (cfg.cutToDisk)
 		pp.cutToDisk = true;
+	if (cfg.repairCarveRings >= 0)
+		pp.repairCarveRings = static_cast<unsigned>(cfg.repairCarveRings);
+	if (cfg.foldRescueSlits >= 0)
+		pp.foldRescueSlits = static_cast<unsigned>(cfg.foldRescueSlits);
+}
+
+// Apply the bench config's per-size padding overrides (AtlasParams).
+inline void ApplyAtlasOverrides(halfmesh::AtlasParams& ap, const BenchConfig& cfg)
+{
+	if (cfg.tinyChartSide >= 0.f)
+		ap.tinyChartSide = cfg.tinyChartSide;
+	if (cfg.debrisChartFaces >= 0)
+		ap.debrisChartFaces = static_cast<unsigned>(cfg.debrisChartFaces);
 }
 } // namespace
 
@@ -65,6 +78,7 @@ EngineResult RunHalfmesh(halfmesh::Mesh mesh, const BenchConfig& cfg)
 		ap.orientCharts = true;
 	else if (cfg.orient == "off")
 		ap.orientCharts = false;
+	ApplyAtlasOverrides(ap, cfg);
 
 	std::vector<unsigned> faceChart;
 	unsigned numCharts = 0;

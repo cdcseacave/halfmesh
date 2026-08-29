@@ -75,7 +75,11 @@ void Usage()
 	             "  --decimate N           decimate to ~N faces before benchmarking (0=off)\n"
 	             "  --timeout-s S          per-stage soft timeout seconds (default 120)\n"
 	             "  --out <dir>            output directory for report.{json,md,csv} (default .)\n"
-	             "  --seed N               RNG seed (default 42)\n";
+	             "  --seed N               RNG seed (default 42)\n"
+	             "  --repair-carve-rings N failure-localized repair split (default 0=off)\n"
+	             "  --fold-rescue-slits N  fold-rescue slit count (default 0=off)\n"
+	             "  --tiny-chart-side F    per-size padding: max unpadded side in texels (default 0=off)\n"
+	             "  --debris-chart-faces N per-size padding: chart face-count trigger (default 0=off)\n";
 }
 
 } // namespace
@@ -145,6 +149,14 @@ int main(int argc, char* argv[])
 			cfg.maxDistortion = std::stof(next("--max-distortion"));
 		else if (a == "--cut-to-disk")
 			cfg.cutToDisk = true;
+		else if (a == "--repair-carve-rings")
+			cfg.repairCarveRings = std::stoi(next("--repair-carve-rings"));
+		else if (a == "--fold-rescue-slits")
+			cfg.foldRescueSlits = std::stoi(next("--fold-rescue-slits"));
+		else if (a == "--tiny-chart-side")
+			cfg.tinyChartSide = std::stof(next("--tiny-chart-side"));
+		else if (a == "--debris-chart-faces")
+			cfg.debrisChartFaces = std::stoi(next("--debris-chart-faces"));
 		else if (a == "-h" || a == "--help") {
 			Usage();
 			return EXIT_SUCCESS;

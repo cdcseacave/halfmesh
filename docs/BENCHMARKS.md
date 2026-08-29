@@ -284,6 +284,98 @@ production, decimate first: million-chart atlases are rarely the goal, and
 distortion/seam totals favour a chart budget matched to the texture
 resolution.)
 
+### Repair carve rings / fold-rescue slits / per-size padding — Task 9 sweep (0.4.0 knobs, defaults OFF)
+
+Three more opt-in knobs landed for 0.4.0, all **OFF by default**:
+`developable_repair_carve_rings` (`--repair-carve-rings`, failure-localized
+repair split — carve off the faces within N `TopoNeighbor` rings of a folding
+chart's diagnosed failure instead of a blind PCA bisection), `fold_rescue_slits`
+(`--fold-rescue-slits`, cut a slit from the worst interior vertex to the
+boundary and re-flatten a folding chart in place, up to N times, instead of
+splitting it), and `AtlasParams::tinyChartSide` / `debrisChartFaces`
+(`--tiny-chart-side` / `--debris-chart-faces`, a 1-texel gutter instead of the
+uniform `padding` for charts under a size/face-count trigger — packing only,
+does not change the partition).
+
+**Setup.** `tests/data/` on this machine contains only `mesh.ply` (63 049
+vertices / 120 943 faces once repaired — 459 non-manifold issues fixed on
+load; no `roi100k`, `ours128k`, or a Truck-class mesh are present here, so
+those cross-checks and the spec §7 success-criterion mesh could not be run on
+this machine — see "what to try next" below). All arms: `--engines halfmesh
+--resolution 4096 --cut-to-disk` (padding stays at the `AtlasParams` default
+of 2, unchanged by any arm). Wall-clock is indicative only — this machine was
+under load from an unrelated training job during the sweep.
+
+| arm | charts | coverage (tri) | seg. time (s) | flips | sym-Dirichlet |
+|---|--:|--:|--:|--:|--:|
+| baseline (all off) | 2 390 | 38.8 % | 43.9 | 0 | 45.8 |
+| `carve=1` | 2 256 | 39.6 % | 46.4 | 0 | 51.4 |
+| `carve=2` | 2 302 | 40.2 % | 54.3 | 0 | 485.8 |
+| `carve=3` | 2 375 | 36.0 % | 57.5 | 0 | 27.6 |
+| `slits=2` | 2 153 | 40.5 % | 72.5 | 0 | 52.4 |
+| `carve=2, slits=2` | 2 022 | 41.6 % | 56.8 | **4** | **9 533 546** |
+| `carve=2, slits=2, tiny=8` | 2 022 | 41.6 % | 54.9 | 4 | 9 533 546 |
+| `carve=2, slits=2, tiny=8, debris=100` | 2 022 | 42.3 % | 54.0 | 4 | 9 533 546 |
+
+(`tiny=8`/`debris=100` only touch Module D packing, so the partition and
+parametrization above them are byte-identical to `carve=2, slits=2` — the
+extra knobs just shrink the gutter on the smallest charts, nudging coverage
+from 41.6 % to 42.3 %.)
+
+**Reading the table:**
+
+- **Carve alone** is a small, *non-monotonic* win: ring=1 drops charts
+  2390→2256 (−5.6 %) cleanly, but ring=2 and ring=3 climb back toward baseline
+  (2302, 2375) while ring=2's sym-Dirichlet (485.8) is a wild outlier next to
+  ring=1 (51.4) and ring=3 (27.6) — no ring count is a clear standardization
+  target yet.
+- **Slits alone** is a clean win: 2390→2153 (−9.9 %) with flips still 0 and
+  sym-Dirichlet in line with baseline (52.4).
+- **Carve+slits combined is worse than either alone**, not just on chart
+  count relative to slits-alone (2022 vs 2153 is actually fewer — the
+  regression is on *quality*): flips go from 0 to **4**, and sym-Dirichlet
+  balloons **~200 000×** (45.8 → 9 533 546). Re-run twice — byte-identical
+  both times. This is exactly the spec's §7 warning materializing: fold-rescue
+  slits opening a sliver-dominated chart, here compounded by carve fragments
+  feeding it. A blind flip of both defaults would ship this regression to
+  every caller.
+
+**Defaults decision: stay OFF** (`repairCarveRings = 0`, `foldRescueSlits = 0`;
+the padding knobs remain opt-in). Rationale:
+
+1. The spec §7 success criterion (≤ 55 k charts on ~480 k faces, 0.11–0.13
+   charts/face, coverage ≥ 0.30 at padding 2 / 4096²) is defined on a
+   Truck-class mesh that is **not present on this machine** — there is no
+   direct evidence the defaults help on the mesh class the criterion targets.
+2. On the one mesh available, the combined configuration measured **worse
+   than either knob alone** — real flipped triangles and a catastrophic
+   distortion outlier, not merely a smaller-than-hoped win.
+3. Carve-ring sensitivity is non-monotonic with no obviously-better fixed
+   value.
+
+No golden re-freeze: defaults are unchanged, so `tests/golden/` fixtures
+still reflect the current (591/591-green) behavior.
+
+**What to try next:**
+
+- **Ridge-snapped carve boundaries**: route the carve-ring cut along a nearby
+  ridge/curvature feature instead of a blind N-ring band, to avoid slicing
+  through the sliver-thin geometry implicated in the sym-Dirichlet blowup
+  above.
+- **Enclose-test revision** (per Task 7's gate analysis): the post-repair
+  merge's `wouldEnclose` rejects outnumber budget rejects ~3.3–3.7× on
+  `mesh.ply`, yet folding pairs still pass both gates and ship as extra
+  fragments — a geometry-aware (rather than blanket) enclose test might let
+  more carve-created fragments re-merge instead of shipping as extra tiny
+  charts.
+- **The pending Truck-class sweep**: re-run this Step-1/Step-2 sweep (all
+  arms above, plus the `mesh.ply` / `roi100k` / `ours128k` cross-checks) on a
+  genuine Truck-class mesh (a Tanks-and-Temples splat reconstruction,
+  QEM-decimated aggressiveness 7 to ~500 k faces) — via the Python wheel and
+  the new `unwrap()` knobs (`docs/PYTHON.md`) — on the machine that has that
+  data, the study's L4 box (spec §7). The ≤ 55 k charts / 0.11–0.13 charts-per-face
+  / ≥ 0.30 coverage criterion is only meaningful measured there.
+
 ## 5. Assessment
 
 | Stage | Verdict |
