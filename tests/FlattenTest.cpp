@@ -30,10 +30,17 @@
 #include <halfmesh/Parametrize.h>
 #include <halfmesh/AtlasCharting.h>
 
+// Internal Module A<->B bridge header (src/ on this target's include path — see
+// tests/CMakeLists.txt): brings in detail::FoldDiagnosis + the 5-arg
+// detail::ChartFacesFold overload the fold-diagnosis test below calls directly
+// (mirrors tests/AtlasTest.cpp's use of the same header).
+#include "ChartFlattenCache.h"
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <numeric> // std::iota (FoldDiagnosisReportsOffendingFaces face list)
 #include <string>
 #include <vector>
 
@@ -827,6 +834,54 @@ TEST(Flatten, MeanValueTutteStaysFlipFree)
 	ASSERT_TRUE(s.allFinite) << "mean-value Tutte produced non-finite UVs";
 	EXPECT_EQ(s.flips, 0) << "mean-value Tutte init lost the flip-free guarantee";
 	EXPECT_LT(s.avgSdEnergy, 6.0) << "mean-value Tutte distortion unexpectedly large";
+}
+
+// ---------------------------------------------------------------------------
+// Fold diagnosis (task 4, §6.1 prerequisite): detail::ChartFacesFold's 5-arg
+// overload must report WHICH faces made a chart fold, as global face ids
+// (sorted, deduped), so a future repair can carve around them.
+//
+// Fan of `n` triangles around an interior apex with total apex angle
+// `angleSum` > 2π: rim vertices zig-zag in z so each triangle keeps the
+// prescribed apex angle in 3D. A shipped (LSCM/Tutte + SLIM) flattening of
+// this disk must either flip or globally self-overlap.
+// ---------------------------------------------------------------------------
+static Mesh SaddleFan(int n = 12, double angleSum = 3.0 * M_PI)
+{
+	Mesh m;
+	m.vertices.emplace_back(0.f, 0.f, 0.f); // apex, vertex 0
+	const double step = angleSum / n;
+	// Lay rim vertices on a unit cone-of-directions: azimuth advances by
+	// `step` (total 3π wraps 1.5 turns), alternating elevation folds the
+	// surplus angle into 3D so the mesh is embedded (non-self-intersecting).
+	for (int i = 0; i <= n; ++i) {
+		const double az = step * i * (2.0 * M_PI / angleSum); // embed within one turn
+		const double el = (i % 2 == 0) ? 0.35 : -0.35; // zig-zag creates the excess
+		m.vertices.emplace_back(static_cast<float>(std::cos(az) * std::cos(el)),
+		                        static_cast<float>(std::sin(az) * std::cos(el)),
+		                        static_cast<float>(std::sin(el)));
+	}
+	for (int i = 1; i <= n; ++i)
+		m.faces.emplace_back(0u, static_cast<unsigned>(i), static_cast<unsigned>(i + 1));
+	return m;
+}
+
+TEST(Flatten, FoldDiagnosisReportsOffendingFaces)
+{
+	Mesh mesh = SaddleFan();
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> faces(mesh.faces.size());
+	std::iota(faces.begin(), faces.end(), 0u);
+	halfmesh::ParametrizeParams params;
+	halfmesh::detail::FoldDiagnosis diag;
+	const bool folds = halfmesh::detail::ChartFacesFold(mesh, faces, params, nullptr, &diag);
+	// Fixture premise: the saddle fan folds under the shipped flatten. If this
+	// ever fails, raise the zig-zag amplitude / angleSum — do not weaken the test.
+	ASSERT_TRUE(folds);
+	ASSERT_FALSE(diag.badFaces.empty());
+	EXPECT_TRUE(std::is_sorted(diag.badFaces.begin(), diag.badFaces.end()));
+	for (Mesh::FIndex f : diag.badFaces)
+		EXPECT_LT(f, mesh.faces.size());
 }
 
 } // namespace

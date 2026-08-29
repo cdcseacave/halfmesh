@@ -225,7 +225,11 @@ target_link_libraries(parametrize_test PRIVATE
 halfmesh_discover_tests(parametrize_test)
 
 # flatten_test: per-chart UV flattening — Tutte + ARAP/SLIM
+# Needs src/ on the include path for ChartFlattenCache.h: the fold-diagnosis
+# test reaches detail::FoldDiagnosis + the 5-arg detail::ChartFacesFold overload
+# directly (no public header — mirrors atlas_test/internals_test's src/ include).
 add_executable(flatten_test FlattenTest.cpp)
+target_include_directories(flatten_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(flatten_test PRIVATE
     GTest::gtest
     GTest::gtest_main

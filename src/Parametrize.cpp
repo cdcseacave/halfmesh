@@ -44,6 +44,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint> // int32_t (ChartUVSelfOverlaps' collector first-owner buffer)
 #include <functional> // std::function (cut-to-disk union-find)
 #include <limits> // std::numeric_limits (cut-to-disk Dijkstra)
 #include <numeric> // std::iota (cut-to-disk union-find)
@@ -1634,7 +1635,11 @@ bool CutChartToDisk(ChartMesh& cm)
 // acceptance in FlattenChart and the fold verdict in ChartFolds so the repair
 // decision stays consistent with the map that actually ships.
 // -------------------------------------------------------------------------
-int CountRealFlips(const ChartMesh& cm, const std::vector<Vec2>& uv)
+// `flipped`, when non-null, receives the LOCAL triangle index of every counted
+// flip (appended, not cleared) — used to build detail::FoldDiagnosis. Passing
+// a non-null collector never changes the returned count: the same triangles
+// are counted, in the same order, under the same sliver exemption.
+int CountRealFlips(const ChartMesh& cm, const std::vector<Vec2>& uv, std::vector<int>* flipped = nullptr)
 {
 	const size_t nf = cm.faces.size();
 	std::vector<double> src(nf, 0.0);
@@ -1650,8 +1655,11 @@ int CountRealFlips(const ChartMesh& cm, const std::vector<Vec2>& uv)
 		if (src[t] < epsA)
 			continue; // input-degenerate sliver: orientation is noise
 		const auto& f = cm.faces[t];
-		if (SignedArea2x(uv[f[0]], uv[f[1]], uv[f[2]]) <= 0.0)
+		if (SignedArea2x(uv[f[0]], uv[f[1]], uv[f[2]]) <= 0.0) {
 			++flips;
+			if (flipped != nullptr)
+				flipped->push_back(static_cast<int>(t));
+		}
 	}
 	return flips;
 }
@@ -1673,7 +1681,17 @@ int CountRealFlips(const ChartMesh& cm, const std::vector<Vec2>& uv)
 // gridLongSide == 0 chooses an adaptive coarse grid (cheap enough for the
 // per-round repair probes); the shipping guard passes a fixed fine grid to
 // also catch small folds below the coarse grid's sensitivity.
-bool ChartUVSelfOverlaps(const ChartMesh& cm, const std::vector<Vec2>& uv, int gridLongSide = 0)
+//
+// `colliding`, when non-null, receives LOCAL triangle indices (appended, not
+// cleared): both the first owner and the collider of every texel that turns
+// an overlap. This switches the per-texel buffer from uint8 occupancy to an
+// int32 first-owner-triangle id, but the covered/overlaps counting semantics
+// — and hence the returned verdict and both thresholds below — are IDENTICAL
+// to the uint8 path: a texel counts as an overlap exactly once, on its first
+// collision; further triangles landing on an already-overlapping texel are a
+// no-op either way. The two buffer strategies are kept separate (rather than
+// always paying for int32) so the null-collector fast path is untouched.
+bool ChartUVSelfOverlaps(const ChartMesh& cm, const std::vector<Vec2>& uv, int gridLongSide = 0, std::vector<int>* colliding = nullptr)
 {
 	const size_t nf = cm.faces.size();
 	if (nf <= 1 || uv.size() != cm.verts.size())
@@ -1711,25 +1729,51 @@ bool ChartUVSelfOverlaps(const ChartMesh& cm, const std::vector<Vec2>& uv, int g
 	const double scale = static_cast<double>(longSide) / std::max(w, h);
 	const int W = std::max(1, static_cast<int>(std::ceil(w * scale)));
 	const int H = std::max(1, static_cast<int>(std::ceil(h * scale)));
-	std::vector<uint8_t> cover(static_cast<size_t>(W) * H, 0);
 	long covered = 0, overlaps = 0;
-	for (size_t t = 0; t < nf; ++t) {
-		if (src[t] < epsA)
-			continue; // input-degenerate sliver: its UV placement is noise
-		const auto& f = cm.faces[t];
-		const Vec2 a((uv[f[0]].x() - minX) * scale, (uv[f[0]].y() - minY) * scale);
-		const Vec2 b((uv[f[1]].x() - minX) * scale, (uv[f[1]].y() - minY) * scale);
-		const Vec2 c((uv[f[2]].x() - minX) * scale, (uv[f[2]].y() - minY) * scale);
-		RasterizeTriangleBary<double>(a, b, c, W, H, [&](int x, int y, const Vec3&) {
-			uint8_t& cvr = cover[static_cast<size_t>(y) * W + x];
-			if (cvr == 0) {
-				cvr = 1;
-				++covered;
-			} else if (cvr == 1) {
-				cvr = 2;
-				++overlaps;
-			}
-		});
+	if (colliding != nullptr) {
+		// Diagnosis path: per-texel FIRST-OWNER triangle id (-1 = uncovered,
+		// -2 = already-counted overlap) instead of a uint8 occupancy count.
+		std::vector<int32_t> owner(static_cast<size_t>(W) * H, -1);
+		for (size_t t = 0; t < nf; ++t) {
+			if (src[t] < epsA)
+				continue; // input-degenerate sliver: its UV placement is noise
+			const auto& f = cm.faces[t];
+			const Vec2 a((uv[f[0]].x() - minX) * scale, (uv[f[0]].y() - minY) * scale);
+			const Vec2 b((uv[f[1]].x() - minX) * scale, (uv[f[1]].y() - minY) * scale);
+			const Vec2 c((uv[f[2]].x() - minX) * scale, (uv[f[2]].y() - minY) * scale);
+			RasterizeTriangleBary<double>(a, b, c, W, H, [&](int x, int y, const Vec3&) {
+				int32_t& own = owner[static_cast<size_t>(y) * W + x];
+				if (own == -1) {
+					own = static_cast<int32_t>(t);
+					++covered;
+				} else if (own >= 0) {
+					++overlaps;
+					colliding->push_back(static_cast<int>(own));
+					colliding->push_back(static_cast<int>(t));
+					own = -2; // counted: further hits on this texel are a no-op
+				}
+			});
+		}
+	} else {
+		std::vector<uint8_t> cover(static_cast<size_t>(W) * H, 0);
+		for (size_t t = 0; t < nf; ++t) {
+			if (src[t] < epsA)
+				continue; // input-degenerate sliver: its UV placement is noise
+			const auto& f = cm.faces[t];
+			const Vec2 a((uv[f[0]].x() - minX) * scale, (uv[f[0]].y() - minY) * scale);
+			const Vec2 b((uv[f[1]].x() - minX) * scale, (uv[f[1]].y() - minY) * scale);
+			const Vec2 c((uv[f[2]].x() - minX) * scale, (uv[f[2]].y() - minY) * scale);
+			RasterizeTriangleBary<double>(a, b, c, W, H, [&](int x, int y, const Vec3&) {
+				uint8_t& cvr = cover[static_cast<size_t>(y) * W + x];
+				if (cvr == 0) {
+					cvr = 1;
+					++covered;
+				} else if (cvr == 1) {
+					cvr = 2;
+					++overlaps;
+				}
+			});
+		}
 	}
 	// Repair probes (adaptive grid) use a relative threshold: bisecting a chart
 	// over a cosmetic sub-0.1% graze would fragment the segmentation for no
@@ -1900,7 +1944,14 @@ ChartMesh ExtractOneChart(const Mesh& mesh, const std::vector<Mesh::FIndex>& fac
 // We classify per source-triangle area against a relative threshold (epsA =
 // meanArea·1e-6) so a real fold (normal-area triangle) is told apart from a degenerate
 // sliver.
-bool ChartOverDistorted(const ChartMesh& cm, const std::vector<Vec2>& uv, float tau)
+// `over`, when non-null, receives LOCAL triangle indices (appended, not
+// cleared): every real-flip face AND every face whose OWN symmetric-Dirichlet
+// exceeds tau (a face can appear via either or both conditions — duplicates
+// are the caller's dedup responsibility). Passing a non-null collector never
+// changes the returned verdict, the realFlips/sliver classification, or the
+// area-weighted sd computed below — those are unchanged from the collector-
+// free path.
+bool ChartOverDistorted(const ChartMesh& cm, const std::vector<Vec2>& uv, float tau, std::vector<int>* over = nullptr)
 {
 	if (uv.size() != cm.verts.size())
 		return false;
@@ -1922,16 +1973,22 @@ bool ChartOverDistorted(const ChartMesh& cm, const std::vector<Vec2>& uv, float 
 		const bool degen = tr.area < epsA;
 		if (degen)
 			sliver = true;
-		if (SignedArea2x(uv[f[0]], uv[f[1]], uv[f[2]]) <= 0.0 && !degen)
+		if (SignedArea2x(uv[f[0]], uv[f[1]], uv[f[2]]) <= 0.0 && !degen) {
 			++realFlips;
+			if (over != nullptr)
+				over->push_back(static_cast<int>(i));
+		}
 		if (tr.degenerate)
 			continue;
 		Mat2 Uu;
 		Uu.col(0) = uv[f[1]] - uv[f[0]];
 		Uu.col(1) = uv[f[2]] - uv[f[0]];
 		const Mat2 J = Uu * tr.invX;
-		esum += tr.area * SymDirEnergyJ(J);
+		const double e = SymDirEnergyJ(J);
+		esum += tr.area * e;
 		asum += tr.area;
+		if (over != nullptr && e > static_cast<double>(tau))
+			over->push_back(static_cast<int>(i));
 	}
 	if (realFlips > 0)
 		return true; // a real fold survived the flip-free init → must split
@@ -1958,6 +2015,25 @@ struct FoldAccept
 	bool valid = false;
 };
 
+// Convert LOCAL triangle indices (possibly unsorted, possibly duplicated —
+// e.g. gathered from more than one collector) into detail::FoldDiagnosis:
+// GLOBAL face ids, sorted ascending, deduplicated. `diag` must be non-null.
+void FillFoldDiagnosis(const ChartMesh& cm, std::vector<int>& local, detail::FoldDiagnosis* diag)
+{
+	std::sort(local.begin(), local.end());
+	local.erase(std::unique(local.begin(), local.end()), local.end());
+	diag->badFaces.clear();
+	diag->badFaces.reserve(local.size());
+	for (int t : local)
+		diag->badFaces.push_back(cm.globalFid[static_cast<size_t>(t)]);
+	// cm.globalFid is monotonic in local index (ExtractCharts/ExtractOneChart
+	// walk faces in global order, and CutAlongEdges never reorders faces), so
+	// this is already sorted — re-sort/dedup anyway so the contract does not
+	// silently depend on that invariant.
+	std::sort(diag->badFaces.begin(), diag->badFaces.end());
+	diag->badFaces.erase(std::unique(diag->badFaces.begin(), diag->badFaces.end()), diag->badFaces.end());
+}
+
 // Does this chart fold (OR, when a distortion budget is set, ship an over-stretched
 // map) the SAME way ParametrizeCharts does? This is the predicate the segmentation
 // flip-repair (RepairDevelopableFlips) drives its bisect-and-requeue split on.
@@ -1974,7 +2050,16 @@ struct FoldAccept
 // When `out` is non-null and the verdict is "does not fold", the accepted UVs are
 // deposited in *out (see FoldAccept) so the final accepting verdict per shipping
 // chart can be reused instead of flattened a second time. Never affects the verdict.
-bool ChartFolds(ChartMesh& cm, const ParametrizeParams& params, FoldAccept* out = nullptr)
+//
+// When `diag` is non-null and the verdict IS "folds", *diag is filled with the
+// offending faces (see detail::FoldDiagnosis) so the repair (§6.1) can carve
+// around them: on every return-true path below, the failing collector(s) are
+// re-run (with their out-params) on the SAME judged map that produced the
+// verdict, and the result converted to global ids. This is one extra collector
+// pass, paid only for a folding chart — folding charts get re-flattened after
+// the split anyway, so the cost is negligible, and the fast accept path above
+// (and the verdict itself) is never touched by a non-null `diag`.
+bool ChartFolds(ChartMesh& cm, const ParametrizeParams& params, FoldAccept* out = nullptr, detail::FoldDiagnosis* diag = nullptr)
 {
 	if (cm.faces.size() <= 1)
 		return false;
@@ -2004,6 +2089,26 @@ bool ChartFolds(ChartMesh& cm, const ParametrizeParams& params, FoldAccept* out 
 			out->valid = true;
 		}
 	};
+	// diag support for a mapFolds() == true verdict: re-probe with collectors.
+	const auto diagMapFolds = [&](const std::vector<Vec2>& uv) {
+		if (diag == nullptr)
+			return;
+		std::vector<int> local;
+		if (uv.size() == cm.verts.size()) {
+			std::vector<int> flipped, colliding;
+			CountRealFlips(cm, uv, &flipped);
+			ChartUVSelfOverlaps(cm, uv, /*gridLongSide=*/512, &colliding);
+			local.insert(local.end(), flipped.begin(), flipped.end());
+			local.insert(local.end(), colliding.begin(), colliding.end());
+		} else {
+			// Unusable map (uv/vert count mismatch — a safety net, not expected
+			// in practice): no reliable per-face signal, so the whole chart is
+			// the carve target.
+			local.resize(cm.faces.size());
+			std::iota(local.begin(), local.end(), 0);
+		}
+		FillFoldDiagnosis(cm, local, diag);
+	};
 
 	// Judge the SHIPPED map (init + SLIM), always. The old fast path judged the
 	// INIT only, assuming refinement preserves what matters — SLIM's barrier
@@ -2021,15 +2126,25 @@ bool ChartFolds(ChartMesh& cm, const ParametrizeParams& params, FoldAccept* out 
 		std::vector<Vec2> uv;
 		if (!FlattenChart(cm, params, uv)) {
 			FlattenChartFallback(cm, uv);
-			if (mapFolds(uv))
+			if (mapFolds(uv)) {
+				diagMapFolds(uv);
 				return true;
+			}
 			accept(uv, /*finalUv=*/true); // ships this PCA map (no SLIM after fallback)
 			return false;
 		}
-		if (mapFolds(uv))
+		if (mapFolds(uv)) {
+			diagMapFolds(uv);
 			return true;
-		if (params.developableMaxUvDistortion > 0.0f && ChartOverDistorted(cm, uv, params.developableMaxUvDistortion))
+		}
+		if (params.developableMaxUvDistortion > 0.0f && ChartOverDistorted(cm, uv, params.developableMaxUvDistortion)) {
+			if (diag != nullptr) {
+				std::vector<int> over;
+				ChartOverDistorted(cm, uv, params.developableMaxUvDistortion, &over);
+				FillFoldDiagnosis(cm, over, diag);
+			}
 			return true;
+		}
 		accept(uv, /*finalUv=*/true); // ships this full init+SLIM map
 		return false;
 	}
@@ -2111,9 +2226,16 @@ bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
 bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
                     const ParametrizeParams& params, ChartFlattenSlot* out)
 {
+	return ChartFacesFold(mesh, faces, params, out, nullptr);
+}
+
+bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
+                    const ParametrizeParams& params, ChartFlattenSlot* out,
+                    FoldDiagnosis* diag)
+{
 	ChartMesh cm = ExtractOneChart(mesh, faces);
 	FoldAccept acc;
-	if (ChartFolds(cm, params, out != nullptr ? &acc : nullptr))
+	if (ChartFolds(cm, params, out != nullptr ? &acc : nullptr, diag))
 		return true;
 	if (out != nullptr && acc.valid) {
 		// The chart ships: hand the accepting verdict's artifacts to the caller.
