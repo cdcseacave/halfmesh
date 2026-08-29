@@ -1436,6 +1436,28 @@ static Mesh DisjointQuads(int k)
 	return m;
 }
 
+// K DisjointQuads charts (2 faces each), one chart per quad, all sharing the
+// same 4-texel-square local UVs -- the shared fixture for both §6.5 per-size
+// padding trigger tests below (tinyChartSide via chart side, debrisChartFaces
+// via chart face count).
+static void BuildTinyChartFixture(int k, Mesh& mesh, std::vector<unsigned>& faceChart)
+{
+	mesh = DisjointQuads(k);
+	faceChart.resize(mesh.faces.size());
+	for (size_t f = 0; f < faceChart.size(); ++f)
+		faceChart[f] = static_cast<unsigned>(f / 2);
+	mesh.faceTexcoords.assign(mesh.faces.size() * 3, Mesh::TexCoord(0.f, 0.f));
+	for (size_t f = 0; f < mesh.faces.size(); f += 2) {
+		const Mesh::TexCoord q[4] = {{0.f, 0.f}, {4.f, 0.f}, {4.f, 4.f}, {0.f, 4.f}};
+		mesh.faceTexcoords[f * 3 + 0] = q[0];
+		mesh.faceTexcoords[f * 3 + 1] = q[1];
+		mesh.faceTexcoords[f * 3 + 2] = q[2];
+		mesh.faceTexcoords[(f + 1) * 3 + 0] = q[0];
+		mesh.faceTexcoords[(f + 1) * 3 + 1] = q[2];
+		mesh.faceTexcoords[(f + 1) * 3 + 2] = q[3];
+	}
+}
+
 // §6.5: tiny charts (max unpadded side <= tinyChartSide) get a 1-texel gutter
 // instead of the uniform `padding`. With K=64 identical 4-texel charts packed
 // (no fitToResolution) at a page side of 64, the padded rect area at a 4-texel
@@ -1450,25 +1472,13 @@ static Mesh DisjointQuads(int k)
 // coverage cannot differ; that would falsely pass a no-op implementation.)
 // Also verifies the per-chart pad vector cannot make charts bleed into each
 // other: every padded chart bbox must stay disjoint from every other chart's
-// on the same page.
+// on the same page (ChartBBoxes / BoundingRectsDisjoint, defined above).
 TEST(AtlasTest, TinyChartPaddingRaisesCoverage)
 {
 	constexpr int K = 64;
-	Mesh mesh = DisjointQuads(K);
-	std::vector<unsigned> faceChart(mesh.faces.size());
-	for (size_t f = 0; f < faceChart.size(); ++f)
-		faceChart[f] = static_cast<unsigned>(f / 2);
-	// identical 4-texel-square local UVs per chart
-	mesh.faceTexcoords.assign(mesh.faces.size() * 3, Mesh::TexCoord(0.f, 0.f));
-	for (size_t f = 0; f < mesh.faces.size(); f += 2) {
-		const Mesh::TexCoord q[4] = {{0.f, 0.f}, {4.f, 0.f}, {4.f, 4.f}, {0.f, 4.f}};
-		mesh.faceTexcoords[f * 3 + 0] = q[0];
-		mesh.faceTexcoords[f * 3 + 1] = q[1];
-		mesh.faceTexcoords[f * 3 + 2] = q[2];
-		mesh.faceTexcoords[(f + 1) * 3 + 0] = q[0];
-		mesh.faceTexcoords[(f + 1) * 3 + 1] = q[2];
-		mesh.faceTexcoords[(f + 1) * 3 + 2] = q[3];
-	}
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	BuildTinyChartFixture(K, mesh, faceChart);
 	halfmesh::AtlasParams uniform;
 	uniform.resolution = 64; // small enough that padding=4 needs >1 page; see comment above
 	uniform.padding = 4;
@@ -1480,39 +1490,33 @@ TEST(AtlasTest, TinyChartPaddingRaisesCoverage)
 	const auto rT = halfmesh::PackAtlas(meshT, faceChart, K, tiny);
 	EXPECT_GT(rT.coverage, rU.coverage); // less gutter, same triangles
 
-	// charts must not overlap: padded bboxes pairwise disjoint per page.
-	// Compute each chart's final UV bbox in texels from meshT.faceTexcoords,
-	// then an O(K^2) pairwise interval-disjointness test per page (K=64: trivial).
-	struct Bbox
-	{
-		float minX = std::numeric_limits<float>::max();
-		float minY = std::numeric_limits<float>::max();
-		float maxX = std::numeric_limits<float>::lowest();
-		float maxY = std::numeric_limits<float>::lowest();
-	};
-	std::vector<Bbox> bbox(K);
-	for (size_t f = 0; f < meshT.faces.size(); ++f) {
-		const unsigned c = faceChart[f];
-		for (int k = 0; k < 3; ++k) {
-			const Mesh::TexCoord& uv = meshT.faceTexcoords[f * 3 + k];
-			const float px = uv.x() * static_cast<float>(rT.width);
-			const float py = uv.y() * static_cast<float>(rT.height);
-			bbox[c].minX = std::min(bbox[c].minX, px);
-			bbox[c].maxX = std::max(bbox[c].maxX, px);
-			bbox[c].minY = std::min(bbox[c].minY, py);
-			bbox[c].maxY = std::max(bbox[c].maxY, py);
-		}
-	}
-	for (int i = 0; i < K; ++i) {
-		for (int j = i + 1; j < K; ++j) {
-			if (rT.chartPage[i] != rT.chartPage[j])
-				continue; // different pages can never overlap
-			const bool overlapX = bbox[i].minX < bbox[j].maxX && bbox[j].minX < bbox[i].maxX;
-			const bool overlapY = bbox[i].minY < bbox[j].maxY && bbox[j].minY < bbox[i].maxY;
-			EXPECT_FALSE(overlapX && overlapY)
-			    << "charts " << i << " and " << j << " overlap on page " << rT.chartPage[i];
-		}
-	}
+	const auto rects = ChartBBoxes(meshT, faceChart, K, rT.chartPage, rT.width, rT.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "tinyChartSide padding let charts overlap";
+}
+
+// Same mechanism as TinyChartPaddingRaisesCoverage above (same fixture, same
+// resolution=64 rationale), through the OTHER §6.5 trigger: every
+// BuildTinyChartFixture chart has exactly 2 faces, so debrisChartFaces=2
+// qualifies all of them (tinyChartSide stays 0, so only debris fires).
+TEST(AtlasTest, DebrisChartPaddingRaisesCoverage)
+{
+	constexpr int K = 64;
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	BuildTinyChartFixture(K, mesh, faceChart);
+	halfmesh::AtlasParams uniform;
+	uniform.resolution = 64;
+	uniform.padding = 4;
+	Mesh meshU = mesh;
+	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform);
+	halfmesh::AtlasParams debris = uniform;
+	debris.debrisChartFaces = 2; // every 2-face chart qualifies → pad 1
+	Mesh meshD = mesh;
+	const auto rD = halfmesh::PackAtlas(meshD, faceChart, K, debris);
+	EXPECT_GT(rD.coverage, rU.coverage); // less gutter, same triangles
+
+	const auto rects = ChartBBoxes(meshD, faceChart, K, rD.chartPage, rD.width, rD.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "debrisChartFaces padding let charts overlap";
 }
 
 // Deterministic "staircase terrain": an n×n grid whose vertex heights are
