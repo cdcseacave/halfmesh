@@ -14,18 +14,24 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   within N `TopoNeighbor` rings of the diagnosed failure — one small extra
   chart instead of a blind-PCA-bisection cascade — falling back to bisection
   when the failure isn't localized (region ≥ half the chart). The
-  termination guarantee is unchanged.
+  termination guarantee is unchanged. Do not enable together with
+  `foldRescueSlits` without re-checking the Task 9 sweep (`docs/BENCHMARKS.md`
+  §4) on your mesh — combined, the two measured *worse* than either alone.
 - **Fold-rescue slits** (§6.2, `ParametrizeParams::foldRescueSlits`, opt-in,
   default `0`): a folding chart is cut from its worst interior vertex to the
   boundary and re-flattened, up to N times, before any split — the chart
   ships as ONE chart with one extra seam instead of ≥2 padded rects. Lives
   inside `FlattenChart` so the repair verdict and the shipped map agree on
-  every path, exactly the `cutToDisk` contract.
+  every path, exactly the `cutToDisk` contract. Same combined-knob caution as
+  `repairCarveRings` above — see `docs/BENCHMARKS.md` §4.
 - **Post-repair merge fold-blacklist** (§6.3, always on, no knob): a
   candidate pair that demonstrably re-folds after merging is memoized (keyed
   by the two sides' smallest global face ids, invariant under relabelling)
   so later merge rounds never retry it — removes accepted-then-resplit
-  churn from the post-repair merge↔repair rounds.
+  churn from the post-repair merge↔repair rounds. **This is a
+  default-segmentation-output change**: chart counts on meshes with
+  fold/re-merge churn may differ slightly (e.g. `mesh.ply`: 2816→2779) even
+  with all opt-in knobs off.
 - **Triangle coverage metric** (`AtlasResult::coverage`): the fraction of the
   texel budget actually under UV geometry, as opposed to `occupancy`
   (padded-rect fill, which reads high with many small charts). Exposed via

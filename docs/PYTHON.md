@@ -196,6 +196,10 @@ re-deriving it at the Python boundary.
   diagnosed failure, falling back to PCA bisection when the failure isn't
   localized. `2` is the sane on-value. **Default `0` (off)** — see
   `docs/BENCHMARKS.md` §4 for the Task 9 sweep and why it stayed off.
+  Combined with `fold_rescue_slits` this measured *worse* than either knob
+  alone on the one mesh available for the Task 9 sweep (see
+  `docs/BENCHMARKS.md` §4); do not enable both without re-checking that
+  sweep on your mesh.
 - `fold_rescue_slits` — fold-rescue slit count
   (`ParametrizeParams::foldRescueSlits`): `0` disables (the default); when
   `> 0`, a folding chart is slit from its worst interior vertex to the
