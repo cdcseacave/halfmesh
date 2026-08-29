@@ -475,7 +475,8 @@ void ComputeVertexDefect(const SegmentState& s, std::vector<double>& dabs,
                          std::vector<unsigned>& vtotal);
 
 unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params,
-                          std::vector<unsigned>& chart, unsigned numCharts, double budget)
+                          std::vector<unsigned>& chart, unsigned numCharts, double budget,
+                          detail::AtlasSegmentStats::MergeRound* mr = nullptr)
 {
 	if (numCharts <= 1 || budget <= 0.0)
 		return numCharts;
@@ -614,8 +615,19 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		if (a == b)
 			return;
 		const double e = combinedError(a, b);
-		if (e <= budget && !wouldEnclose(a, b))
-			pq.emplace(e, std::min(a, b), std::max(a, b));
+		if (e > budget) {
+			if (mr != nullptr)
+				++mr->pairsBudgetRejected;
+			return;
+		}
+		if (wouldEnclose(a, b)) {
+			if (mr != nullptr)
+				++mr->pairsEncloseRejected;
+			return;
+		}
+		pq.emplace(e, std::min(a, b), std::max(a, b));
+		if (mr != nullptr)
+			++mr->pairsPushed;
 	};
 	for (unsigned c = 0; c < numCharts; ++c) {
 		if (find(c) != c)
@@ -630,15 +642,23 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		if (ar == br)
 			continue;
 		const double cur = combinedError(ar, br);
-		if (cur > budget)
+		if (cur > budget) {
+			if (mr != nullptr)
+				++mr->pairsBudgetRejected;
 			continue;
+		}
 		if (cur > e + 1e-12) { // stale (moments changed) → re-queue at true cost
 			pq.emplace(cur, std::min(ar, br), std::max(ar, br));
 			continue;
 		}
-		if (wouldEnclose(ar, br))
+		if (wouldEnclose(ar, br)) {
+			if (mr != nullptr)
+				++mr->pairsEncloseRejected;
 			continue; // would enclose a cone/saddle vertex → fold; skip
+		}
 		const unsigned r = doMerge(ar, br);
+		if (mr != nullptr)
+			++mr->merges;
 		for (unsigned n : adj[r])
 			tryPush(r, n);
 	}
@@ -1114,7 +1134,8 @@ void BisectFaces(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
 unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params,
                                 std::vector<unsigned>& chart, unsigned numCharts,
                                 detail::ChartFlattenCache* cache,
-                                const std::vector<unsigned>* frontierIn = nullptr)
+                                const std::vector<unsigned>* frontierIn = nullptr,
+                                unsigned* splitCount = nullptr)
 {
 	const Mesh& mesh = s.mesh;
 
@@ -1225,6 +1246,8 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 #else
 	(void)splits;
 #endif
+	if (splitCount != nullptr)
+		*splitCount += static_cast<unsigned>(splits);
 	return Compact(chart);
 }
 
@@ -1245,7 +1268,8 @@ namespace detail {
 // overload; when `cache` is non-null the flip-repair additionally deposits each
 // accepted (shipping) chart's flatten artifacts for ParametrizeCharts to reuse.
 unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
-                       std::vector<unsigned>& faceChart, ChartFlattenCache* cache)
+                       std::vector<unsigned>& faceChart, ChartFlattenCache* cache,
+                       AtlasSegmentStats* stats)
 {
 	mesh.SyncFaces();
 	faceChart.clear();
@@ -1271,14 +1295,29 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 	//                          hard flip-free guarantee.
 	// Connectivity is enforced over TOPO edges (charts span creases when the surface
 	// is developable across them), so the result is robust to noisy MVS normals.
+	//
+	// `stats` (§6.3, opt-in, default nullptr) records per-stage chart counts plus,
+	// for every post-repair merge round, whether pairs are rejected by the cone
+	// budget, the wouldEnclose anti-fold veto, or accepted then split right back
+	// by the repair wave — the three candidate explanations for why
+	// postRepairMergeRounds recovers so little. Every write below is guarded on
+	// `stats != nullptr`, so a nullptr caller pays nothing and gets byte-identical
+	// output.
 	std::vector<unsigned> chart;
 	unsigned numCharts = ConeLloydSegment(s, params, chart);
 	numCharts = EnforceConnectivity(s, chart);
+	if (stats != nullptr)
+		stats->lloydCharts = numCharts;
 	numCharts = DevelopableMerge(s, params, chart, numCharts,
 	                             static_cast<double>(params.developableMaxConeError));
+	if (stats != nullptr)
+		stats->mergedCharts = numCharts;
 	numCharts = EnforceConnectivity(s, chart);
 	if (params.developableFlipRepairRounds > 0) {
-		numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache);
+		numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, nullptr,
+		                                   stats != nullptr ? &stats->repairSplits : nullptr);
+		if (stats != nullptr)
+			stats->repairedCharts = numCharts;
 		// Post-repair re-merge: recombine the bisection fragments the repair
 		// left behind (nothing else ever merges again), then repair ONLY the
 		// merged charts — a merge that re-folds is split right back, so the
@@ -1286,8 +1325,10 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 		for (unsigned round = 0; round < params.postRepairMergeRounds; ++round) {
 			const unsigned before = numCharts;
 			std::vector<unsigned> pre(chart);
+			AtlasSegmentStats::MergeRound roundStats;
 			numCharts = DevelopableMerge(s, params, chart, numCharts,
-			                             static_cast<double>(params.developableMaxConeError));
+			                             static_cast<double>(params.developableMaxConeError),
+			                             stats != nullptr ? &roundStats : nullptr);
 			// Charts containing faces from ≥2 pre-merge charts are the merged
 			// ("dirty") ones — the only ones whose fold verdict changed.
 			std::vector<unsigned> firstPre(numCharts, NONE);
@@ -1305,15 +1346,48 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 					dirty.push_back(c);
 			if (dirty.empty())
 				break; // nothing merged — converged
-			numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, &dirty);
+			if (stats != nullptr)
+				roundStats.dirtyCharts = static_cast<unsigned>(dirty.size());
+			// Snapshot right before the repair call so a dirty chart id that gets
+			// bisected back apart (a face labelled c before now carries a
+			// different id) can be told apart from one the repair left alone.
+			std::vector<unsigned> preRepair;
+			if (stats != nullptr)
+				preRepair = chart;
+			numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, &dirty,
+			                                   stats != nullptr ? &stats->repairSplits : nullptr);
+			if (stats != nullptr) {
+				const std::unordered_set<unsigned> dirtySet(dirty.begin(), dirty.end());
+				std::unordered_set<unsigned> resplitIds;
+				for (FIndex f = 0; f < s.numFaces; ++f) {
+					const unsigned pc = preRepair[f];
+					if (dirtySet.count(pc) != 0 && chart[f] != pc)
+						resplitIds.insert(pc);
+				}
+				roundStats.resplitCharts = static_cast<unsigned>(resplitIds.size());
+				roundStats.chartsAfter = numCharts;
+				stats->rounds.push_back(roundStats);
+			}
 #ifdef HM_ATLAS_DEBUG
-			std::cerr << "[re-merge] round " << round << ": " << before << " -> " << numCharts << " charts\n";
+			std::cerr << "[re-merge] round " << round << ": " << before << " -> " << numCharts << " charts";
+			if (stats != nullptr) {
+				const AtlasSegmentStats::MergeRound& r = stats->rounds.back();
+				std::cerr << " pushed=" << r.pairsPushed
+				          << " budget-rejects=" << r.pairsBudgetRejected
+				          << " enclose-rejects=" << r.pairsEncloseRejected
+				          << " merges=" << r.merges
+				          << " dirty=" << r.dirtyCharts
+				          << " resplit=" << r.resplitCharts;
+			}
+			std::cerr << "\n";
 #endif
 			if (static_cast<long>(before) - static_cast<long>(numCharts) < static_cast<long>(before / 100))
 				break; // <1% net change — not worth another round
 		}
 	}
 
+	if (stats != nullptr)
+		stats->finalCharts = numCharts;
 	faceChart.assign(chart.begin(), chart.end());
 	return numCharts;
 }

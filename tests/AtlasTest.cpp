@@ -24,6 +24,11 @@
 #include <halfmesh/Parametrize.h>
 #include <halfmesh/RectPacking.h>
 
+// Internal Module A<->B bridge header (src/ on this target's include path — see
+// tests/CMakeLists.txt): brings in detail::AtlasSegmentStats + the cache-aware
+// detail::SegmentCharts overload the stats test below calls directly.
+#include "ChartFlattenCache.h"
+
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -1462,6 +1467,51 @@ TEST(SegmentCharts, PostRepairMergeReducesChartsFoldFree)
 		if (fl[c].size() <= 2)
 			continue;
 		EXPECT_FALSE(detail::ChartFacesFold(m2, fl[c], p2)) << "chart " << c << " folds after re-merge";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test — detail::SegmentCharts's opt-in AtlasSegmentStats out-param (§6.3):
+// the post-repair-merge loop's per-round counters (budget vs. wouldEnclose
+// rejects, accepted merges, dirty vs. resplit charts) are what Task 7 uses to
+// diagnose why postRepairMergeRounds recovers so few charts in practice.
+// Exercises the cache-aware detail:: overload directly on the challenge
+// fixture (tests/data/mesh.ply) — no public API exposes stats, so this test
+// is only reachable via ChartFlattenCache.h (this target's src/ include dir,
+// see tests/CMakeLists.txt).
+// ---------------------------------------------------------------------------
+TEST(SegmentCharts, SegmentationStatsPopulatedOnChallengeMesh)
+{
+	const std::string path = TestMeshPath();
+	if (!std::filesystem::exists(path))
+		GTEST_SKIP() << "mesh.ply not found at " << path;
+
+	Mesh mesh;
+	ASSERT_TRUE(mesh.Load(path)) << "Failed to load " << path;
+	ASSERT_FALSE(mesh.faces.empty());
+
+	ParametrizeParams params;
+	std::vector<unsigned> faceChart;
+	detail::AtlasSegmentStats stats;
+	const unsigned n = detail::SegmentCharts(mesh, params, faceChart, nullptr, &stats);
+
+	std::printf("[SegmentCharts] stats: lloyd=%u merged=%u repaired=%u final=%u repairSplits=%u rounds=%zu\n",
+	            stats.lloydCharts, stats.mergedCharts, stats.repairedCharts, stats.finalCharts,
+	            stats.repairSplits, stats.rounds.size());
+	for (size_t i = 0; i < stats.rounds.size(); ++i) {
+		const auto& r = stats.rounds[i];
+		std::printf("[SegmentCharts]   round %zu: pushed=%u budgetRej=%u encloseRej=%u merges=%u dirty=%u resplit=%u after=%u\n",
+		            i, r.pairsPushed, r.pairsBudgetRejected, r.pairsEncloseRejected,
+		            r.merges, r.dirtyCharts, r.resplitCharts, r.chartsAfter);
+	}
+
+	EXPECT_EQ(stats.finalCharts, n);
+	EXPECT_GE(stats.lloydCharts, stats.mergedCharts); // merge only reduces
+	EXPECT_GE(stats.repairedCharts, stats.mergedCharts); // repair only splits
+	ASSERT_GE(stats.rounds.size(), 1u); // postRepairMergeRounds=2 default
+	for (const auto& r : stats.rounds) {
+		EXPECT_GE(r.merges, r.dirtyCharts ? 1u : 0u);
+		EXPECT_LE(r.resplitCharts, r.dirtyCharts);
 	}
 }
 
