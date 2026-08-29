@@ -1528,7 +1528,7 @@ TEST(SegmentCharts, SegmentationStatsPopulatedOnChallengeMesh)
 }
 
 // ---------------------------------------------------------------------------
-// Test — Task 7 post-repair fold-blacklist: a merged pair whose resulting
+// Test — §6.3 post-repair fold-blacklist: a merged pair whose resulting
 // chart the repair wave split right back (a "fold") is recorded per-round in
 // MergeRound::refoldedPairs, keyed by the two sides' smallest global face ids
 // (invariant under the Compact() id relabelling that happens between rounds).
@@ -1551,8 +1551,14 @@ TEST(AtlasTest, PostRepairMergeNeverRetriesAFoldedUnion)
 
 	std::set<std::pair<Mesh::FIndex, Mesh::FIndex>> seen;
 	for (const auto& r : stats.rounds)
-		for (const auto& p : r.refoldedPairs)
+		for (const auto& p : r.refoldedPairs) {
+			// Contract (minFidA < minFidB, per the brief): asserted rather than
+			// silently canonicalized here, so a producer-side regression that
+			// starts emitting raw root order shows up as a failure at THIS line
+			// instead of being masked by the test re-sorting around it.
+			EXPECT_LT(p.first, p.second) << "refoldedPairs entry not canonically ordered";
 			EXPECT_TRUE(seen.insert(p).second) << "pair re-merged after folding";
+		}
 }
 
 // ---------------------------------------------------------------------------

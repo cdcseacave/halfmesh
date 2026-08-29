@@ -477,7 +477,7 @@ void ComputeVertexDefect(const SegmentState& s, std::vector<double>& dabs,
 // Pair key for two chart identities, keyed by each side's smallest global face
 // id (order-independent, minFidA < minFidB) — the same identity trick as
 // ChartFlattenCache: invariant under the Compact() id relabelling that
-// happens between post-repair merge rounds (Task 7).
+// happens between post-repair merge rounds (§6.3).
 unsigned long long PairKey(Mesh::FIndex minFidA, Mesh::FIndex minFidB)
 {
 	if (minFidA > minFidB)
@@ -500,7 +500,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 	std::vector<double> W(numCharts, 0.0), sz(numCharts, 0.0);
 	std::vector<Normal> s1(numCharts, Normal::Zero());
 	std::vector<Eigen::Matrix3d> s2(numCharts, Eigen::Matrix3d::Zero());
-	// Per-chart smallest global face id (Task 7 pair identity) — faces are
+	// Per-chart smallest global face id (§6.3 pair identity) — faces are
 	// visited in global id order, so the first write per chart is its minimum.
 	std::vector<Mesh::FIndex> minFid(numCharts, std::numeric_limits<Mesh::FIndex>::max());
 	for (FIndex f = 0; f < s.numFaces; ++f) {
@@ -634,7 +634,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		if (a == b)
 			return;
 		if (blockedPairs != nullptr && blockedPairs->count(PairKey(minFid[a], minFid[b])) != 0)
-			return; // Task 7: this identity pair already folded in an earlier round
+			return; // §6.3: this identity pair already folded in an earlier round
 		const double e = combinedError(a, b);
 		if (e > budget) {
 			if (mr != nullptr)
@@ -664,7 +664,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 			continue;
 		// Re-check at pop time, not just at push time: chain absorptions between
 		// this entry's push and pop can drift ar/br's identity (minFid) onto a
-		// pair that became blocked only after the push (Task 7).
+		// pair that became blocked only after the push (§6.3).
 		if (blockedPairs != nullptr && blockedPairs->count(PairKey(minFid[ar], minFid[br])) != 0)
 			continue;
 		const double cur = combinedError(ar, br);
@@ -685,10 +685,15 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		// Capture the pair's identity (each side's smallest global face id)
 		// BEFORE doMerge folds ar's moments (incl. minFid) into br — mergedPairs
 		// reports root ids for now; translated to compacted chart ids below.
+		// Canonicalized fa < fb here (not left to the heap's root order, which
+		// is arbitrary) so every consumer sees the same (minFidA, minFidB) key
+		// PairKey would compute — matches the brief's minFidA < minFidB contract.
 		Mesh::FIndex fa = 0, fb = 0;
 		if (mergedPairs != nullptr) {
 			fa = minFid[ar];
 			fb = minFid[br];
+			if (fa > fb)
+				std::swap(fa, fb);
 		}
 		const unsigned r = doMerge(ar, br);
 		if (mr != nullptr)
@@ -1493,7 +1498,7 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 		// merged charts — a merge that re-folds is split right back, so the
 		// fold-free guarantee is preserved and a round can never regress.
 		//
-		// Task 7 fold-blacklist (always on, internal only, no knob): rounds
+		// §6.3 fold-blacklist (always on, internal only, no knob): rounds
 		// otherwise churn — a pair merges, folds, gets bisected right back by
 		// the repair wave, then a later round re-tries the SAME pair. foldedUnions
 		// memoizes every pair (keyed by each side's smallest global face id, see
