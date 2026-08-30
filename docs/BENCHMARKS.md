@@ -374,10 +374,16 @@ concurrent load: **wall-clock below is indicative only**; chart counts and
 coverage are deterministic.
 
 **Harness.** `hm.unwrap()` at `resolution=4096, padding=2`, i.e. the
-`GenerateAtlas` path consumers call — **not** `atlasbench`, which drives the
-public no-cache `SegmentCharts`/`ParametrizeCharts` pair and measured ~14×
-slower on this mesh (it flattens every chart twice; `GenerateAtlas` threads
-one `ChartFlattenCache` through both modules). `coverage` below is
+`GenerateAtlas` path consumers call — **not** `atlasbench`, which took over an
+hour on this mesh against `hm.unwrap`'s 278 s. Two separate causes, since the
+distinction matters for reading any timing in this file: the engine used to
+drive the public no-cache `SegmentCharts`/`ParametrizeCharts` pair and so
+flattened every chart twice (fixed — it now shares one `ChartFlattenCache`
+like `GenerateAtlas`, worth ~20 % of pipeline time on `mesh.ply`), but the
+**dominant** cost is the quality-metric computation, which is ~84 % of the
+harness's wall clock (`mesh.ply`: 35.3 s of pipeline inside a 227 s process).
+Metric cost is the price of the table below and is not paid by consumers.
+`coverage` below is
 `AtlasResult::coverage`; it was recomputed independently from every written
 PLY and agreed to all printed digits. Flip counts are minority-signed-area
 triangles (an atlas has no global winding convention), with the sliver
@@ -445,13 +451,14 @@ does not.**
   vertex still exists — measure the interior-vertex count distribution over
   charts at repair entry to confirm, then move the rescue earlier rather than
   tuning it.
-- **`atlasbench` benchmarks the wrong path**: `EngineHalfmesh` calls the
-  public `SegmentCharts`/`ParametrizeCharts` pair, so it re-flattens every
-  chart that the repair verdict already flattened, while `GenerateAtlas`
-  shares one `ChartFlattenCache` across both. Chart counts and coverage are
-  unaffected (the partition is identical), but every wall-clock number in
-  this section is inflated, by ~14× on a 100 k-chart mesh. Either share the
-  cache in the engine or run `GenerateAtlas` for `--stage all`.
+- **Separate the harness's metric cost from the pipeline's**: `EngineHalfmesh`
+  now shares the flatten cache (so `--stage all` measures what a
+  `GenerateAtlas` caller pays), but the metric passes still dominate the
+  harness's wall clock ~5:1. The per-stage `time` fields in `report.json` are
+  the pipeline-truthful numbers; the process wall clock is not, and the
+  "seg. time" column in the tables above predates the cache fix. Worth timing
+  `FillSegmentation`/`FillParametrization` separately in the report so the two
+  costs stop being conflated.
 - **Second-scene validation**: `~/bench_runs/Ignatius_g16_base` (10 023 130
   faces) is the handoff's other scene and is on the same machine; the study
   found both scenes fragment identically, which this sweep has not yet
