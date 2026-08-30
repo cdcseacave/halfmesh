@@ -924,8 +924,8 @@ TEST(PackAtlas, DegenerateChartStaysInBounds)
 // A flip-free but severely area-compressed sliver chart (uvArea tiny yet
 // POSITIVE -- it passes the uvArea<=0 guard) must not collapse its siblings:
 // pre-fix its unbounded NormalizeChartDensity scale blew up its bbox, and
-// fitToResolution's global k (solved from sum w*h) shrank every OTHER chart
-// to sub-texel size with no error. Occupancy can still look healthy afterwards
+// fitToResolution's global solve then shrank every OTHER chart to sub-texel
+// size with no error. Occupancy can still look healthy afterwards
 // (the blown-up sliver fills the page), so assert per-sibling texel extents,
 // not occupancy.
 // ---------------------------------------------------------------------------
@@ -967,6 +967,80 @@ TEST(PackAtlas, SliverChartDoesNotCollapseSiblingCharts)
 	for (unsigned c = 0; c < 8u; ++c) {
 		EXPECT_GE(rects[c].x1 - rects[c].x0, 1.f) << "chart " << c << " collapsed (width)";
 		EXPECT_GE(rects[c].y1 - rects[c].y0, 1.f) << "chart " << c << " collapsed (height)";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The sibling-collapse guard above only bites when the compressed chart's RAW
+// extent is small. Slitting a tube open (cutToDisk) produces the dangerous
+// shape instead: a ribbon whose uvArea is tiny yet positive AND whose raw UV
+// extent is large. NormalizeChartDensity used to leave such a chart entirely
+// unnormalized (scale 0 -> raw UVs passed through), and PackAtlas's degenerate
+// rescue does not catch it either, because that only tests for a ZERO-width or
+// ZERO-height rect (AtlasPacking.cpp: `cr.degenerate = (cr.w <= 0 || cr.h <= 0)`)
+// while a ribbon has a large w and a small-but-positive h. It therefore entered
+// fitToResolution's global solve, whose binding term is MAX DIMENSION -- every
+// chart shrinks until the widest one fits -- and so it set the page scale for
+// every sibling. (Not the sum-of-w*h term: a ribbon's bbox area is near zero.)
+//
+// Measured on a real mesh (Ignatius, 536k faces, cutToDisk on): one triangle
+// spanning 4092 of 4096 texels held triangle coverage at 0.0189, against 0.2017
+// once bounded and 0.2226 on 0.3.0, with occupancy still reporting a plausible
+// 0.196 and no error anywhere. Assert the
+// invariant that actually broke -- adding one degenerate chart must not destroy
+// the atlas -- rather than the >=1-texel rect floor, which the packer clamps and
+// which therefore holds even under total collapse.
+// ---------------------------------------------------------------------------
+TEST(PackAtlas, LargeExtentSliverDoesNotSetPageScale)
+{
+	// `uvHeight` sets the sliver's magnification: 1e-3 keeps it under the
+	// maxScaleMagnitude area guard (~816) so only the page clamp can catch it,
+	// 1e-9 puts it far over (~2.6e7) so it takes the degenerate-flatten branch —
+	// which is the path the real Ignatius ribbon takes, and the one the original
+	// code skipped into raw UVs. Both must hold.
+	auto coverageOf = [](float uvHeight) {
+		Mesh mesh;
+		std::vector<unsigned> faceChart;
+		unsigned numCharts = 0;
+		BuildSyntheticCharts(mesh, faceChart, numCharts, 8u);
+
+		if (uvHeight > 0.f) {
+			// World area 2.0, a near-collinear UV triangle, raw UV extent 6000 --
+			// the slit-ribbon shape: negligible area over an enormous span.
+			const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+			mesh.vertices.push_back({100.f, 0.f, 0.f});
+			mesh.vertices.push_back({102.f, 0.f, 0.f});
+			mesh.vertices.push_back({102.f, 2.f, 0.f});
+			mesh.faces.push_back({base, base + 1, base + 2});
+			faceChart.push_back(8u);
+			mesh.faceTexcoords.push_back({0.f, 0.f});
+			mesh.faceTexcoords.push_back({6000.f, 0.f});
+			mesh.faceTexcoords.push_back({6000.f, uvHeight});
+			numCharts = 9u;
+		}
+
+		AtlasParams params;
+		params.resolution = 256;
+		params.padding = 2;
+		params.fitToResolution = true; // the vulnerable path (GenerateAtlas default)
+
+		NormalizeChartDensity(mesh, faceChart, numCharts, params);
+		const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
+		for (const Mesh::TexCoord& uv : mesh.faceTexcoords) {
+			EXPECT_TRUE(std::isfinite(uv.x()));
+			EXPECT_TRUE(std::isfinite(uv.y()));
+		}
+		return res.coverage;
+	};
+
+	const float without = coverageOf(0.f);
+	ASSERT_GT(without, 0.05f) << "control atlas is itself empty — test is vacuous";
+
+	for (const float uvHeight : {1e-3f, 1e-9f}) {
+		const float with = coverageOf(uvHeight);
+		EXPECT_GT(with, without * 0.5f)
+		    << "a large-extent sliver chart (uv height " << uvHeight
+		    << ") collapsed the atlas: coverage " << without << " -> " << with;
 	}
 }
 

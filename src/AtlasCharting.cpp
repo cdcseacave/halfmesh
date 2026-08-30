@@ -1683,9 +1683,14 @@ struct ChartStats
 {
 	double worldArea = 0.0;
 	double uvArea = 0.0;
-	// UV bounding box (to translate bbox-min to origin).
+	// UV bounding box: min to translate bbox-min to origin, max because the
+	// area-compression guard below has to bound the chart's EXTENT, which is
+	// what fitToResolution's global solve consumes — area alone cannot see a
+	// ribbon (tiny area, huge extent).
 	float uvMinX = std::numeric_limits<float>::max();
 	float uvMinY = std::numeric_limits<float>::max();
+	float uvMaxX = std::numeric_limits<float>::lowest();
+	float uvMaxY = std::numeric_limits<float>::lowest();
 };
 
 } // anonymous namespace
@@ -1732,9 +1737,11 @@ float NormalizeChartDensity(Mesh& mesh,
 		const float da2d = std::abs(SignedDoubleArea2D(t0, t1, t2));
 		cs.uvArea += 0.5 * static_cast<double>(da2d);
 
-		// Accumulate UV bbox min.
+		// Accumulate UV bbox.
 		cs.uvMinX = std::min({cs.uvMinX, t0.x(), t1.x(), t2.x()});
 		cs.uvMinY = std::min({cs.uvMinY, t0.y(), t1.y(), t2.y()});
+		cs.uvMaxX = std::max({cs.uvMaxX, t0.x(), t1.x(), t2.x()});
+		cs.uvMaxY = std::max({cs.uvMaxY, t0.y(), t1.y(), t2.y()});
 	}
 
 	// -----------------------------------------------------------------------
@@ -1762,25 +1769,83 @@ float NormalizeChartDensity(Mesh& mesh,
 	// -----------------------------------------------------------------------
 	// Pre-compute per-chart scale factors.
 	std::vector<float> scale(numCharts, 0.f);
-	// A flip-free but severely area-compressed chart (uvArea tiny yet positive)
-	// would get an unbounded scale here, blowing up its own UV bbox; PackAtlas's
-	// fitToResolution global k (solved from sum w*h) is then dominated by that
-	// one chart and every OTHER chart collapses to sub-texel size with no
-	// error. Beyond maxScaleMagnitude treat
-	// the chart like the exactly-degenerate case: leave scale 0 so the s==0 skip
-	// below keeps its raw flip-free UVs (PackAtlas derives each chart's local
-	// bbox independently, so an unnormalized chart cannot corrupt its siblings).
+	// A chart that leaves here with an unbounded UV bbox does not just waste its
+	// own slot — it sets the scale for every other chart. fitToResolution solves
+	// one global k, and its binding term is the MAX-DIMENSION constraint: every
+	// chart shrinks by whatever ratio makes the widest one fit the page. So one
+	// over-wide chart collapses the whole atlas to sub-texel size, silently.
+	//
+	// The bound therefore has to be on the chart's SCALED EXTENT. Area alone
+	// cannot see the shape that does this: cutToDisk slits a tube into a ribbon
+	// — negligible UV area over an enormous extent — whose area magnification is
+	// perfectly ordinary (816 on the regression case in AtlasTest.cpp, far under
+	// any sane area cap) because bbox area >> triangle area for a ribbon. Nor is
+	// it enough to SKIP such a chart, which is what the old guard did: an
+	// unnormalized chart keeps whatever extent the flattener produced, and
+	// PackAtlas's degenerate rescue only catches a rect with zero width or
+	// height, so a ribbon (large w, small-but-positive h) passes straight into
+	// the global solve. Measured on Ignatius (536k faces, cutToDisk on): one
+	// ribbon left a single triangle spanning 4092 of the 4096 texels and dragged
+	// triangle coverage to 0.0189, against 0.2017 once bounded, while occupancy
+	// still reported a healthy-looking 0.196 and nothing errored.
+	//
+	// Two bounds, because two different things go wrong.
+	//
+	// (1) A collapsed flatten, in either packing mode. Past this magnification a
+	// chart carries essentially no UV area, so its extent is earning nothing;
+	// cap it at the side its own world area warrants. This is deliberately a
+	// test for collapse, not for elongation — genuinely elongated charts are
+	// common and must pass through untouched, and an aspect ceiling tight enough
+	// to be interesting (64:1) clipped real Truck charts at a cost of 9.7% of
+	// coverage.
 	constexpr double maxScaleMagnitude = 1e4;
+	// (2) A chart wider than the page, when the atlas must fit one. Nothing
+	// wider is representable at any scale, so the clamp costs nothing real and
+	// removes the lever entirely. It is gated on the chart not EARNING its
+	// extent with area: `rawExtent / sqrt(uvArea)` is scale-invariant, ~1 for a
+	// square chart and 10 for a 100:1 ribbon. The gate is load-bearing — a mesh
+	// with few charts has charts that legitimately span most of the page, and an
+	// unconditional page clamp costs the 2-chart Cone 3.2% of occupancy.
+	constexpr double maxExtentRatio = 1e3;
+	// PackAtlas fits a single page whenever the density is auto-derived:
+	// GenerateAtlas hands NormalizeChartDensity the caller's params but packs
+	// with `packParams.fitToResolution = true` when texelsPerUnit == 0, so the
+	// flag on `params` alone does not tell us which mode we are normalising for.
+	const bool willFitToPage =
+	    params.fitToResolution || params.texelsPerUnit <= 0.f;
+
 	for (unsigned c = 0; c < numCharts; ++c) {
 		const ChartStats& cs = stats[c];
 		if (cs.uvArea <= 0.0 || cs.worldArea <= 0.0)
-			continue;
+			continue; // nothing representable — collapsed to a point below
 
 		// scale_c = D * sqrt(world_area_c / uv_area_c)
 		const double mag = std::sqrt(cs.worldArea / cs.uvArea);
-		if (mag > maxScaleMagnitude)
-			continue;
-		scale[c] = density * static_cast<float>(mag);
+		double s = static_cast<double>(density) * mag;
+
+		const double rawExtent = std::max(static_cast<double>(cs.uvMaxX) - cs.uvMinX,
+		                                  static_cast<double>(cs.uvMaxY) - cs.uvMinY);
+		if (rawExtent > 0.0) {
+			double maxExtent = std::numeric_limits<double>::infinity();
+			if (mag > maxScaleMagnitude) {
+				// This chart's flatten is degenerate: it carries essentially no
+				// UV area, so its extent is not earning anything and must not be
+				// allowed to claim page. Bound it to the side its own world area
+				// warrants. (The old code skipped such a chart entirely, leaving
+				// raw UVs of arbitrary magnitude — the actual defect.)
+				maxExtent = density * std::sqrt(cs.worldArea);
+			}
+			if (willFitToPage && params.resolution > 0
+			    && rawExtent > maxExtentRatio * std::sqrt(cs.uvArea)) {
+				// This chart spans far more than its own UV area can justify, and
+				// the packer shrinks EVERY chart until the widest one fits — so
+				// left alone it sets the scale for all its siblings. Nothing wider
+				// than the page is representable at any scale anyway.
+				maxExtent = std::min(maxExtent, static_cast<double>(params.resolution));
+			}
+			s = std::min(s, maxExtent / rawExtent);
+		}
+		scale[c] = static_cast<float>(s);
 	}
 
 	// Apply scale and translation (bbox-min to origin) in one pass.
@@ -1793,8 +1858,16 @@ float NormalizeChartDensity(Mesh& mesh,
 		const float tx = stats[cid].uvMinX;
 		const float ty = stats[cid].uvMinY;
 
-		if (s == 0.f)
-			continue; // degenerate chart — leave UVs as-is.
+		if (s == 0.f) {
+			// Nothing representable (zero world area, or a zero-extent UV
+			// footprint). Collapse to a point rather than leaving raw UVs of
+			// arbitrary magnitude behind: a zero-size rect is what PackAtlas's
+			// degenerate path expects, and it then gets a fixed ≥1-texel slot
+			// instead of competing in the fit-to-resolution solve.
+			for (int k = 0; k < 3; ++k)
+				mesh.faceTexcoords[fi * 3 + k] = TexCoord{0.f, 0.f};
+			continue;
+		}
 
 		for (int k = 0; k < 3; ++k) {
 			TexCoord& uv = mesh.faceTexcoords[fi * 3 + k];

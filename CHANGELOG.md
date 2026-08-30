@@ -35,6 +35,26 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   default-segmentation-output change**: chart counts on meshes with
   fold/re-merge churn may differ slightly (e.g. `mesh.ply`: 2816→2779) even
   with all opt-in knobs off.
+- **Fixed: one degenerate chart could collapse the whole atlas** (§6.5,
+  `NormalizeChartDensity`). A chart with negligible UV area over a large UV
+  extent — what `cutToDisk` produces when it slits a tube into a ribbon — was
+  left entirely unnormalized, because the guard tested *area* compression
+  (`sqrt(worldArea/uvArea) > 1e4`) and, when it fired, skipped the chart and
+  passed its raw UVs through. `PackAtlas`'s degenerate rescue does not catch
+  that shape either (it tests for a zero-width or zero-height rect; a ribbon
+  has a large `w` and a small-but-positive `h`), so the chart entered
+  `fitToResolution`, whose **max-dimension** constraint then shrank every other
+  chart until the widest one fit. Measured on a 536 k-face Tanks-and-Temples
+  Ignatius mesh with `cutToDisk` on: one triangle spanning 4 092 of 4 096
+  texels took triangle coverage to **0.0189**, against 0.2017 fixed, while
+  `occupancy` reported a plausible 0.196 and nothing errored. The bound is now
+  on the chart's scaled **extent** — the page when the atlas must fit one, and
+  `D·sqrt(worldArea)` for a degenerate flatten. Present in 0.3.0 as well; this
+  release's segmentation change is what made a real mesh reach it.
+  **Small default-output change**: charts wider than the page are now clamped.
+  Of the three real-mesh arms that were not already broken, that moved coverage
+  +0.04 % on one (Ignatius, default knobs: 0.2347→0.2348) and left the other
+  two (both Truck arms) bit-identical, chart counts included.
 - **Triangle coverage metric** (`AtlasResult::coverage`): the fraction of the
   texel budget actually under UV geometry, as opposed to `occupancy`
   (padded-rect fill, which reads high with many small charts). Available via
