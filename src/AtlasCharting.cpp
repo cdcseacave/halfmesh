@@ -478,6 +478,10 @@ void ComputeVertexDefect(const SegmentState& s, std::vector<double>& dabs,
 // id (order-independent, minFidA < minFidB) — the same identity trick as
 // ChartFlattenCache: invariant under the Compact() id relabelling that
 // happens between post-repair merge rounds (§6.3).
+// This min-fid key over-approximates union identity: after repair splits,
+// later charts carrying the same two min-fids may have smaller face sets
+// whose union could flatten fine, yet the pair remains vetoed — this
+// conservative trade-off is known and measured net-positive.
 unsigned long long PairKey(Mesh::FIndex minFidA, Mesh::FIndex minFidB)
 {
 	if (minFidA > minFidB)

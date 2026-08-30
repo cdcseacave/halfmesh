@@ -910,7 +910,9 @@ TEST(Flatten, FoldDiagnosisReportsOffendingFaces)
 TEST(Flatten, FoldRescueSlitRescuesAtLeastOneRealMeshChart)
 {
 	Mesh mesh;
-	ASSERT_TRUE(mesh.Load(TestMeshPath()));
+	if (!mesh.Load(TestMeshPath())) {
+		GTEST_SKIP() << "tests/data/mesh.ply not found";
+	}
 	mesh.ListHalfEdges();
 	halfmesh::ParametrizeParams segParams;
 	segParams.developableFlipRepairRounds = 0; // keep genuinely-folding charts (no bisect-repair)

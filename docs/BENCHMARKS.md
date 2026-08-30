@@ -287,7 +287,7 @@ resolution.)
 ### Repair carve rings / fold-rescue slits / per-size padding — Task 9 sweep (0.4.0 knobs, defaults OFF)
 
 Three more opt-in knobs landed for 0.4.0, all **OFF by default**:
-`developable_repair_carve_rings` (`--repair-carve-rings`, failure-localized
+`repair_carve_rings` (`--repair-carve-rings`, failure-localized
 repair split — carve off the faces within N `TopoNeighbor` rings of a folding
 chart's diagnosed failure instead of a blind PCA bisection), `fold_rescue_slits`
 (`--fold-rescue-slits`, cut a slit from the worst interior vertex to the

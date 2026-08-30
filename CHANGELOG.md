@@ -34,8 +34,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   with all opt-in knobs off.
 - **Triangle coverage metric** (`AtlasResult::coverage`): the fraction of the
   texel budget actually under UV geometry, as opposed to `occupancy`
-  (padded-rect fill, which reads high with many small charts). Exposed via
-  `atlasbench` and the Python `unwrap()` return dict.
+  (padded-rect fill, which reads high with many small charts). Available via
+  the Python `unwrap()` return dict; atlasbench reports its own triangle-occupancy
+  column (`occupancyTri`), which measures the same quantity.
 - **Per-size padding** (§6.5, `AtlasParams::tinyChartSide` /
   `debrisChartFaces`, opt-in, both default `0`/off): charts under an
   unpadded-bbox-side or face-count trigger get a 1-texel gutter instead of

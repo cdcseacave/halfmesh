@@ -829,7 +829,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 				continue; // degenerate charts stay a fixed 1-texel slot, unscaled
 			const float padC = ChartPad(params, crects[c].w, crects[c].h, chartFaces[c], pad);
 			a += static_cast<double>(crects[c].w) * crects[c].h;
-			b += 2.0 * static_cast<double>(padC) * (crects[c].w + crects[c].h);
+			b += 2.0 * static_cast<double>(padC) * (static_cast<double>(crects[c].w) + crects[c].h);
 			cc += 4.0 * static_cast<double>(padC) * padC;
 		}
 		const double R = static_cast<double>(params.resolution);
@@ -1017,8 +1017,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 		const TexCoord& t0 = mesh.faceTexcoords[fi * 3 + 0];
 		const TexCoord& t1 = mesh.faceTexcoords[fi * 3 + 1];
 		const TexCoord& t2 = mesh.faceTexcoords[fi * 3 + 2];
-		triArea += 0.5 * std::abs(static_cast<double>(t1.x() - t0.x()) * (t2.y() - t0.y())
-		                          - static_cast<double>(t2.x() - t0.x()) * (t1.y() - t0.y()));
+		triArea += 0.5 * std::abs(static_cast<double>(t1.x() - t0.x()) * (t2.y() - t0.y()) - static_cast<double>(t2.x() - t0.x()) * (t1.y() - t0.y()));
 	}
 	result.coverage = (numPages > 0)
 	                      ? std::min(1.f, static_cast<float>(triArea / numPages))
