@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0]
+## [0.3.1]
 
 ### Failure-localized repair carve, fold-rescue slits, always-on merge blacklist, per-size padding — all opt-in, defaults unchanged
 
@@ -48,8 +48,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   above.
 - **Python**: `unwrap()` gains `repair_carve_rings`, `fold_rescue_slits`,
   `tiny_chart_side`, `debris_chart_faces` keyword args, same pattern as the
-  0.3.1 knobs, defaults `0`/`0.0` matching the C++ defaults (behavior
-  preserving).
+  segmentation knobs below, defaults `0`/`0.0` matching the C++ defaults
+  (behavior preserving).
 - **Defaults unchanged.** A measurement sweep (`docs/BENCHMARKS.md` §4) on
   the one mesh available on the development machine (`tests/data/mesh.ply`;
   no Truck-class mesh — the spec §7 success-criterion mesh class — was
@@ -60,8 +60,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `foldRescueSlits` stay `0` (off); the padding knobs stay opt-in. **No
   golden re-freeze** — `tests/golden/` fixtures are unaffected. The Truck-class
   sweep remains to be run on a machine that has that data (spec §7).
-
-## [0.3.1]
 
 ### Python: segmentation knobs on `unwrap()` + padding-default fix
 

@@ -284,9 +284,9 @@ production, decimate first: million-chart atlases are rarely the goal, and
 distortion/seam totals favour a chart budget matched to the texture
 resolution.)
 
-### Repair carve rings / fold-rescue slits / per-size padding — Task 9 sweep (0.4.0 knobs, defaults OFF)
+### Repair carve rings / fold-rescue slits / per-size padding — Task 9 sweep (defaults OFF)
 
-Three more opt-in knobs landed for 0.4.0, all **OFF by default**:
+Three more opt-in knobs landed in 0.3.1, all **OFF by default**:
 `repair_carve_rings` (`--repair-carve-rings`, failure-localized
 repair split — carve off the faces within N `TopoNeighbor` rings of a folding
 chart's diagnosed failure instead of a blind PCA bisection), `fold_rescue_slits`

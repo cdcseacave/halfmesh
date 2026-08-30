@@ -124,7 +124,7 @@ def test_unwrap_accepts_segmentation_knobs(tmp_path):
 
 
 def test_unwrap_accepts_repair_and_padding_knobs(tmp_path):
-    """The 0.4.0 knobs (repair carve / fold-rescue slits / per-size padding)
+    """The repair/padding knobs (repair carve / fold-rescue slits / per-size padding)
     are keyword-addressable and keep the atlas valid, with defaults matching
     the C++ ParametrizeParams/AtlasParams defaults (all off/0).
 
