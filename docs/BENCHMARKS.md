@@ -299,9 +299,10 @@ does not change the partition).
 
 **Setup.** `tests/data/` on this machine contains only `mesh.ply` (63 049
 vertices / 120 943 faces once repaired — 459 non-manifold issues fixed on
-load; no `roi100k`, `ours128k`, or a Truck-class mesh are present here, so
-those cross-checks and the spec §7 success-criterion mesh could not be run on
-this machine — see "what to try next" below). All arms: `--engines halfmesh
+load; `roi100k` and `ours128k` are not present, so those cross-checks were
+not run). A Truck-class mesh is **not** in `tests/data/` either, but is
+derivable on this machine — see the Truck-class sweep below, which is where
+the spec §7 criterion is actually decided. All arms: `--engines halfmesh
 --resolution 4096 --cut-to-disk` (padding stays at the `AtlasParams` default
 of 2, unchanged by any arm). Wall-clock is indicative only — this machine was
 under load from an unrelated training job during the sweep.
@@ -343,18 +344,87 @@ from 41.6 % to 42.3 %.)
 **Defaults decision: stay OFF** (`repairCarveRings = 0`, `foldRescueSlits = 0`;
 the padding knobs remain opt-in). Rationale:
 
-1. The spec §7 success criterion (≤ 55 k charts on ~480 k faces, 0.11–0.13
-   charts/face, coverage ≥ 0.30 at padding 2 / 4096²) is defined on a
-   Truck-class mesh that is **not present on this machine** — there is no
-   direct evidence the defaults help on the mesh class the criterion targets.
-2. On the one mesh available, the combined configuration measured **worse
-   than either knob alone** — real flipped triangles and a catastrophic
-   distortion outlier, not merely a smaller-than-hoped win.
+1. On the Truck-class mesh the criterion targets, both knobs are near-no-ops
+   (carve −0.2 %, slits −2.0 %; see the Truck-class sweep below) — defaulting
+   them on would cost time for no measurable count benefit on the mesh class
+   that motivated them.
+2. On `mesh.ply` the combined configuration measured **worse than either knob
+   alone** — real flipped triangles and a catastrophic distortion outlier.
+   This does **not** reproduce on the Truck-class mesh, so it is a
+   single-mesh artifact rather than a general property; it still argues
+   against defaulting the pair on, since one measured mesh does break.
 3. Carve-ring sensitivity is non-monotonic with no obviously-better fixed
    value.
 
 No golden re-freeze: defaults are unchanged, so `tests/golden/` fixtures
 still reflect the current (591/591-green) behavior.
+
+### Truck-class sweep — the spec §7 criterion, measured (2026-08-30)
+
+The sweep above runs on `mesh.ply` (120 943 faces, 0.020 charts/face), which
+is **not** the mesh class the §7 criterion is about: a Truck-class mesh
+fragments ten times harder (~0.20 charts/face). Measured on one.
+
+**Mesh.** `~/bench_runs/Truck_g16_ppisp/mesh/mesh.ply` — a Tanks-and-Temples
+Truck PGSR marching-tets extraction, 7 824 634 faces — put through
+`radiance.mesh.postprocess` (repair → Taubin ×20 → QEM aggressiveness 7 →
+close holes) at `--decimate-target 500000`, giving **522 738 faces /
+253 635 verts** after halfmesh's load-time repair. 8-core workstation, under
+concurrent load: **wall-clock below is indicative only**; chart counts and
+coverage are deterministic.
+
+**Harness.** `hm.unwrap()` at `resolution=4096, padding=2`, i.e. the
+`GenerateAtlas` path consumers call — **not** `atlasbench`, which drives the
+public no-cache `SegmentCharts`/`ParametrizeCharts` pair and measured ~14×
+slower on this mesh (it flattens every chart twice; `GenerateAtlas` threads
+one `ChartFlattenCache` through both modules). `coverage` below is
+`AtlasResult::coverage`; it was recomputed independently from every written
+PLY and agreed to all printed digits. Flip counts are minority-signed-area
+triangles (an atlas has no global winding convention), with the sliver
+exemption noted.
+
+| arm | charts | ch/face | coverage | flips (non-sliver) |
+|---|--:|--:|--:|--:|
+| baseline (`develop@8382722`, 0.3.0) | 102 033 | 0.1952 | 0.2325 | 83 (31) |
+| defaults (blacklist on, knobs off) | 99 681 | 0.1907 | 0.2343 | 87 (18) |
+| `cut_to_disk` | 88 727 | 0.1697 | 0.2458 | 98 (45) |
+| … + `fold_rescue_slits=2` | 86 986 | 0.1664 | 0.2476 | 94 (32) |
+| … + `repair_carve_rings=2` | 88 523 | 0.1693 | 0.2459 | 110 (33) |
+| … + `carve=2, slits=2` | 86 605 | 0.1657 | 0.2474 | 98 (37) |
+| … + `slits=2, tiny=8, debris=16` | 86 986 | 0.1664 | **0.3200** | 93 (29) |
+| … + `slits=2`, global `padding=1` | 86 986 | 0.1664 | **0.3334** | — |
+
+**Criterion: ≤ 55 k charts and coverage ≥ 0.30. Coverage passes, chart count
+does not.**
+
+- **Coverage: met.** 0.2325 → 0.3200 (+37.6 %). But the last two rows are the
+  finding: a **global `padding=1` beats the per-size padding knobs** (0.3334 vs
+  0.3200) at an identical partition. At a ~7.6-texel mean unpadded chart side,
+  "1-texel gutter for tiny charts" is nearly "1-texel gutter for everything",
+  minus the large charts that still pay 2. The per-size knobs need a *mix* of
+  chart sizes to earn their complexity; this mesh class has none. Coverage is
+  texels, not quality — padding 4→2 was worth +1.26 dB in the consumer's bake,
+  2→1 is **unbaked** and is where seam bleed starts.
+- **Chart count: missed by 1.57×.** Best arm 86 605 against a 55 000 target.
+  Nearly all of the −15.1 % is `cut_to_disk`, which predates this work:
+  `repair_carve_rings=2` is **−0.2 %** and `fold_rescue_slits=2` is **−2.0 %**
+  here, against −3.7 % and −9.9 % on `mesh.ply`. **Both §6.1/§6.2 knobs are
+  near-no-ops on the mesh class they were designed for.** A plausible cause
+  for the slit rescue: it cuts from the worst *interior* vertex to the
+  boundary, and at 5.9 faces per chart most charts have no interior vertex
+  left to cut from — the bisection cascade has already shattered them below
+  the size where the rescue can act.
+- **Carve is a cost win, not a count win**: the fastest arm in the sweep
+  (−23 % against `cut_to_disk` alone) — the localized carve converges the
+  repair in fewer rounds without changing where it converges to.
+- **The `mesh.ply` combined-knob regression does not reproduce.**
+  `carve=2, slits=2` here gives 98 flips / 37 non-sliver against
+  `cut_to_disk` alone's 98 / **45** — fewer non-sliver flips than the
+  single-knob arm — and coverage sits normally between the two. Every arm
+  including the untouched baseline sits in an 83–110 flip band, so flips on
+  this mesh are a property of its 12.9 % slivers, not of the knobs. The
+  do-not-combine caution elsewhere in this repo generalizes single-mesh
+  `mesh.ply` evidence that the target mesh class contradicts.
 
 **What to try next:**
 
@@ -368,13 +438,24 @@ still reflect the current (591/591-green) behavior.
   fragments — a geometry-aware (rather than blanket) enclose test might let
   more carve-created fragments re-merge instead of shipping as extra tiny
   charts.
-- **The pending Truck-class sweep**: re-run this Step-1/Step-2 sweep (all
-  arms above, plus the `mesh.ply` / `roi100k` / `ours128k` cross-checks) on a
-  genuine Truck-class mesh (a Tanks-and-Temples splat reconstruction,
-  QEM-decimated aggressiveness 7 to ~500 k faces) — via the Python wheel and
-  the new `unwrap()` knobs (`docs/PYTHON.md`) — on the machine that has that
-  data, the study's L4 box (spec §7). The ≤ 55 k charts / 0.11–0.13 charts-per-face
-  / ≥ 0.30 coverage criterion is only meaningful measured there.
+- **Attack the chart count where it is made** (the Truck-class table above
+  says nothing else will do): the repair inflates the post-merge count 4–8×,
+  and neither shipped knob dents it. The slit rescue needs to run *before*
+  the bisection cascade shatters charts below the size where an interior
+  vertex still exists — measure the interior-vertex count distribution over
+  charts at repair entry to confirm, then move the rescue earlier rather than
+  tuning it.
+- **`atlasbench` benchmarks the wrong path**: `EngineHalfmesh` calls the
+  public `SegmentCharts`/`ParametrizeCharts` pair, so it re-flattens every
+  chart that the repair verdict already flattened, while `GenerateAtlas`
+  shares one `ChartFlattenCache` across both. Chart counts and coverage are
+  unaffected (the partition is identical), but every wall-clock number in
+  this section is inflated, by ~14× on a 100 k-chart mesh. Either share the
+  cache in the engine or run `GenerateAtlas` for `--stage all`.
+- **Second-scene validation**: `~/bench_runs/Ignatius_g16_base` (10 023 130
+  faces) is the handoff's other scene and is on the same machine; the study
+  found both scenes fragment identically, which this sweep has not yet
+  re-checked.
 
 ## 5. Assessment
 

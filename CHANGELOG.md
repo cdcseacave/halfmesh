@@ -14,16 +14,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   within N `TopoNeighbor` rings of the diagnosed failure — one small extra
   chart instead of a blind-PCA-bisection cascade — falling back to bisection
   when the failure isn't localized (region ≥ half the chart). The
-  termination guarantee is unchanged. Do not enable together with
-  `foldRescueSlits` without re-checking the Task 9 sweep (`docs/BENCHMARKS.md`
-  §4) on your mesh — combined, the two measured *worse* than either alone.
+  termination guarantee is unchanged. Measure before enabling it together
+  with `foldRescueSlits`: combined, the two measured *worse* than either
+  alone on `mesh.ply` and fine on a Truck-class mesh, so the interaction is
+  mesh-dependent rather than settled (`docs/BENCHMARKS.md` §4).
 - **Fold-rescue slits** (§6.2, `ParametrizeParams::foldRescueSlits`, opt-in,
   default `0`): a folding chart is cut from its worst interior vertex to the
   boundary and re-flattened, up to N times, before any split — the chart
   ships as ONE chart with one extra seam instead of ≥2 padded rects. Lives
   inside `FlattenChart` so the repair verdict and the shipped map agree on
   every path, exactly the `cutToDisk` contract. Same combined-knob caution as
-  `repairCarveRings` above — see `docs/BENCHMARKS.md` §4.
+  `repairCarveRings` above — see `docs/BENCHMARKS.md` §4. The rescue needs an
+  interior vertex to cut from, so it is weakest exactly where charts are
+  already tiny (−2.0 % on a Truck-class mesh at 5.9 faces/chart).
 - **Post-repair merge fold-blacklist** (§6.3, always on, no knob): a
   candidate pair that demonstrably re-folds after merging is memoized (keyed
   by the two sides' smallest global face ids, invariant under relabelling)
@@ -50,16 +53,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `tiny_chart_side`, `debris_chart_faces` keyword args, same pattern as the
   segmentation knobs below, defaults `0`/`0.0` matching the C++ defaults
   (behavior preserving).
-- **Defaults unchanged.** A measurement sweep (`docs/BENCHMARKS.md` §4) on
-  the one mesh available on the development machine (`tests/data/mesh.ply`;
-  no Truck-class mesh — the spec §7 success-criterion mesh class — was
-  available there) found `repairCarveRings=2` + `foldRescueSlits=2` combined
-  measured *worse* than either knob alone (real flipped triangles and a
-  ~200 000× symmetric-Dirichlet blowup, not just a chart-count trade), and
-  carve-ring sensitivity is non-monotonic. `repairCarveRings` and
-  `foldRescueSlits` stay `0` (off); the padding knobs stay opt-in. **No
-  golden re-freeze** — `tests/golden/` fixtures are unaffected. The Truck-class
-  sweep remains to be run on a machine that has that data (spec §7).
+- **Defaults unchanged**, and measured on both mesh classes
+  (`docs/BENCHMARKS.md` §4). On `tests/data/mesh.ply`, `repairCarveRings=2` +
+  `foldRescueSlits=2` combined measured *worse* than either alone (real
+  flipped triangles and a ~200 000× symmetric-Dirichlet blowup); carve-ring
+  sensitivity is non-monotonic. On a Truck-class mesh (522 738 faces, a
+  Tanks-and-Temples splat reconstruction QEM-decimated to ~500 k) that
+  combined regression does **not** reproduce — but neither knob earns its
+  keep there either: `repairCarveRings=2` moves the chart count −0.2 % and
+  `foldRescueSlits=2` −2.0 %, against the −3.7 % / −9.9 % they show on
+  `mesh.ply`. Both stay `0` (off); the padding knobs stay opt-in. **No golden
+  re-freeze** — `tests/golden/` fixtures are unaffected.
+- **Spec §7 criterion, measured**: on the Truck-class mesh above, coverage
+  clears the bar (0.2325 → 0.3200 with the padding knobs, ≥ 0.30 required)
+  but the chart count does not (86 605 best against ≤ 55 k, 1.57× over), and
+  most of the −15 % that is achieved comes from the pre-existing `cutToDisk`.
+  A global `padding=1` reaches a higher coverage (0.3334) than the per-size
+  padding knobs at an identical partition, because this mesh class has no mix
+  of chart sizes for a size-triggered gutter to exploit. Coverage is texels,
+  not bake quality: `padding` 2→1 is unmeasured against a bake.
 
 ### Python: segmentation knobs on `unwrap()` + padding-default fix
 

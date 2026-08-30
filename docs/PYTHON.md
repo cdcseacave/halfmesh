@@ -197,22 +197,28 @@ re-deriving it at the Python boundary.
   localized. `2` is the sane on-value. **Default `0` (off)** — see
   `docs/BENCHMARKS.md` §4 for the Task 9 sweep and why it stayed off.
   Combined with `fold_rescue_slits` this measured *worse* than either knob
-  alone on the one mesh available for the Task 9 sweep (see
-  `docs/BENCHMARKS.md` §4); do not enable both without re-checking that
-  sweep on your mesh.
+  alone on `mesh.ply` and fine on a Truck-class mesh, so measure the pair on
+  your own mesh before enabling both. On a Truck-class mesh this knob moves
+  the chart count only −0.2 %, but is the cheapest arm measured (−23 % time).
 - `fold_rescue_slits` — fold-rescue slit count
   (`ParametrizeParams::foldRescueSlits`): `0` disables (the default); when
   `> 0`, a folding chart is slit from its worst interior vertex to the
   boundary and re-flattened, up to this many times, instead of being split
   into multiple charts. `2` is the sane on-value. **Default `0` (off)** —
   combined with `repair_carve_rings` this measured *worse* than either knob
-  alone on the one mesh available for the Task 9 sweep (see
-  `docs/BENCHMARKS.md` §4); do not enable both without re-checking that
-  sweep on your mesh.
+  alone on `mesh.ply` and fine on a Truck-class mesh, so measure the pair on
+  your own mesh before enabling both. The rescue cuts from an *interior*
+  vertex, so it is weakest where charts are already tiny: −9.9 % on
+  `mesh.ply`, −2.0 % on a Truck-class mesh at 5.9 faces/chart
+  (`docs/BENCHMARKS.md` §4).
 - `tiny_chart_side` — per-size padding trigger, max unpadded chart bounding
   side in texels (`AtlasParams::tinyChartSide`): charts at or under this size
   get a 1-texel gutter instead of `padding`. `0` disables (the default).
-  Packing-only — never changes the chart partition.
+  Packing-only — never changes the chart partition. Worth a control run: this
+  pays off only when chart sizes are *mixed*. On a Truck-class mesh, where
+  the mean unpadded chart is ~7.6 texels across, a global `padding=1` reached
+  a higher coverage (0.3334) than `tiny_chart_side=8` did (0.3200) at the
+  identical partition (`docs/BENCHMARKS.md` §4).
 - `debris_chart_faces` — per-size padding trigger, chart face-count
   (`AtlasParams::debrisChartFaces`): charts with this many faces or fewer get
   a 1-texel gutter instead of `padding`. `0` disables (the default).
