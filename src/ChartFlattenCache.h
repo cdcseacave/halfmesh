@@ -98,11 +98,65 @@ bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
 bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
                     const ParametrizeParams& params, ChartFlattenSlot* out);
 
+// Where a folding verdict failed: the offending faces as GLOBAL face ids,
+// sorted ascending, deduplicated. Filled only when the verdict is "folds".
+struct FoldDiagnosis
+{
+	std::vector<Mesh::FIndex> badFaces;
+};
+
+// Extended fold bridge: identical verdict; additionally, when `diag` is
+// non-null and the chart DOES fold, fills *diag with the offending faces
+// (global ids, sorted ascending, deduplicated) so the repair can carve
+// around them. Never affects the verdict, `out`'s artifacts, or any
+// threshold/exemption computed along the way — the diagnosis is gathered by a
+// second collector pass over the already-judged map, run only for folding
+// charts (the accept path above stays untouched).
+bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
+                    const ParametrizeParams& params, ChartFlattenSlot* out,
+                    FoldDiagnosis* diag);
+
+// Segmentation instrumentation (opt-in via detail::SegmentCharts's trailing
+// `stats` out-param): per-stage chart counts + per-round post-repair-merge
+// counters, to diagnose whether postRepairMergeRounds is blocked by the
+// cone-budget gate, the wouldEnclose anti-fold veto, or accepted-then-resplit
+// churn (a merge that re-folds and gets bisected right back by the repair
+// wave). All counting happens in DevelopableMerge's serial heap-pop loop and
+// RepairDevelopableFlips' serial harvest — never from the parallel verdict
+// wave — so passing a non-null `stats` cannot alter any decision or introduce
+// a race. Defaults to nullptr everywhere: zero cost and zero behavior change
+// when absent.
+struct AtlasSegmentStats
+{
+	unsigned lloydCharts = 0; // after ConeLloydSegment + EnforceConnectivity
+	unsigned mergedCharts = 0; // after the first DevelopableMerge
+	unsigned repairedCharts = 0; // after the first RepairDevelopableFlips
+	unsigned finalCharts = 0; // shipped
+	unsigned repairSplits = 0; // total bisections across all repair calls
+	struct MergeRound
+	{
+		unsigned pairsPushed = 0; // tryPush accepted into the heap
+		unsigned pairsBudgetRejected = 0; // combinedError > budget at push or pop
+		unsigned pairsEncloseRejected = 0; // wouldEnclose veto at push or pop
+		unsigned merges = 0; // doMerge calls
+		unsigned dirtyCharts = 0; // merged charts handed to the repair wave
+		unsigned resplitCharts = 0; // dirty charts the repair split back
+		unsigned chartsAfter = 0; // count after the round's repair
+		// Merged pairs (minFidA, minFidB — smallest global face id on
+		// each side, invariant under Compact() relabelling) whose merged chart
+		// this round's repair wave split right back, i.e. folded. Blacklisted
+		// for every later round, so a key here never repeats across stats.rounds.
+		std::vector<std::pair<Mesh::FIndex, Mesh::FIndex>> refoldedPairs;
+	};
+	std::vector<MergeRound> rounds; // one per post-repair merge round
+};
+
 // Cache-aware pipeline internals. Byte-identical output to the public overloads
 // for ANY cache state (a lookup miss recomputes); the cache only removes the
 // duplicate flatten work. Defined in src/AtlasCharting.cpp / src/Parametrize.cpp.
 unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
-                       std::vector<unsigned>& faceChart, ChartFlattenCache* cache);
+                       std::vector<unsigned>& faceChart, ChartFlattenCache* cache,
+                       AtlasSegmentStats* stats = nullptr);
 void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
                        unsigned numCharts, const ParametrizeParams& params,
                        ChartFlattenCache* cache);

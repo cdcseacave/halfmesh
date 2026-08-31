@@ -120,13 +120,30 @@ struct ParametrizeParams
 	// 0 restores the pre-2026-08 behavior.
 	unsigned postRepairMergeRounds = 2;
 
-	// Distortion-bounded split (0 disables — the default; flip-only repair, the
-	// current SOTA behavior). When > 0 it is a symmetric-Dirichlet cap τ that
-	// EXTENDS the flip-repair: a chart that is flip-FREE but whose SHIPPED map
-	// (full SLIM, area-weighted symmetric-Dirichlet) still exceeds τ is also
-	// spatially bisected and its pieces re-checked, trading a few extra charts
-	// for far lower per-chart stretch. τ = 4.0 is perfect isometry (the floor),
-	// so any on-value must exceed 4; ~4.4 is the sane benchmark setting.
+	// Failure-localized repair splitting (0 = off, the default: blind PCA
+	// bisection, the current behavior). When > 0, a folding chart is first
+	// split by carving off the faces within this many TopoNeighbor rings of
+	// the offending triangles (the FoldDiagnosis), so one localized failure
+	// costs ONE small extra chart instead of a bisection cascade; the carve
+	// falls back to the PCA bisection when the failure is not localized
+	// (region ≥ half the chart) — the termination guarantee is unchanged.
+	// 2 is the sane on-value.
+	unsigned repairCarveRings = 0;
+
+	// Distortion-bounded split: per-chart distortion budget τ for the
+	// flip-repair. A chart that is
+	// flip-FREE but whose SHIPPED map (full SLIM, area-weighted
+	// symmetric-Dirichlet) still exceeds τ is spatially bisected and its pieces
+	// re-checked, trading a few extra charts for far lower per-chart stretch.
+	// τ = 4.0 is perfect isometry (the floor), so any value must exceed 4; ~4.4
+	// is the sane benchmark setting for a quality-first atlas.
+	//
+	// 0 (the default) does NOT disable the check — it selects an internal
+	// ship-ability bar (symmetric-Dirichlet 200, ~14x stretch), the same bar the
+	// injectivity fallback in ParametrizeCharts refuses to ship above. Only a
+	// chart stretched past all use is split at the default; setting a value here
+	// tightens the budget, it does not turn a check on.
+	//
 	// Sliver-dominated charts (near-zero-area input triangles, sym-Dir → ∞ at any
 	// size) are EXCLUDED from the split — bisection cannot fix degenerate input
 	// and would otherwise shatter the chart to the runaway cap.
@@ -150,6 +167,19 @@ struct ParametrizeParams
 	// net still bisects any chart that folds after the cut (genus>0 handle, residual
 	// sliver), so the hard flip-free guarantee is preserved.
 	bool cutToDisk = false;
+
+	// Fold-rescue slits (0 = off, the default). When > 0 and the flattened
+	// chart folds (flipped triangles or global self-overlap), FlattenChart
+	// cuts a slit from the worst interior vertex (largest quantized angle
+	// defect; among fold-incident vertices when the failure is localized) to
+	// the boundary and re-flattens, up to this many times — the chart ships
+	// as ONE chart with one extra seam instead of being split into ≥2 padded
+	// rects. Deterministic pure function of the chart geometry, so the repair
+	// verdict and the shipped map agree on every path (the cutToDisk
+	// contract). Charts still folding after the last slit fall through to the
+	// repair's carve/bisect safety net — the flip-free guarantee holds. 2 is
+	// the sane on-value.
+	unsigned foldRescueSlits = 0;
 
 	// Per-chart UV flattening method. After a Tutte (convex-boundary Laplacian)
 	// injective initialization, the chart UVs are refined by a local/global solver:

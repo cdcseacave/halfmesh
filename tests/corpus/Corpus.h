@@ -101,6 +101,22 @@ KnownTopology TorusMesh_Known(unsigned majorSegs, unsigned minorSegs);
 halfmesh::Mesh LargeMesh(unsigned targetFaces, unsigned* actualFaces = nullptr);
 
 // ============================================================
+// FOLD-INDUCING FIXTURES
+// ============================================================
+
+// Saddle fan: n triangles fanned around an interior apex (vertex 0). The rim
+// spans exactly one azimuth turn; `elevation` is the zig-zag amplitude in
+// radians that alternates consecutive rim vertices above and below the
+// equator, and it is what drives the apex angle-sum past 2π (a saddle point /
+// enclosed negative curvature) — at the defaults ≈ 10.4 rad ≈ 3.3π. That
+// excess is what folds under a shipped SLIM/ARAP flatten; used by the flatten
+// fold-rescue tests (Flatten/Parametrize suites). Fixture premise:
+// SaddleFan() folds under the shipped flatten (measured: 10/12 faces
+// flagged) — if this ever stops folding, raise `elevation`, do not weaken the
+// tests that rely on it.
+halfmesh::Mesh SaddleFan(int n = 12, double elevation = 0.35);
+
+// ============================================================
 // UV GROUND-TRUTH HELPERS FOR DEVELOPABLE GENERATORS
 // ============================================================
 // These helpers provide analytic 2-D UV coordinates (or zero-stretch checks)

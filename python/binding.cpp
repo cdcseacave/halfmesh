@@ -200,7 +200,7 @@ PYBIND11_MODULE(_halfmesh, m)
 	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)
 	    .def("__repr__", [](Mesh& self) { self.SyncFaces(); return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
 
-	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation) {
+	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion, unsigned repair_carve_rings, unsigned fold_rescue_slits, float tiny_chart_side, unsigned debris_chart_faces) {
 		Mesh mesh;
 		unsigned charts = 0;
 		halfmesh::AtlasResult result;
@@ -216,10 +216,17 @@ PYBIND11_MODULE(_halfmesh, m)
 			mesh.RemoveUnreferencedVertices();
 
 			halfmesh::ParametrizeParams pparams; // defaults tuned for MVS-like meshes
+			pparams.developableMaxConeError = max_cone_error;
+			pparams.cutToDisk = cut_to_disk;
+			pparams.developableMaxUvDistortion = max_uv_distortion;
+			pparams.repairCarveRings = repair_carve_rings;
+			pparams.foldRescueSlits = fold_rescue_slits;
 			halfmesh::AtlasParams aparams;
 			aparams.resolution = resolution;
 			aparams.padding = padding;
 			aparams.allowRotation = allow_rotation;
+			aparams.tinyChartSide = tiny_chart_side;
+			aparams.debrisChartFaces = debris_chart_faces;
 			result = halfmesh::GenerateAtlas(mesh, pparams, aparams);
 			charts = static_cast<unsigned>(result.chartPage.size());
 
@@ -232,9 +239,16 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["width"] = result.width;
 		meta["height"] = result.height;
 		meta["occupancy"] = result.occupancy;
+		meta["coverage"] = result.coverage;
 		meta["fit_attempts"] = result.fitAttempts;
+		meta["fit_scale"] = result.fitScale;
+		meta["max_chart_extent"] = result.maxChartExtent;
+		py::dict padding_applied;
+		padding_applied["nominal"] = padding;
+		padding_applied["min"] = result.minPadding;
+		padding_applied["n_charts_reduced"] = result.chartsPaddingReduced;
+		meta["padding_applied"] = padding_applied;
 		meta["vertices"] = mesh.vertices.size();
 		meta["faces"] = mesh.faces.size();
-		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 4u, py::arg("allow_rotation") = true, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. "
-	                                                                                                                                                                                                                                                                                            "Returns {charts, pages, width, height, occupancy, fit_attempts, vertices, faces}.");
+		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("max_cone_error") = 0.05f, py::arg("cut_to_disk") = false, py::arg("max_uv_distortion") = 0.f, py::arg("repair_carve_rings") = 0u, py::arg("fold_rescue_slits") = 0u, py::arg("tiny_chart_side") = 0.f, py::arg("debris_chart_faces") = 0u, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. Returns {charts, pages, width, height, occupancy, coverage, fit_attempts, fit_scale, max_chart_extent, padding_applied{nominal,min,n_charts_reduced}, vertices, faces}.");
 }

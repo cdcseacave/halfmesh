@@ -24,13 +24,24 @@
 #include <halfmesh/Parametrize.h>
 #include <halfmesh/RectPacking.h>
 
+// Internal Module A<->B bridge header (src/ on this target's include path — see
+// tests/CMakeLists.txt): brings in detail::AtlasSegmentStats + the cache-aware
+// detail::SegmentCharts overload the stats test below calls directly.
+#include "ChartFlattenCache.h"
+
+// Test mesh corpus (hmtest::corpus): GridPlane feeds the carve-seam test below
+// (halfmesh_corpus is linked for this target — see tests/CMakeLists.txt).
+#include "Corpus.h"
+
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <limits>
 #include <numeric>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -39,6 +50,12 @@ namespace detail {
 // Test seam: 3-arg fold verdict (defined in src/Parametrize.cpp).
 bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
                     const ParametrizeParams& params);
+// Test seam (defined in src/AtlasCharting.cpp): delegate to
+// CarveFailureRegion with a default-params SegmentState built from `mesh`.
+// Mirrors the ComputeSegmentationSeeds seam pattern below.
+bool CarveFailureRegionForTest(Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
+                               const std::vector<Mesh::FIndex>& badFaces, unsigned rings,
+                               std::vector<Mesh::FIndex>& A, std::vector<Mesh::FIndex>& B);
 } // namespace detail
 } // namespace halfmesh
 
@@ -907,8 +924,8 @@ TEST(PackAtlas, DegenerateChartStaysInBounds)
 // A flip-free but severely area-compressed sliver chart (uvArea tiny yet
 // POSITIVE -- it passes the uvArea<=0 guard) must not collapse its siblings:
 // pre-fix its unbounded NormalizeChartDensity scale blew up its bbox, and
-// fitToResolution's global k (solved from sum w*h) shrank every OTHER chart
-// to sub-texel size with no error. Occupancy can still look healthy afterwards
+// fitToResolution's global solve then shrank every OTHER chart to sub-texel
+// size with no error. Occupancy can still look healthy afterwards
 // (the blown-up sliver fills the page), so assert per-sibling texel extents,
 // not occupancy.
 // ---------------------------------------------------------------------------
@@ -950,6 +967,96 @@ TEST(PackAtlas, SliverChartDoesNotCollapseSiblingCharts)
 	for (unsigned c = 0; c < 8u; ++c) {
 		EXPECT_GE(rects[c].x1 - rects[c].x0, 1.f) << "chart " << c << " collapsed (width)";
 		EXPECT_GE(rects[c].y1 - rects[c].y0, 1.f) << "chart " << c << " collapsed (height)";
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The sibling-collapse guard above only bites when the compressed chart's RAW
+// extent is small. Slitting a tube open (cutToDisk) produces the dangerous
+// shape instead: a ribbon whose uvArea is tiny yet positive AND whose raw UV
+// extent is large. NormalizeChartDensity used to leave such a chart entirely
+// unnormalized (scale 0 -> raw UVs passed through), and PackAtlas's degenerate
+// rescue does not catch it either, because that only tests for a ZERO-width or
+// ZERO-height rect (AtlasPacking.cpp: `cr.degenerate = (cr.w <= 0 || cr.h <= 0)`)
+// while a ribbon has a large w and a small-but-positive h. It therefore entered
+// fitToResolution's global solve, whose binding term is MAX DIMENSION -- every
+// chart shrinks until the widest one fits -- and so it set the page scale for
+// every sibling. (Not the sum-of-w*h term: a ribbon's bbox area is near zero.)
+//
+// Measured on a real mesh (Ignatius, 536k faces, cutToDisk on): one triangle
+// spanning 4092 of 4096 texels held triangle coverage at 0.0189, against 0.2017
+// once bounded and 0.2226 on 0.3.0, with occupancy still reporting a plausible
+// 0.196 and no error anywhere. Assert the
+// invariant that actually broke -- adding one degenerate chart must not destroy
+// the atlas -- rather than the >=1-texel rect floor, which the packer clamps and
+// which therefore holds even under total collapse.
+// ---------------------------------------------------------------------------
+TEST(PackAtlas, LargeExtentSliverDoesNotSetPageScale)
+{
+	// `uvHeight` sets how badly the sliver is shaped, and the three values walk
+	// the whole ladder of ways a chart can claim page it has not earned:
+	//
+	//   4.0  — extent/sqrt(uvArea) ratio 54.8, magnification 0.013. NOT a
+	//          degenerate flatten at all: a chart with real area that is simply
+	//          very long. This is the field shape — measured at ratio 55.4 on a
+	//          471k-face Ignatius mesh with every knob off, where its 8 816-texel
+	//          extent (2.15x a 4096 page) set the packer's global k and cost 21%
+	//          of coverage. Only the page clamp can catch it, so it is the case
+	//          that pins maxExtentRatio's calibration.
+	//   1e-3 — ratio 3 464, magnification ~816: still under the maxScaleMagnitude
+	//          area guard, so again only the page clamp can catch it.
+	//   1e-9 — ratio 3.5e6, magnification ~2.6e7: over the area guard, so it
+	//          takes the degenerate-flatten branch — the one the original code
+	//          skipped into raw UVs.
+	//
+	// All three must hold. The synthetic charts total 204 world units against the
+	// sliver's 2, so D = 256/sqrt(206) and the sliver crosses the page at ratio
+	// ~10 — well inside the gap between real ribbons (>=55) and the widest chart
+	// any healthy mesh produces (3.3 measured across 86k-chart Truck, 78k-chart
+	// Ignatius, and the 5-mesh quality corpus).
+	auto coverageOf = [](float uvHeight) {
+		Mesh mesh;
+		std::vector<unsigned> faceChart;
+		unsigned numCharts = 0;
+		BuildSyntheticCharts(mesh, faceChart, numCharts, 8u);
+
+		if (uvHeight > 0.f) {
+			// World area 2.0, a near-collinear UV triangle, raw UV extent 6000 --
+			// the slit-ribbon shape: negligible area over an enormous span.
+			const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+			mesh.vertices.push_back({100.f, 0.f, 0.f});
+			mesh.vertices.push_back({102.f, 0.f, 0.f});
+			mesh.vertices.push_back({102.f, 2.f, 0.f});
+			mesh.faces.push_back({base, base + 1, base + 2});
+			faceChart.push_back(8u);
+			mesh.faceTexcoords.push_back({0.f, 0.f});
+			mesh.faceTexcoords.push_back({6000.f, 0.f});
+			mesh.faceTexcoords.push_back({6000.f, uvHeight});
+			numCharts = 9u;
+		}
+
+		AtlasParams params;
+		params.resolution = 256;
+		params.padding = 2;
+		params.fitToResolution = true; // the vulnerable path (GenerateAtlas default)
+
+		NormalizeChartDensity(mesh, faceChart, numCharts, params);
+		const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
+		for (const Mesh::TexCoord& uv : mesh.faceTexcoords) {
+			EXPECT_TRUE(std::isfinite(uv.x()));
+			EXPECT_TRUE(std::isfinite(uv.y()));
+		}
+		return res.coverage;
+	};
+
+	const float without = coverageOf(0.f);
+	ASSERT_GT(without, 0.05f) << "control atlas is itself empty — test is vacuous";
+
+	for (const float uvHeight : {4.f, 1e-3f, 1e-9f}) {
+		const float with = coverageOf(uvHeight);
+		EXPECT_GT(with, without * 0.5f)
+		    << "a large-extent sliver chart (uv height " << uvHeight
+		    << ") collapsed the atlas: coverage " << without << " -> " << with;
 	}
 }
 
@@ -1184,6 +1291,50 @@ TEST(GenerateAtlas, ExplicitDensityOverflowsToMultiPage)
 }
 
 // ---------------------------------------------------------------------------
+// Test 11b — GenerateAtlas reports true triangle coverage: rect
+// occupancy (~0.82 by construction of the fit solve) is blind to per-chart
+// bbox waste and the padding tax, so consumers sizing an atlas resolution
+// from occupancy alone overestimate texel density. Cross-checked against a
+// direct triangle-area integral of the final, normalized output UVs (no
+// rasterization needed).
+// ---------------------------------------------------------------------------
+TEST(GenerateAtlas, ReportsTriangleCoverage)
+{
+	const std::string path = TestMeshPath();
+	if (!std::filesystem::exists(path))
+		GTEST_SKIP() << "mesh.ply not found at " << path;
+
+	Mesh mesh;
+	ASSERT_TRUE(mesh.Load(path)) << "Failed to load " << path;
+	ASSERT_FALSE(mesh.faces.empty());
+
+	ParametrizeParams pparams;
+	pparams.flattenIterations = 3; // fast for tests
+
+	AtlasParams aparams;
+	aparams.resolution = 256;
+
+	const AtlasResult result = GenerateAtlas(mesh, pparams, aparams);
+
+	// Triangle coverage: real texels under UV triangles. Always positive for a
+	// non-degenerate atlas, never above the padded-rect occupancy (rects contain
+	// their triangles plus padding), never above 1.
+	EXPECT_GT(result.coverage, 0.f);
+	EXPECT_LE(result.coverage, result.occupancy + 1e-3f);
+	EXPECT_LE(result.coverage, 1.f);
+
+	// Cross-check against a direct rasterization-free integral of the output UVs.
+	double tri = 0.0;
+	for (size_t fi = 0; fi < mesh.faces.size(); ++fi) {
+		const auto& t0 = mesh.faceTexcoords[fi * 3 + 0];
+		const auto& t1 = mesh.faceTexcoords[fi * 3 + 1];
+		const auto& t2 = mesh.faceTexcoords[fi * 3 + 2];
+		tri += 0.5 * std::abs(double(t1.x() - t0.x()) * (t2.y() - t0.y()) - double(t2.x() - t0.x()) * (t1.y() - t0.y()));
+	}
+	EXPECT_NEAR(result.coverage, static_cast<float>(tri / result.numPages), 1e-4f);
+}
+
+// ---------------------------------------------------------------------------
 // Test 12 — cache parity: Parametrize()'s shared flip-repair -> flatten cache
 // (src/ChartFlattenCache.h, the GenerateAtlas call site ~src/AtlasCharting.cpp:1417
 // and the lookup/consume site ~src/Parametrize.cpp:2042-2095) must be perfectly
@@ -1356,6 +1507,204 @@ TEST(PackAtlas, NonFitModeGrowsPageForOversizedChart)
 	}
 }
 
+// K disjoint unit quads (2 triangles each), spaced 3 world units apart so each
+// is trivially its own connected component -- used as a crafted multi-chart
+// fixture (one chart per quad, assigned by hand) for the per-size padding test.
+static Mesh DisjointQuads(int k)
+{
+	Mesh m;
+	for (int i = 0; i < k; ++i) {
+		const float x = static_cast<float>(i) * 3.f;
+		const unsigned b = static_cast<unsigned>(m.vertices.size());
+		m.vertices.emplace_back(x, 0.f, 0.f);
+		m.vertices.emplace_back(x + 1.f, 0.f, 0.f);
+		m.vertices.emplace_back(x + 1.f, 1.f, 0.f);
+		m.vertices.emplace_back(x, 1.f, 0.f);
+		m.faces.emplace_back(b, b + 1, b + 2);
+		m.faces.emplace_back(b, b + 2, b + 3);
+	}
+	return m;
+}
+
+// K DisjointQuads charts (2 faces each), one chart per quad, all sharing the
+// same 4-texel-square local UVs -- the shared fixture for both per-size
+// padding trigger tests below (tinyChartSide via chart side, debrisChartFaces
+// via chart face count).
+static void BuildTinyChartFixture(int k, Mesh& mesh, std::vector<unsigned>& faceChart)
+{
+	mesh = DisjointQuads(k);
+	faceChart.resize(mesh.faces.size());
+	for (size_t f = 0; f < faceChart.size(); ++f)
+		faceChart[f] = static_cast<unsigned>(f / 2);
+	mesh.faceTexcoords.assign(mesh.faces.size() * 3, Mesh::TexCoord(0.f, 0.f));
+	for (size_t f = 0; f < mesh.faces.size(); f += 2) {
+		const Mesh::TexCoord q[4] = {{0.f, 0.f}, {4.f, 0.f}, {4.f, 4.f}, {0.f, 4.f}};
+		mesh.faceTexcoords[f * 3 + 0] = q[0];
+		mesh.faceTexcoords[f * 3 + 1] = q[1];
+		mesh.faceTexcoords[f * 3 + 2] = q[2];
+		mesh.faceTexcoords[(f + 1) * 3 + 0] = q[0];
+		mesh.faceTexcoords[(f + 1) * 3 + 1] = q[2];
+		mesh.faceTexcoords[(f + 1) * 3 + 2] = q[3];
+	}
+}
+
+// Tiny charts (max unpadded side <= tinyChartSide) get a 1-texel gutter
+// instead of the uniform `padding`. With K=64 identical 4-texel charts packed
+// (no fitToResolution) at a page side of 64, the padded rect area at a 4-texel
+// gutter (64 * 12*12 = 9216) does not fit one 64*64=4096 page (needs several),
+// while the same charts at a 1-texel gutter (64 * 6*6 = 2304) fit one page --
+// LESS wasted page area for the SAME geometry, so triangle coverage (Σ triangle
+// area / numPages, see AtlasResult::coverage) must go up. (`resolution` is
+// chosen small enough to force this multi-page split for the uniform case;
+// PackRects only grows the page beyond `resolution` for a single oversized
+// chart, never for aggregate content, so at a resolution that dwarfs every
+// individual padded chart -- e.g. 128 -- both paddings fit one page and
+// coverage cannot differ; that would falsely pass a no-op implementation.)
+// Also verifies the per-chart pad vector cannot make charts bleed into each
+// other: every padded chart bbox must stay disjoint from every other chart's
+// on the same page (ChartBBoxes / BoundingRectsDisjoint, defined above).
+TEST(AtlasTest, TinyChartPaddingRaisesCoverage)
+{
+	constexpr int K = 64;
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	BuildTinyChartFixture(K, mesh, faceChart);
+	halfmesh::AtlasParams uniform;
+	uniform.resolution = 64; // small enough that padding=4 needs >1 page; see comment above
+	uniform.padding = 4;
+	Mesh meshU = mesh;
+	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform);
+	halfmesh::AtlasParams tiny = uniform;
+	tiny.tinyChartSide = 8.f; // every 4-texel chart qualifies → pad 1
+	Mesh meshT = mesh;
+	const auto rT = halfmesh::PackAtlas(meshT, faceChart, K, tiny);
+	EXPECT_GT(rT.coverage, rU.coverage); // less gutter, same triangles
+
+	const auto rects = ChartBBoxes(meshT, faceChart, K, rT.chartPage, rT.width, rT.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "tinyChartSide padding let charts overlap";
+}
+
+// Same mechanism as TinyChartPaddingRaisesCoverage above (same fixture, same
+// resolution=64 rationale), through the OTHER per-size trigger: every
+// BuildTinyChartFixture chart has exactly 2 faces, so debrisChartFaces=2
+// qualifies all of them (tinyChartSide stays 0, so only debris fires).
+TEST(AtlasTest, DebrisChartPaddingRaisesCoverage)
+{
+	constexpr int K = 64;
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	BuildTinyChartFixture(K, mesh, faceChart);
+	halfmesh::AtlasParams uniform;
+	uniform.resolution = 64;
+	uniform.padding = 4;
+	Mesh meshU = mesh;
+	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform);
+	halfmesh::AtlasParams debris = uniform;
+	debris.debrisChartFaces = 2; // every 2-face chart qualifies → pad 1
+	Mesh meshD = mesh;
+	const auto rD = halfmesh::PackAtlas(meshD, faceChart, K, debris);
+	EXPECT_GT(rD.coverage, rU.coverage); // less gutter, same triangles
+
+	const auto rects = ChartBBoxes(meshD, faceChart, K, rD.chartPage, rD.width, rD.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "debrisChartFaces padding let charts overlap";
+}
+
+// Padding reporting: the nominal `AtlasParams::padding` does not tell a caller what
+// gutter the layout actually got, because the per-size knobs silently narrow it
+// for the charts they select. A consumer deciding whether the atlas can be
+// mipmapped needs the NARROWEST applied gutter, not the requested one. Same
+// fixture and resolution rationale as the two coverage tests above; here we
+// assert the reported numbers rather than their effect.
+TEST(AtlasTest, ReportsNarrowestAppliedPadding)
+{
+	constexpr int K = 64;
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	BuildTinyChartFixture(K, mesh, faceChart);
+
+	halfmesh::AtlasParams uniform;
+	uniform.resolution = 64;
+	uniform.padding = 4;
+	Mesh meshU = mesh;
+	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform);
+	EXPECT_EQ(rU.minPadding, 4u) << "no knob is on — the applied gutter is the nominal one";
+	EXPECT_EQ(rU.chartsPaddingReduced, 0u);
+
+	// Every chart in this fixture is 4 texels a side and has 2 faces, so each
+	// trigger selects ALL of them: the narrowest gutter becomes 1 and the count
+	// of reduced charts is the whole atlas.
+	for (const bool debrisTrigger : {false, true}) {
+		halfmesh::AtlasParams reduced = uniform;
+		if (debrisTrigger)
+			reduced.debrisChartFaces = 2;
+		else
+			reduced.tinyChartSide = 8.f;
+		Mesh meshR = mesh;
+		const auto rR = halfmesh::PackAtlas(meshR, faceChart, K, reduced);
+		EXPECT_EQ(rR.minPadding, 1u) << "debrisTrigger=" << debrisTrigger;
+		EXPECT_EQ(rR.chartsPaddingReduced, static_cast<unsigned>(K))
+		    << "debrisTrigger=" << debrisTrigger;
+	}
+}
+
+// fitScale + maxChartExtent exist to make ONE failure mode legible from the
+// return value alone: an atlas whose charts are all tiny because a single
+// oversized chart set the global scale, rather than because there are many of
+// them. Reading UVs back out of the mesh was previously the only way to tell
+// those apart. The ribbon below is the shape that does it (see
+// LargeExtentSliverDoesNotSetPageScale) — it is clamped to the page by
+// NormalizeChartDensity, so it lands as the widest chart in the layout.
+TEST(PackAtlas, ReportsFitScaleAndMaxChartExtent)
+{
+	auto packWith = [](float uvHeight) {
+		Mesh mesh;
+		std::vector<unsigned> faceChart;
+		unsigned numCharts = 0;
+		BuildSyntheticCharts(mesh, faceChart, numCharts, 8u);
+		if (uvHeight > 0.f) {
+			const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+			mesh.vertices.push_back({100.f, 0.f, 0.f});
+			mesh.vertices.push_back({102.f, 0.f, 0.f});
+			mesh.vertices.push_back({102.f, 2.f, 0.f});
+			mesh.faces.push_back({base, base + 1, base + 2});
+			faceChart.push_back(8u);
+			mesh.faceTexcoords.push_back({0.f, 0.f});
+			mesh.faceTexcoords.push_back({6000.f, 0.f});
+			mesh.faceTexcoords.push_back({6000.f, uvHeight});
+			numCharts = 9u;
+		}
+		AtlasParams params;
+		params.resolution = 256;
+		params.padding = 2;
+		params.fitToResolution = true;
+		NormalizeChartDensity(mesh, faceChart, numCharts, params);
+		return PackAtlas(mesh, faceChart, numCharts, params);
+	};
+
+	const AtlasResult plain = packWith(0.f);
+	EXPECT_TRUE(std::isfinite(plain.fitScale));
+	EXPECT_GT(plain.fitScale, 0.f);
+	EXPECT_GT(plain.maxChartExtent, 0.f);
+	// The one-page contract: the widest chart plus its gutter fits the page.
+	EXPECT_LE(plain.maxChartExtent + 2.f * 2.f, static_cast<float>(plain.width) + 1e-3f);
+	// A healthy atlas of 8 square charts leaves real headroom: its widest chart
+	// is well under half the page. The ribbon case below lands well over it, so
+	// half the page separates the two — a line a consumer can actually act on.
+	EXPECT_LT(plain.maxChartExtent, 0.5f * static_cast<float>(plain.width));
+
+	const AtlasResult ribbon = packWith(4.f);
+	EXPECT_TRUE(std::isfinite(ribbon.fitScale));
+	EXPECT_GT(ribbon.fitScale, 0.f);
+	// The signature: the widest chart now dominates the page, and the global
+	// scale is no larger than the one the same charts got without it. Note the
+	// ribbon does NOT land at exactly `width` — NormalizeChartDensity clamps its
+	// raw extent to the page, and then the packer's global k shrinks it along
+	// with everything else, so it arrives at ~0.78 of the page here.
+	EXPECT_GT(ribbon.maxChartExtent, plain.maxChartExtent);
+	EXPECT_GT(ribbon.maxChartExtent, 0.5f * static_cast<float>(ribbon.width));
+	EXPECT_LE(ribbon.fitScale, plain.fitScale);
+}
+
 // Deterministic "staircase terrain": an n×n grid whose vertex heights are
 // quantized random levels — many high-angle-defect vertices, like a
 // tetra-extracted MVS surface. Cone-Lloyd fragments it, flip repair splits
@@ -1419,6 +1768,158 @@ TEST(SegmentCharts, PostRepairMergeReducesChartsFoldFree)
 			continue;
 		EXPECT_FALSE(detail::ChartFacesFold(m2, fl[c], p2)) << "chart " << c << " folds after re-merge";
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Test — detail::SegmentCharts's opt-in AtlasSegmentStats out-param:
+// the post-repair-merge loop's per-round counters (budget vs. wouldEnclose
+// rejects, accepted merges, dirty vs. resplit charts) exist to diagnose why
+// postRepairMergeRounds recovers so few charts in practice.
+// Exercises the cache-aware detail:: overload directly on the challenge
+// fixture (tests/data/mesh.ply) — no public API exposes stats, so this test
+// is only reachable via ChartFlattenCache.h (this target's src/ include dir,
+// see tests/CMakeLists.txt).
+// ---------------------------------------------------------------------------
+TEST(SegmentCharts, SegmentationStatsPopulatedOnChallengeMesh)
+{
+	const std::string path = TestMeshPath();
+	if (!std::filesystem::exists(path))
+		GTEST_SKIP() << "mesh.ply not found at " << path;
+
+	Mesh mesh;
+	ASSERT_TRUE(mesh.Load(path)) << "Failed to load " << path;
+	ASSERT_FALSE(mesh.faces.empty());
+
+	ParametrizeParams params;
+	std::vector<unsigned> faceChart;
+	detail::AtlasSegmentStats stats;
+	const unsigned n = detail::SegmentCharts(mesh, params, faceChart, nullptr, &stats);
+
+	std::printf("[SegmentCharts] stats: lloyd=%u merged=%u repaired=%u final=%u repairSplits=%u rounds=%zu\n",
+	            stats.lloydCharts, stats.mergedCharts, stats.repairedCharts, stats.finalCharts,
+	            stats.repairSplits, stats.rounds.size());
+	for (size_t i = 0; i < stats.rounds.size(); ++i) {
+		const auto& r = stats.rounds[i];
+		std::printf("[SegmentCharts]   round %zu: pushed=%u budgetRej=%u encloseRej=%u merges=%u dirty=%u resplit=%u after=%u\n",
+		            i, r.pairsPushed, r.pairsBudgetRejected, r.pairsEncloseRejected,
+		            r.merges, r.dirtyCharts, r.resplitCharts, r.chartsAfter);
+	}
+
+	EXPECT_EQ(stats.finalCharts, n);
+	EXPECT_GE(stats.lloydCharts, stats.mergedCharts); // merge only reduces
+	EXPECT_GE(stats.repairedCharts, stats.mergedCharts); // repair only splits
+	ASSERT_GE(stats.rounds.size(), 1u); // postRepairMergeRounds=2 default
+	for (const auto& r : stats.rounds) {
+		EXPECT_GE(r.merges, r.dirtyCharts ? 1u : 0u);
+		EXPECT_LE(r.resplitCharts, r.dirtyCharts);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test — post-repair fold-blacklist: a merged pair whose resulting
+// chart the repair wave split right back (a "fold") is recorded per-round in
+// MergeRound::refoldedPairs, keyed by the two sides' smallest global face ids
+// (invariant under the Compact() id relabelling that happens between rounds).
+// The blacklist must make that memoized pair unavailable to every later
+// round, so no key may ever appear twice across stats.rounds.
+// ---------------------------------------------------------------------------
+TEST(AtlasTest, PostRepairMergeNeverRetriesAFoldedUnion)
+{
+	const std::string path = TestMeshPath();
+	if (!std::filesystem::exists(path))
+		GTEST_SKIP() << "mesh.ply not found at " << path;
+
+	Mesh mesh;
+	ASSERT_TRUE(mesh.Load(path)) << "Failed to load " << path;
+
+	ParametrizeParams params;
+	std::vector<unsigned> faceChart;
+	detail::AtlasSegmentStats stats;
+	detail::SegmentCharts(mesh, params, faceChart, nullptr, &stats);
+
+	std::set<std::pair<Mesh::FIndex, Mesh::FIndex>> seen;
+	for (const auto& r : stats.rounds)
+		for (const auto& p : r.refoldedPairs) {
+			// Contract (minFidA < minFidB): asserted rather than
+			// silently canonicalized here, so a producer-side regression that
+			// starts emitting raw root order shows up as a failure at THIS line
+			// instead of being masked by the test re-sorting around it.
+			EXPECT_LT(p.first, p.second) << "refoldedPairs entry not canonically ordered";
+			EXPECT_TRUE(seen.insert(p).second) << "pair re-merged after folding";
+		}
+}
+
+// ---------------------------------------------------------------------------
+// Test — failure-localized carve seam (detail::CarveFailureRegionForTest,
+// defined in src/AtlasCharting.cpp): on a 20x20 grid, carving 2 TopoNeighbor
+// rings around one corner face must produce {small local region, the rest},
+// covering every face exactly once. A non-localized failure (every face is
+// "bad") must fall back (return false) — the repair then uses BisectFaces.
+// ---------------------------------------------------------------------------
+TEST(AtlasTest, CarveFailureRegionSplitsAroundBadFaces)
+{
+	Mesh mesh = hmtest::corpus::GridPlane(20);
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> faces(mesh.faces.size());
+	std::iota(faces.begin(), faces.end(), 0u);
+	const std::vector<Mesh::FIndex> bad = {0u}; // one corner face
+	std::vector<Mesh::FIndex> A, B;
+	ASSERT_TRUE(detail::CarveFailureRegionForTest(mesh, faces, bad, 2u, A, B));
+	EXPECT_FALSE(A.empty());
+	EXPECT_FALSE(B.empty());
+	EXPECT_EQ(A.size() + B.size(), faces.size());
+	// A contains the bad face and stays local: within 2 rings of one corner
+	// face of a large grid, far fewer than half the faces.
+	EXPECT_NE(std::find(A.begin(), A.end(), 0u), A.end());
+	EXPECT_LT(A.size(), faces.size() / 4);
+	// Not-localized failure falls back (returns false): bad = every face.
+	std::vector<Mesh::FIndex> A2, B2;
+	EXPECT_FALSE(detail::CarveFailureRegionForTest(mesh, faces, faces, 2u, A2, B2));
+}
+
+// ---------------------------------------------------------------------------
+// Test — the connectivity guard's DECLINE path specifically. The size guard
+// (badFaces >= half the chart) above never exercises it: a scattered/snaking
+// failure region can be well under half the chart by AREA yet still sever
+// the chart into disconnected pieces. On a 20x20 grid, a single full-width
+// quad row (40 of 800 faces) floods (rings=2) to 5 rows — 200 faces, 25% of
+// the chart, comfortably under the size guard — but the band spans the
+// ENTIRE grid width, so removing it severs the remainder into two pieces
+// (the rows above vs. below). The connectivity guard must decline (return
+// false), matching the method's own name: carving off THE (singular)
+// topo-connected neighborhood, not a cut that fragments the rest.
+// A same-size (40-face) but CORNER-localized cluster is the positive
+// control: same badFaces count, same rings, no severing — must still carve.
+// ---------------------------------------------------------------------------
+TEST(AtlasTest, CarveFailureRegionDeclinesWhenRemainderWouldSplit)
+{
+	Mesh mesh = hmtest::corpus::GridPlane(20);
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> faces(mesh.faces.size());
+	std::iota(faces.begin(), faces.end(), 0u);
+	constexpr unsigned n = 20;
+
+	std::vector<Mesh::FIndex> band; // full-width row j=9 (40 faces)
+	for (unsigned i = 0; i < n; ++i) {
+		band.push_back(2u * (9u * n + i));
+		band.push_back(2u * (9u * n + i) + 1u);
+	}
+	std::vector<Mesh::FIndex> A, B;
+	EXPECT_FALSE(detail::CarveFailureRegionForTest(mesh, faces, band, 2u, A, B))
+	    << "a full-width band severs the remainder — the connectivity guard must decline";
+
+	std::vector<Mesh::FIndex> corner; // 2 rows x 10 cols in one corner (40 faces)
+	for (unsigned j = 0; j < 2; ++j)
+		for (unsigned i = 0; i < 10; ++i) {
+			corner.push_back(2u * (j * n + i));
+			corner.push_back(2u * (j * n + i) + 1u);
+		}
+	std::vector<Mesh::FIndex> A2, B2;
+	ASSERT_TRUE(detail::CarveFailureRegionForTest(mesh, faces, corner, 2u, A2, B2))
+	    << "a same-size corner-localized cluster must still carve";
+	EXPECT_FALSE(A2.empty());
+	EXPECT_FALSE(B2.empty());
+	EXPECT_EQ(A2.size() + B2.size(), faces.size());
 }
 
 TEST(RectPacking, UsesCvRectsAndPreservesInputOrder)

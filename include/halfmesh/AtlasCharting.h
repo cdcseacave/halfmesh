@@ -53,13 +53,14 @@
 //      charts cannot fold, so it converges; incremental — settled charts are not
 //      re-flattened).
 //
-// Two opt-in extensions ride this same flatten/repair machinery (both OFF by default,
-// so the flip-free, fewest-charts result above is unchanged until a knob is set; see
-// docs/BENCHMARKS.md §4 for the attribution matrix):
-//   - developableMaxUvDistortion (Parametrize.h): the flip repair (3) ALSO splits a
-//     flip-FREE but over-stretched chart (shipped area-weighted sym-Dirichlet > budget),
-//     trading a few extra charts for lower per-chart distortion; a mandatory sliver
-//     guard excludes degenerate near-zero-area input so it cannot runaway-split.
+// Two extensions ride this same flatten/repair machinery (see docs/BENCHMARKS.md §4
+// for the attribution matrix):
+//   - developableMaxUvDistortion (Parametrize.h): TIGHTENS the distortion budget the
+//     flip repair (3) splits on. The repair always splits a flip-FREE but unusably
+//     stretched chart (shipped area-weighted sym-Dirichlet above an internal
+//     ship-ability bar); this knob lowers that bar to trade extra charts for lower
+//     per-chart distortion. A mandatory sliver guard excludes degenerate
+//     near-zero-area input so it cannot runaway-split.
 //   - cutToDisk (Parametrize.h, Module B): a closed / multiply-connected chart is
 //     SLIT into a single disk at flatten time (Seamster, Sheffer & Hart 2002) instead
 //     of being bisected into many — far fewer charts on hole-riddled MVS. The flip
@@ -126,6 +127,17 @@ struct AtlasParams
 	// rotation is rigid (preserves texel density and distortion) and is baked
 	// into the output UVs. Default on (matches xatlas's rotateChartsToAxis).
 	bool orientCharts = true;
+
+	// Per-size padding (both 0 = off: uniform `padding` everywhere, the
+	// current behavior). Charts matching either trigger get a 1-texel gutter
+	// instead of `padding` — with very many tiny charts the uniform gutter is
+	// a multiplicative tax on exactly the charts that matter least, and the
+	// bleed risk it guards against is proportional to chart area. Under
+	// fitToResolution the tiny-side trigger is re-evaluated against each fit
+	// probe's SCALED trial size, not the original chart size, so a chart's pad
+	// tier can change from one probe to the next as the global scale converges.
+	float tinyChartSide = 0.f; // trigger: max UNPADDED rect side ≤ this many texels
+	unsigned debrisChartFaces = 0; // trigger: chart has ≤ this many faces
 
 	// Fit the whole atlas into ~one page of `resolution` texels: PackAtlas
 	// applies a single global UV scale so the total padded chart area ≈ one
@@ -201,10 +213,39 @@ struct AtlasResult
 	unsigned height = 0; // page height in texels
 	unsigned numPages = 1; // number of atlas pages (>1 on multi-atlas overflow)
 	float occupancy = 0.f; // packed chart area (with padding) / total atlas area [0,1]
+	// TRIANGLE coverage: Σ(UV triangle areas in final normalized atlas space) /
+	// numPages ∈ [0,1] — the fraction of the texel budget actually under
+	// geometry. `occupancy` above is PADDED-RECT occupancy: it contains the
+	// per-chart bbox waste and the padding tax, so with many small charts it
+	// reads high (~0.8) while coverage can be 4–13× lower. Consumers choosing an
+	// atlas resolution for a target texel density must use THIS number.
+	float coverage = 0.f;
 	// fit-to-resolution probe packs performed (0 = fitToResolution off). A
 	// converging fit takes 1-2; values near the internal cap (8) mean the
 	// shrink loop struggled — a diagnosability hook for huge chart counts.
 	unsigned fitAttempts = 0;
+	// The single global scale fit-to-resolution applied to every chart's UVs
+	// (1 when fitToResolution is off — nothing was rescaled). This is the most
+	// diagnostic number in this struct: it separates "charts are small because
+	// there are many of them" (fitScale near its area-driven value) from
+	// "charts are small because ONE chart forced a shrink" (fitScale far below
+	// it). The solve takes k = min(k_area, (resolution - 2*padding)/maxDim), so
+	// a low fitScale together with a `maxChartExtent` near `width` means the
+	// max-dimension term bound — one chart set the scale for all of them.
+	float fitScale = 1.f;
+	// Largest UNPADDED chart side in texels in the packed atlas. Compare with
+	// `width`: a chart at or near the page side is the shape that drags
+	// `fitScale` down for every one of its siblings.
+	float maxChartExtent = 0.f;
+	// Narrowest gutter actually applied, in texels, and how many charts got it.
+	// Equals `AtlasParams::padding` unless the per-size padding knobs
+	// (`tinyChartSide` / `debrisChartFaces`) reduced it for some charts — which
+	// the nominal `padding` alone cannot tell a consumer, and which decides
+	// whether the atlas can be mipmapped: halving resolution averages 2x2 texel
+	// blocks, so a gutter narrower than the nominal one bleeds between charts at
+	// a lower mip level than the caller asked for.
+	unsigned minPadding = 0;
+	unsigned chartsPaddingReduced = 0;
 	// page index per chart (size == numCharts)
 	std::vector<unsigned> chartPage;
 	// per-face chart id (size == mesh.faces.size()); populated by PackAtlas /
