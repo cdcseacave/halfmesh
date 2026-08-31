@@ -234,7 +234,24 @@ Returns a `dict`:
 | `occupancy` | fraction of atlas area covered by charts, `[0, 1]` (0 only for a degenerate empty atlas) |
 | `coverage` | fraction of the texel budget under actual UV triangles, `[0, 1]` — the honest density number (`occupancy` is padded-rect fill and reads far higher with many small charts) |
 | `fit_attempts` | number of fit-to-resolution packing probes it took to fit the target page size |
+| `fit_scale` | the single global scale fit-to-resolution applied to every chart (1.0 when it was off) |
+| `max_chart_extent` | widest **unpadded** chart side in texels, in the packed atlas |
+| `padding_applied` | `{nominal, min, n_charts_reduced}` — the requested gutter, the narrowest one actually applied, and how many charts got it |
 | `vertices`, `faces` | vertex/face counts of the (welded) output mesh |
+
+`fit_scale` and `max_chart_extent` go together. The packer solves
+`k = min(k_area, (resolution - 2*padding) / widest_chart)`, so a `fit_scale`
+well below what the chart areas alone would justify, together with a
+`max_chart_extent` close to `width`, means **one** oversized chart set the
+scale for every other chart — as opposed to charts simply being small because
+there are many of them. Without these two you would have to read the UVs back
+out of the written mesh to tell those apart.
+
+`padding_applied` matters when `tiny_chart_side` or `debris_chart_faces` is on:
+those give the charts they select a 1-texel gutter while `padding` still reads
+2, and `min` is the only thing that reports it. It decides whether the atlas is
+mipmappable — halving resolution averages 2×2 texel blocks, so a narrowed
+gutter bleeds between charts at a lower mip level than you asked for.
 
 Raises `RuntimeError` if `input_path` fails to load or `output_path` fails
 to save.

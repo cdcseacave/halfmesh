@@ -83,13 +83,23 @@ def test_unwrap_generates_a_packed_atlas(tmp_path):
 
     out = str(tmp_path / "cube_uv.ply")
     meta = hm.unwrap(src, out, resolution=1024, padding=2)
-    assert set(meta) == {"charts", "pages", "width", "height", "occupancy", "coverage", "fit_attempts", "vertices", "faces"}
+    assert set(meta) == {
+        "charts", "pages", "width", "height", "occupancy", "coverage",
+        "fit_attempts", "fit_scale", "max_chart_extent", "padding_applied",
+        "vertices", "faces",
+    }
     assert meta["charts"] >= 1
     assert meta["pages"] >= 1
     assert 0.0 < meta["occupancy"] <= 1.0
     assert 0.0 < meta["coverage"] <= meta["occupancy"] + 1e-3
     assert meta["fit_attempts"] >= 1
     assert meta["faces"] == 12
+
+    # Layout diagnostics: the widest chart must fit the page it was packed into,
+    # and with no per-size padding knob on, the applied gutter is the nominal one.
+    assert meta["fit_scale"] > 0.0
+    assert 0.0 < meta["max_chart_extent"] <= meta["width"]
+    assert meta["padding_applied"] == {"nominal": 2, "min": 2, "n_charts_reduced": 0}
 
     unwrapped = hm.Mesh()
     unwrapped.load(out)

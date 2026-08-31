@@ -1609,6 +1609,102 @@ TEST(AtlasTest, DebrisChartPaddingRaisesCoverage)
 	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "debrisChartFaces padding let charts overlap";
 }
 
+// §6.5 reporting: the nominal `AtlasParams::padding` does not tell a caller what
+// gutter the layout actually got, because the per-size knobs silently narrow it
+// for the charts they select. A consumer deciding whether the atlas can be
+// mipmapped needs the NARROWEST applied gutter, not the requested one. Same
+// fixture and resolution rationale as the two coverage tests above; here we
+// assert the reported numbers rather than their effect.
+TEST(AtlasTest, ReportsNarrowestAppliedPadding)
+{
+	constexpr int K = 64;
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	BuildTinyChartFixture(K, mesh, faceChart);
+
+	halfmesh::AtlasParams uniform;
+	uniform.resolution = 64;
+	uniform.padding = 4;
+	Mesh meshU = mesh;
+	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform);
+	EXPECT_EQ(rU.minPadding, 4u) << "no knob is on — the applied gutter is the nominal one";
+	EXPECT_EQ(rU.chartsPaddingReduced, 0u);
+
+	// Every chart in this fixture is 4 texels a side and has 2 faces, so each
+	// trigger selects ALL of them: the narrowest gutter becomes 1 and the count
+	// of reduced charts is the whole atlas.
+	for (const bool debrisTrigger : {false, true}) {
+		halfmesh::AtlasParams reduced = uniform;
+		if (debrisTrigger)
+			reduced.debrisChartFaces = 2;
+		else
+			reduced.tinyChartSide = 8.f;
+		Mesh meshR = mesh;
+		const auto rR = halfmesh::PackAtlas(meshR, faceChart, K, reduced);
+		EXPECT_EQ(rR.minPadding, 1u) << "debrisTrigger=" << debrisTrigger;
+		EXPECT_EQ(rR.chartsPaddingReduced, static_cast<unsigned>(K))
+		    << "debrisTrigger=" << debrisTrigger;
+	}
+}
+
+// fitScale + maxChartExtent exist to make ONE failure mode legible from the
+// return value alone: an atlas whose charts are all tiny because a single
+// oversized chart set the global scale, rather than because there are many of
+// them. Reading UVs back out of the mesh was previously the only way to tell
+// those apart. The ribbon below is the shape that does it (see
+// LargeExtentSliverDoesNotSetPageScale) — it is clamped to the page by
+// NormalizeChartDensity, so it lands as the widest chart in the layout.
+TEST(PackAtlas, ReportsFitScaleAndMaxChartExtent)
+{
+	auto packWith = [](float uvHeight) {
+		Mesh mesh;
+		std::vector<unsigned> faceChart;
+		unsigned numCharts = 0;
+		BuildSyntheticCharts(mesh, faceChart, numCharts, 8u);
+		if (uvHeight > 0.f) {
+			const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+			mesh.vertices.push_back({100.f, 0.f, 0.f});
+			mesh.vertices.push_back({102.f, 0.f, 0.f});
+			mesh.vertices.push_back({102.f, 2.f, 0.f});
+			mesh.faces.push_back({base, base + 1, base + 2});
+			faceChart.push_back(8u);
+			mesh.faceTexcoords.push_back({0.f, 0.f});
+			mesh.faceTexcoords.push_back({6000.f, 0.f});
+			mesh.faceTexcoords.push_back({6000.f, uvHeight});
+			numCharts = 9u;
+		}
+		AtlasParams params;
+		params.resolution = 256;
+		params.padding = 2;
+		params.fitToResolution = true;
+		NormalizeChartDensity(mesh, faceChart, numCharts, params);
+		return PackAtlas(mesh, faceChart, numCharts, params);
+	};
+
+	const AtlasResult plain = packWith(0.f);
+	EXPECT_TRUE(std::isfinite(plain.fitScale));
+	EXPECT_GT(plain.fitScale, 0.f);
+	EXPECT_GT(plain.maxChartExtent, 0.f);
+	// The one-page contract: the widest chart plus its gutter fits the page.
+	EXPECT_LE(plain.maxChartExtent + 2.f * 2.f, static_cast<float>(plain.width) + 1e-3f);
+	// A healthy atlas of 8 square charts leaves real headroom: its widest chart
+	// is well under half the page. The ribbon case below lands well over it, so
+	// half the page separates the two — a line a consumer can actually act on.
+	EXPECT_LT(plain.maxChartExtent, 0.5f * static_cast<float>(plain.width));
+
+	const AtlasResult ribbon = packWith(4.f);
+	EXPECT_TRUE(std::isfinite(ribbon.fitScale));
+	EXPECT_GT(ribbon.fitScale, 0.f);
+	// The signature: the widest chart now dominates the page, and the global
+	// scale is no larger than the one the same charts got without it. Note the
+	// ribbon does NOT land at exactly `width` — NormalizeChartDensity clamps its
+	// raw extent to the page, and then the packer's global k shrinks it along
+	// with everything else, so it arrives at ~0.78 of the page here.
+	EXPECT_GT(ribbon.maxChartExtent, plain.maxChartExtent);
+	EXPECT_GT(ribbon.maxChartExtent, 0.5f * static_cast<float>(ribbon.width));
+	EXPECT_LE(ribbon.fitScale, plain.fitScale);
+}
+
 // Deterministic "staircase terrain": an n×n grid whose vertex heights are
 // quantized random levels — many high-angle-defect vertices, like a
 // tetra-extracted MVS surface. Cone-Lloyd fragments it, flip repair splits

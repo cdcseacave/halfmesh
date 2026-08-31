@@ -96,6 +96,27 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (padded-rect fill, which reads high with many small charts). Available via
   the Python `unwrap()` return dict; atlasbench reports its own triangle-occupancy
   column (`occupancyTri`), which measures the same quantity.
+- **Layout diagnostics** (`AtlasResult::fitScale`, `maxChartExtent`,
+  `minPadding`, `chartsPaddingReduced`; Python `fit_scale`,
+  `max_chart_extent`, `padding_applied{nominal,min,n_charts_reduced}`). All
+  three answer questions the return value previously could not, and each one
+  was a real integration cost:
+  - `fitScale` is the single global scale fit-to-resolution applied. Because
+    the solve is `k = min(k_area, (resolution − 2·padding)/maxDim)`, a
+    `fitScale` far below its area-driven value separates *"charts are small
+    because there are many"* from *"charts are small because ONE chart forced
+    a shrink"* — the failure mode fixed above, which previously had to be
+    inferred from percentiles of per-face UV extents read back out of a
+    written PLY.
+  - `maxChartExtent` is the widest UNPADDED chart side in texels. Compared
+    against `width`, it names the offending chart's shape directly.
+  - `minPadding` / `chartsPaddingReduced` report the *narrowest gutter
+    actually applied* and how many charts got it. With the per-size padding
+    knobs on, the gutter is 1 texel for the selected charts while the nominal
+    `padding` still reads 2, and nothing in the result said so. That
+    difference decides whether the atlas can be mipmapped at all — halving
+    resolution averages 2×2 texel blocks — so a consumer could not tell a
+    mip-safe layout from a partially mip-unsafe one.
 - **Per-size padding** (§6.5, `AtlasParams::tinyChartSide` /
   `debrisChartFaces`, opt-in, both default `0`/off): charts under an
   unpadded-bbox-side or face-count trigger get a 1-texel gutter instead of

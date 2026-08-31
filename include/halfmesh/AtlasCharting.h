@@ -223,6 +223,28 @@ struct AtlasResult
 	// converging fit takes 1-2; values near the internal cap (8) mean the
 	// shrink loop struggled — a diagnosability hook for huge chart counts.
 	unsigned fitAttempts = 0;
+	// The single global scale fit-to-resolution applied to every chart's UVs
+	// (1 when fitToResolution is off — nothing was rescaled). This is the most
+	// diagnostic number in this struct: it separates "charts are small because
+	// there are many of them" (fitScale near its area-driven value) from
+	// "charts are small because ONE chart forced a shrink" (fitScale far below
+	// it). The solve takes k = min(k_area, (resolution - 2*padding)/maxDim), so
+	// a low fitScale together with a `maxChartExtent` near `width` means the
+	// max-dimension term bound — one chart set the scale for all of them.
+	float fitScale = 1.f;
+	// Largest UNPADDED chart side in texels in the packed atlas. Compare with
+	// `width`: a chart at or near the page side is the shape that drags
+	// `fitScale` down for every one of its siblings.
+	float maxChartExtent = 0.f;
+	// Narrowest gutter actually applied, in texels, and how many charts got it.
+	// Equals `AtlasParams::padding` unless the per-size padding knobs
+	// (`tinyChartSide` / `debrisChartFaces`) reduced it for some charts — which
+	// the nominal `padding` alone cannot tell a consumer, and which decides
+	// whether the atlas can be mipmapped: halving resolution averages 2x2 texel
+	// blocks, so a gutter narrower than the nominal one bleeds between charts at
+	// a lower mip level than the caller asked for.
+	unsigned minPadding = 0;
+	unsigned chartsPaddingReduced = 0;
 	// page index per chart (size == numCharts)
 	std::vector<unsigned> chartPage;
 	// per-face chart id (size == mesh.faces.size()); populated by PackAtlas /

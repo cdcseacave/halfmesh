@@ -898,6 +898,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 			}
 			result.fitAttempts = attempts;
 			const float kfinal = static_cast<float>(kf);
+			result.fitScale = kfinal;
 			for (size_t fi = 0; fi < nf; ++fi) {
 				const unsigned cid = faceChart[fi];
 				if (cid >= numCharts || crects[cid].degenerate)
@@ -937,6 +938,25 @@ AtlasResult PackAtlas(Mesh& mesh,
 	result.width = pageW;
 	result.height = pageH;
 	result.faceChart = faceChart; // copy so callers can verify per-face layout
+
+	// Layout diagnostics. `crects` is final here (fit-to-resolution has already
+	// applied kfinal above), and the pads are re-derived from exactly the inputs
+	// PackRects just used, so both describe the layout that ships. Degenerate
+	// charts are excluded: they hold a fixed ≥1-texel slot and are not part of
+	// either the extent story or the gutter the caller reasons about.
+	result.maxChartExtent = 0.f;
+	result.minPadding = pad;
+	result.chartsPaddingReduced = 0;
+	for (unsigned c = 0; c < numCharts; ++c) {
+		if (crects[c].degenerate)
+			continue;
+		result.maxChartExtent = std::max({result.maxChartExtent, crects[c].w, crects[c].h});
+		const float padC = ChartPad(params, crects[c].w, crects[c].h, chartFaces[c], pad);
+		if (padC < static_cast<float>(pad)) {
+			++result.chartsPaddingReduced;
+			result.minPadding = std::min(result.minPadding, static_cast<unsigned>(padC));
+		}
+	}
 
 	const float totalAtlasArea =
 	    static_cast<float>(result.numPages) * static_cast<float>(pageW) * static_cast<float>(pageH);
