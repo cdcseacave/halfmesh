@@ -1773,9 +1773,8 @@ TEST(SegmentCharts, PostRepairMergeReducesChartsFoldFree)
 // ---------------------------------------------------------------------------
 // Test — detail::SegmentCharts's opt-in AtlasSegmentStats out-param:
 // the post-repair-merge loop's per-round counters (budget vs. wouldEnclose
-// rejects, accepted merges, dirty vs. resplit charts) are what the merge
-// diagnosis uses to
-// diagnose why postRepairMergeRounds recovers so few charts in practice.
+// rejects, accepted merges, dirty vs. resplit charts) exist to diagnose why
+// postRepairMergeRounds recovers so few charts in practice.
 // Exercises the cache-aware detail:: overload directly on the challenge
 // fixture (tests/data/mesh.ply) — no public API exposes stats, so this test
 // is only reachable via ChartFlattenCache.h (this target's src/ include dir,

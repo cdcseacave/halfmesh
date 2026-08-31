@@ -130,9 +130,8 @@ struct ParametrizeParams
 	// 2 is the sane on-value.
 	unsigned repairCarveRings = 0;
 
-	// Distortion-bounded split (0 disables — the default; flip-only repair, the
-	// current SOTA behavior). When > 0 it is a symmetric-Dirichlet cap τ that
-	// Per-chart distortion budget τ for the flip-repair: a chart that is
+	// Distortion-bounded split: per-chart distortion budget τ for the
+	// flip-repair. A chart that is
 	// flip-FREE but whose SHIPPED map (full SLIM, area-weighted
 	// symmetric-Dirichlet) still exceeds τ is spatially bisected and its pieces
 	// re-checked, trading a few extra charts for far lower per-chart stretch.

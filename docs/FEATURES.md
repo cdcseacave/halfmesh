@@ -409,13 +409,16 @@ Two modules that together turn a raw mesh into per-chart UV layouts:
   stay on chart boundaries), `developableSmoothIters` (virtual Taubin denoise
   of the *segmentation signal* on noisy MVS meshes — the geometry is
   untouched), the opt-in `developableDistanceExponent` (compact charts,
-  β=0.7), and `developableMaxUvDistortion` — a symmetric-Dirichlet cap that
+  β=0.7), `developableMaxUvDistortion` — a symmetric-Dirichlet cap that
   *tightens* the always-on ship-ability bar the repair splits on, rather than
-  switching a check on.
+  switching a check on — and the opt-in `repairCarveRings` (the repair carves
+  off the diagnosed failure's neighborhood instead of blindly bisecting).
 - **Per-chart flattening** — LSCM initialization (falling back to Tutte, then
   PCA) followed by **SLIM** (default) or **ARAP** iterations; flip-free by
   construction via the line search. `cutToDisk` optionally slits annuli/holed
-  charts (Seamster) first.
+  charts (Seamster) first; opt-in `foldRescueSlits` re-flattens a folding
+  chart after slitting it from its worst interior vertex, shipping one chart
+  with an extra seam instead of a split.
 
 Output: `mesh.faceTexcoords` per corner, each chart in its own local frame
 (unpacked) — feed to the atlas packer next. Design record with measured
@@ -429,7 +432,8 @@ method write-up lives in its header comment).
 
 ```cpp
 struct AtlasParams { texelsPerUnit, resolution, padding, allowRotation,
-                     powerOfTwo, square, orientCharts, fitToResolution };
+                     powerOfTwo, square, orientCharts, fitToResolution,
+                     tinyChartSide, debrisChartFaces };
 AtlasResult GenerateAtlas(Mesh&, const ParametrizeParams&, const AtlasParams& = {});
 AtlasResult PackAtlas(Mesh&, const std::vector<unsigned>& faceChart,
                       unsigned numCharts, const AtlasParams& = {});
@@ -440,13 +444,16 @@ float NormalizeChartDensity(Mesh&, const std::vector<unsigned>& faceChart,
 - `GenerateAtlas` is the one-call pipeline: `SegmentCharts` →
   `ParametrizeCharts` → `NormalizeChartDensity` (uniform texels-per-area
   across charts) → `PackAtlas`. Returns chart→page assignment, atlas
-  dimensions, page count and occupancy; leaves normalized `[0,1]` UVs in
-  `mesh.faceTexcoords`.
+  dimensions, page count, occupancy and true triangle `coverage`, plus layout
+  diagnostics (`fitScale`, `maxChartExtent`, `minPadding`); leaves normalized
+  `[0,1]` UVs in `mesh.faceTexcoords`.
 - `PackAtlas` is the packer alone: skyline bottom-left min-waste placement
   (xatlas-inspired) with per-chart minimum-area-rectangle pre-orientation
   (rotating calipers), optional 90° rotations (true rotations — winding
-  survives), gutter `padding`, and multi-page overflow. For multi-page
-  results, per-face pages come from `AtlasResult::chartPage[faceChart[f]]`.
+  survives), gutter `padding` (opt-in per-size narrowing to a 1-texel gutter
+  for tiny/debris charts via `tinyChartSide`/`debrisChartFaces`), and
+  multi-page overflow. For multi-page results, per-face pages come from
+  `AtlasResult::chartPage[faceChart[f]]`.
 
 Packing is **two-tier**: rects whose padded long side reaches `pageW/32` go
 through the full min-waste skyline scan, everything smaller lands on

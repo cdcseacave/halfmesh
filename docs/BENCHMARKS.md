@@ -297,15 +297,14 @@ splitting it), and `AtlasParams::tinyChartSide` / `debrisChartFaces`
 uniform `padding` for charts under a size/face-count trigger — packing only,
 does not change the partition).
 
-**Setup.** `tests/data/` on this machine contains only `mesh.ply` (63 049
-vertices / 120 943 faces once repaired — 459 non-manifold issues fixed on
-load; `roi100k` and `ours128k` are not present, so those cross-checks were
-not run). A Truck-class mesh is **not** in `tests/data/` either, but is
-derivable on this machine — see the Truck-class sweep below, which is where
-the chart-count / coverage target is actually decided. All arms: `--engines halfmesh
+**Setup.** Measured on `tests/data/mesh.ply` (63 049 vertices / 120 943 faces
+once repaired — 459 non-manifold issues fixed on load); the `roi100k` /
+`ours128k` cross-checks were not run. This is the small-mesh sweep — the
+Truck-class sweep below is where the chart-count / coverage target is
+actually decided. All arms: `--engines halfmesh
 --resolution 4096 --cut-to-disk` (padding stays at the `AtlasParams` default
-of 2, unchanged by any arm). Wall-clock is indicative only — this machine was
-under load from an unrelated training job during the sweep.
+of 2, unchanged by any arm). Wall-clock is indicative only — the machine was
+under concurrent load during the sweep.
 
 | arm | charts | coverage (tri) | seg. time (s) | flips | sym-Dirichlet |
 |---|--:|--:|--:|--:|--:|
@@ -336,7 +335,7 @@ from 41.6 % to 42.3 %.)
   count relative to slits-alone (2022 vs 2153 is actually fewer — the
   regression is on *quality*): flips go from 0 to **4**, and sym-Dirichlet
   balloons **~200 000×** (45.8 → 9 533 546). Re-run twice — byte-identical
-  both times. This is exactly the spec's §7 warning materializing: fold-rescue
+  both times. This is the fold rescue's known failure mode materializing:
   slits opening a sliver-dominated chart, here compounded by carve fragments
   feeding it. A blind flip of both defaults would ship this regression to
   every caller.
@@ -356,16 +355,17 @@ the padding knobs remain opt-in). Rationale:
 3. Carve-ring sensitivity is non-monotonic with no obviously-better fixed
    value.
 
-No golden re-freeze: defaults are unchanged, so `tests/golden/` fixtures
-still reflect the current (591/591-green) behavior.
+No golden re-freeze: defaults are unchanged, so `tests/data/golden/` fixtures
+still reflect the shipped behavior.
 
 ### Truck-class sweep — the chart-count / coverage target, measured (2026-08-30)
 
 The sweep above runs on `mesh.ply` (120 943 faces, 0.020 charts/face), which
-is **not** the mesh class the §7 criterion is about: a Truck-class mesh
-fragments ten times harder (~0.20 charts/face). Measured on one.
+is **not** the mesh class the chart-count / coverage criterion (below) is
+about: a Truck-class mesh fragments ten times harder (~0.20 charts/face).
+Measured on one.
 
-**Mesh.** `~/bench_runs/Truck_g16_ppisp/mesh/mesh.ply` — a Tanks-and-Temples
+**Mesh.** A Tanks-and-Temples
 Truck PGSR marching-tets extraction, 7 824 634 faces — put through
 `radiance.mesh.postprocess` (repair → Taubin ×20 → QEM aggressiveness 7 →
 close holes) at `--decimate-target 500000`, giving **522 738 faces /
@@ -409,8 +409,9 @@ Both scenes the source study used are measured, from the same recipe:
 effect within a percentage point. Chart count is invariant across tessellation
 (the source study: 300 k, 520 k and 659 k-face variants all land at 90–106 k
 charts) *and* across scene, which makes ~0.195 charts/face a property of
-marching-tets extraction from a splat SDF rather than of any capture. The §7
-target of 0.104 asks for a 47 % cut against that constant.
+marching-tets extraction from a splat SDF rather than of any capture. The
+criterion's implied target of ~0.104 charts/face (≤ 55 k charts on ~525 k
+faces) asks for a 47 % cut against that constant.
 
 Ignatius `cut_to_disk` alone reads 0.2017 against its own siblings' ~0.249
 because a slit ribbon lands at exactly page width and bisects the skyline

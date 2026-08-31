@@ -115,7 +115,7 @@ Four of the five arms improve or hold. The `mesh.ply` row is the price of not
 shipping texels that mean nothing: there the split adds charts without
 releasing any page-hogging extent, so the fit scale — and with it coverage —
 drops. Meshes with no chart above the bar are unaffected: every
-`tests/golden/` fixture is byte-identical.
+`tests/data/golden/` fixture is byte-identical.
 
 ### Added: atlas layout diagnostics
 
@@ -191,7 +191,7 @@ is memoized (keyed by the two sides' smallest global face ids, invariant under
 relabelling) so later merge rounds never retry it, removing
 accepted-then-resplit churn from the merge↔repair rounds. **This is a
 default-segmentation-output change**: chart counts on meshes with fold/re-merge
-churn may differ slightly (`tests/data/mesh.ply`: 2816 → 2779). `tests/golden/`
+churn may differ slightly (`tests/data/mesh.ply`: 2816 → 2779). `tests/data/golden/`
 fixtures are unaffected — no re-freeze.
 
 ### Python and CLI
