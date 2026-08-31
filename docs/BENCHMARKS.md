@@ -479,8 +479,7 @@ bar in particular splits them, so chart counts read low and per-chart
 sym-Dirichlet reads high in these tables relative to what 0.3.1 now produces.
 On the Ignatius default arm the two together take the worst per-chart
 sym-Dirichlet from 3.3e8 to 22 390 and the widest chart from 2 071 to 640
-texels of a 4 096 page, at +0.25 % charts. Re-running this campaign against
-0.3.1 is outstanding.
+texels of a 4 096 page, at +0.25 % charts.
 
 **Criterion: ≤ 55 k charts and coverage ≥ 0.30. Coverage passes, chart count
 does not.**
