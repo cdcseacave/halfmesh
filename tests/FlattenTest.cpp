@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <numeric> // std::iota (FoldDiagnosisReportsOffendingFaces face list)
@@ -860,8 +861,14 @@ TEST(Flatten, FoldDiagnosisReportsOffendingFaces)
 	halfmesh::ParametrizeParams params;
 	halfmesh::detail::FoldDiagnosis diag;
 	const bool folds = halfmesh::detail::ChartFacesFold(mesh, faces, params, nullptr, &diag);
+	// Report the measured fold extent that Corpus.h quotes as the fixture's
+	// premise, so that number is observable here rather than a comment that can
+	// silently rot.
+	std::printf("[flatten_test] SaddleFan: folds=%d badFaces=%zu of %zu\n",
+	            static_cast<int>(folds), diag.badFaces.size(), mesh.faces.size());
 	// Fixture premise: the saddle fan folds under the shipped flatten. If this
-	// ever fails, raise the zig-zag amplitude / angleSum — do not weaken the test.
+	// ever fails, raise the zig-zag amplitude (SaddleFan's `elevation`) — do not
+	// weaken the test.
 	ASSERT_TRUE(folds);
 	ASSERT_FALSE(diag.badFaces.empty());
 	EXPECT_TRUE(std::is_sorted(diag.badFaces.begin(), diag.badFaces.end()));

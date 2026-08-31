@@ -360,9 +360,12 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 // RemoveDegenerateFaces / RemoveUnreferencedVertices — the preprocessing
 // GenerateAtlas and the Python hm.unwrap() path apply — foldRescueSlits
 // 0/1/2/3 gives 2708 / 2734 / 2852 / 2766 charts: the knob costs charts, and
-// non-monotonically. The bound below holds on the mesh as loaded here; it is
-// pinned as a regression guard for THIS input, not as an algebraic property.
-// See docs/BENCHMARKS.md section 4 — the knob stays default-off for this reason.
+// non-monotonically. Which side of the baseline the fixed point lands on is
+// not even stable across builds of the SAME input: a -march=native build
+// measured 2617 → 2666 for the slits arm. So only the CARVE arm asserts a
+// decrease (it is this test's namesake claim, and holds across every measured
+// platform and build); the slit arms assert a bound, not monotonicity. See
+// docs/BENCHMARKS.md section 4 — the knob stays default-off for this reason.
 TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 {
 	Mesh mesh;
@@ -388,24 +391,31 @@ TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 
 	// Curvature-slit fold rescue: same one-extra-SegmentCharts-call pattern
 	// as the carve run above, reusing nBase as the baseline (no second baseline
-	// recomputation). A rescued chart ships as ONE chart with an extra seam
-	// instead of being split, which is why the count drops on this input — but
-	// see the SCOPE note in the header: that is not a guarantee, and on the
-	// cleaned mesh this same knob costs charts.
+	// recomputation). Unlike carve, this arm asserts NO decrease, because the
+	// knob does not have one to give: the SCOPE note above measured it COSTING
+	// charts, non-monotonically (0/1/2/3 → 2708/2734/2852/2766 on the cleaned
+	// mesh), and a -march=native build lands the same way on the mesh as loaded
+	// here (2617 → 2666). Asserting ≤ here would contradict that note and pin a
+	// fixed point that is floating-point-implementation dependent. What IS real
+	// is that the rescue cannot shatter the partition: each attempt either
+	// ships a folding chart as ONE chart with an extra seam, or falls through
+	// to the very split safety net the baseline already used, so the count
+	// stays in the baseline's neighbourhood either way.
 	halfmesh::ParametrizeParams slits;
 	slits.foldRescueSlits = 2;
 	std::vector<unsigned> fcSlits;
 	Mesh meshS = mesh;
 	const unsigned nSlits = halfmesh::SegmentCharts(meshS, slits, fcSlits);
 	std::printf("[segment-quality] slits: nBase=%u nSlits=%u\n", nBase, nSlits);
-	EXPECT_LE(nSlits, nBase); // the whole point; equality allowed (no rescuable folds → no change)
+	EXPECT_LE(nSlits, nBase + nBase / 10) << "the slit rescue must not inflate the chart count";
 	ExpectValidPartition(fcSlits, nSlits, meshS.faces.size());
 	EXPECT_TRUE(AllChartsConnectedTopo(meshS, fcSlits, nSlits))
 	    << "the slit-rescue partition must still be topo-connected per chart";
 
 	// Both knobs together (carve + slit compose — see
 	// Parametrize.CarveAndFoldRescueSlitsKeepsPartitionContracts): one more
-	// SegmentCharts call, same baseline reuse.
+	// SegmentCharts call, same baseline reuse. Bounded, not monotone, for the
+	// same reason as the slits arm — it contains one.
 	halfmesh::ParametrizeParams both;
 	both.repairCarveRings = 2;
 	both.foldRescueSlits = 2;
@@ -413,7 +423,7 @@ TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 	Mesh meshCS = mesh;
 	const unsigned nBoth = halfmesh::SegmentCharts(meshCS, both, fcBoth);
 	std::printf("[segment-quality] carve+slits: nBase=%u nBoth=%u\n", nBase, nBoth);
-	EXPECT_LE(nBoth, nBase);
+	EXPECT_LE(nBoth, nBase + nBase / 10) << "carve+slits must not inflate the chart count";
 	ExpectValidPartition(fcBoth, nBoth, meshCS.faces.size());
 	EXPECT_TRUE(AllChartsConnectedTopo(meshCS, fcBoth, nBoth))
 	    << "the carve+slit-rescue partition must still be topo-connected per chart";

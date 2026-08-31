@@ -527,21 +527,23 @@ halfmesh::Mesh LargeMesh(unsigned targetFaces, unsigned* actualFaces)
 // FOLD-INDUCING FIXTURES
 // ============================================================
 
-// n triangles fanned around apex (vertex 0); rim wraps angleSum radians of
-// azimuth while a zig-zag elevation embeds the excess angle in 3D so the
-// mesh stays embedded (non-self-intersecting) — see Corpus.h for the
+// n triangles fanned around apex (vertex 0) — see Corpus.h for the
 // fold-under-shipped-flatten premise this fixture relies on.
-halfmesh::Mesh SaddleFan(int n, double angleSum)
+halfmesh::Mesh SaddleFan(int n, double elevation)
 {
 	halfmesh::Mesh m;
 	m.vertices.emplace_back(0.f, 0.f, 0.f); // apex, vertex 0
-	const double step = angleSum / n;
-	// Lay rim vertices on a unit cone-of-directions: azimuth advances by
-	// `step` (total 3π wraps 1.5 turns), alternating elevation folds the
-	// surplus angle into 3D so the mesh is embedded (non-self-intersecting).
+	// Lay rim vertices on a unit cone-of-directions over exactly ONE azimuth
+	// turn (a rim that literally wrapped >2π of azimuth would self-intersect).
+	// The excess apex angle is created by the ZIG-ZAG ELEVATION instead: two
+	// consecutive rim directions are 2π/n apart in azimuth but 2·elevation
+	// apart in elevation, so each triangle subtends more at the apex than a
+	// flat fan's 2π/n. Total apex angle = n·acos(cos²(el)·cos(2π/n) − sin²(el))
+	// ≈ 10.4 rad ≈ 3.3π at the defaults — comfortably over 2π, which is what
+	// makes the apex a saddle and the shipped flatten fold.
 	for (int i = 0; i <= n; ++i) {
-		const double az = step * i * (2.0 * M_PI / angleSum); // embed within one turn
-		const double el = (i % 2 == 0) ? 0.35 : -0.35; // zig-zag creates the excess
+		const double az = 2.0 * M_PI * i / n;
+		const double el = (i % 2 == 0) ? elevation : -elevation;
 		m.vertices.emplace_back(static_cast<float>(std::cos(az) * std::cos(el)),
 		                        static_cast<float>(std::sin(az) * std::cos(el)),
 		                        static_cast<float>(std::sin(el)));
