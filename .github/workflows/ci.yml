@@ -303,10 +303,10 @@ jobs:
         run: cmake --build build-vg -j
 
       - name: Run test binaries under memcheck
-        # Comfortably above the ~50 min the parallel sweep costs -- the margin
-        # is wider than it used to be because the figure driving it is an
-        # extrapolation, not a measurement (see below) -- and below the
-        # job-level backstop so this trips first and stays a mere failure.
+        # Comfortably above the ~46 min the parallel sweep costs, and below the
+        # job-level backstop so this trips first and stays a mere failure. The
+        # margin is deliberately wide: the sweep rides on one binary (see
+        # below), so runner-to-runner variance lands on the cap undamped.
         timeout-minutes: 65
         run: |
           set -u
@@ -318,19 +318,18 @@ jobs:
           # Valgrind serialises the threads inside one process, so the only
           # parallelism left is across binaries -- and the suite is lopsided
           # enough that feed order decides the wall clock. Measured inside the
-          # 4-worker sweep itself (run 33425166826): atlas 30m, parametrize
-          # 24m, flatten 14m, remesh 11m, holes 4m -- 6 of 28 binaries, ~95% of
-          # the time, everything else seconds apiece. segment_quality is the
-          # longest pole and has no completed figure: it was still running at
-          # 29m when the cap killed it, and ~50m is the extrapolation from its
-          # native runtime against the ~38x native->sweep ratio the five timed
-          # binaries agree on.
+          # 4-worker sweep itself (run 33430459632): segment_quality 46m,
+          # atlas 29m, parametrize 23m, flatten 13m, remesh 11m, holes 4m --
+          # 6 of 28 binaries, ~95% of the time, everything else seconds apiece.
           #
           # Longest first, so a pole is never left straggling after the cheap
           # ones drained the workers. That ordering is load-bearing, not
-          # cosmetic: segment_quality sat 5th in a 4-worker queue on that run,
-          # so it did not start until a worker freed at 11m and inherited only
-          # the remaining 29m of the budget.
+          # cosmetic: segment_quality was listed 5th back when it cost 11m, and
+          # that stale position is what cost it run 33425166826 once it had
+          # grown to 46m -- 5th in a 4-worker queue meant it did not start
+          # until a worker freed at 11m, inherited the remaining 29m of the
+          # then-40m budget, and was killed mid-run as the only binary of 28
+          # that never reported.
           #
           # The sweep is now bounded by ONE indivisible binary rather than by
           # total work, so the next heavy test landing in segment_quality_test
