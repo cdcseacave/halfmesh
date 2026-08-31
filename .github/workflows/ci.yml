@@ -274,7 +274,7 @@ jobs:
     # a job that overruns is recorded as *cancelled*, which it does not. This
     # advisory job overrunning at the job level is what concluded the whole
     # workflow run "cancelled" while every blocking job was green.
-    timeout-minutes: 60
+    timeout-minutes: 80
 
     steps:
       - name: Checkout
@@ -303,9 +303,11 @@ jobs:
         run: cmake --build build-vg -j
 
       - name: Run test binaries under memcheck
-        # Comfortably above the ~20 min the parallel sweep costs, and below the
+        # Comfortably above the ~50 min the parallel sweep costs -- the margin
+        # is wider than it used to be because the figure driving it is an
+        # extrapolation, not a measurement (see below) -- and below the
         # job-level backstop so this trips first and stays a mere failure.
-        timeout-minutes: 40
+        timeout-minutes: 65
         run: |
           set -u
           # Fresh every time: a stale .failed marker from a previous run would
@@ -315,15 +317,30 @@ jobs:
 
           # Valgrind serialises the threads inside one process, so the only
           # parallelism left is across binaries -- and the suite is lopsided
-          # enough that feed order decides the wall clock. Measured serially:
-          # parametrize 17m, atlas 16m, remesh 12m, flatten 11m,
-          # segment_quality 11m+, holes 5m -- 6 of 29 binaries, ~95% of the
-          # time, everything else seconds apiece. Start the long poles first so
-          # they are not left straggling after the cheap ones drained the
-          # workers. Purely a scheduling hint: a binary that is new, renamed or
-          # simply unlisted still runs, just later.
-          SLOW="parametrize_test atlas_test mesh_remesh_test flatten_test
-                segment_quality_test mesh_holes_test"
+          # enough that feed order decides the wall clock. Measured inside the
+          # 4-worker sweep itself (run 33425166826): atlas 30m, parametrize
+          # 24m, flatten 14m, remesh 11m, holes 4m -- 6 of 28 binaries, ~95% of
+          # the time, everything else seconds apiece. segment_quality is the
+          # longest pole and has no completed figure: it was still running at
+          # 29m when the cap killed it, and ~50m is the extrapolation from its
+          # native runtime against the ~38x native->sweep ratio the five timed
+          # binaries agree on.
+          #
+          # Longest first, so a pole is never left straggling after the cheap
+          # ones drained the workers. That ordering is load-bearing, not
+          # cosmetic: segment_quality sat 5th in a 4-worker queue on that run,
+          # so it did not start until a worker freed at 11m and inherited only
+          # the remaining 29m of the budget.
+          #
+          # The sweep is now bounded by ONE indivisible binary rather than by
+          # total work, so the next heavy test landing in segment_quality_test
+          # or atlas_test wants sharding (feed gtest filters, not whole
+          # binaries) rather than another budget bump.
+          #
+          # Purely a scheduling hint: a binary that is new, renamed or simply
+          # unlisted still runs, just later.
+          SLOW="segment_quality_test atlas_test parametrize_test flatten_test
+                mesh_remesh_test mesh_holes_test"
           : > vg-order.txt
           for n in $SLOW; do
             [ -x "build-vg/tests/$n" ] && echo "build-vg/tests/$n" >> vg-order.txt
