@@ -51,10 +51,46 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   on the chart's scaled **extent** — the page when the atlas must fit one, and
   `D·sqrt(worldArea)` for a degenerate flatten. Present in 0.3.0 as well; this
   release's segmentation change is what made a real mesh reach it.
-  **Small default-output change**: charts wider than the page are now clamped.
-  Of the three real-mesh arms that were not already broken, that moved coverage
-  +0.04 % on one (Ignatius, default knobs: 0.2347→0.2348) and left the other
-  two (both Truck arms) bit-identical, chart counts included.
+
+  The page bound is gated on the chart not *earning* its extent with area
+  (`rawExtent > R·sqrt(uvArea)`), because a mesh with few charts has charts that
+  legitimately span the page and clamping those costs the 2-chart Cone 3.2 % of
+  occupancy. **`R` is 16**, calibrated 2026-08-31 over every chart of six
+  4096²/padding-2 arms across two PGSR splat→mesh scenes (471 814-face
+  Ignatius, 476 690-face Truck) plus the 5-mesh quality corpus, split by whether
+  a chart actually exceeds the page: charts that legitimately do measure
+  **1.4–1.9**; healthy charts sit at p50 2.1, p99.9 12–15; the ribbons that
+  collapse an atlas measure **55–606**. The gate only ever judges charts already
+  wider than the page — a chart's scaled extent is `D·sqrt(worldArea)·R`, so
+  `cutToDisk`'s thousands of legitimate small high-ratio ribbons (max ratio
+  1 700 on Truck, 1 244 on Ignatius) never reach the clamp at all. That is what
+  distinguishes this from a universal aspect bound, which clamps on ratio alone
+  and cost Truck 9.7 % of coverage at aspect 8.
+- **Fixed: the page gate was calibrated two orders of magnitude too loose.**
+  The gate above shipped at `1e3` — and since the ratio is `sqrt(aspect)`, that
+  admits every chart up to a **1 000 000 : 1** aspect, three orders of magnitude
+  above the entire legitimate population. Real ribbons sail through it. Found by
+  a consumer integration on a 471 814-face Ignatius, where one chart at ratio
+  55.4 reached 8 816 texels — 2.15× a 4096 page — and set the packer's global
+  `k = (R − 2·pad)/maxDim` for all 78 123 charts. With `foldRescueSlits=2` the
+  same mesh produced a chart at ratio 605.9 and 28 912 texels, 7.06× the page.
+  **Default-output change** (4096², padding 2), coverage before → after:
+
+  | arm | before | after |
+  |---|--:|--:|
+  | Ignatius, defaults | 0.1891 | **0.2484** |
+  | Ignatius, `foldRescueSlits=2` | 0.0200 | **0.2292** |
+  | Ignatius, `foldRescueSlits=1` | 0.2292 | 0.2292 |
+  | Truck, defaults | 0.2334 | 0.2334 |
+  | Truck, `cutToDisk` | 0.2412 | 0.2412 |
+  | Ignatius, `cutToDisk` | 0.2668 | 0.2668 |
+
+  Only the two arms that actually had an over-page chart move; the other four
+  are bit-identical, chart counts included. Note this removes a chart's ability
+  to tax its siblings — it does not remove the ribbon, which still occupies a
+  page-wide slot. The `docs/BENCHMARKS.md` §7 sweep table was measured on
+  different (522–536 k-face) meshes before this recalibration and has not been
+  re-run against it.
 - **Triangle coverage metric** (`AtlasResult::coverage`): the fraction of the
   texel budget actually under UV geometry, as opposed to `occupancy`
   (padded-rect fill, which reads high with many small charts). Available via

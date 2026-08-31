@@ -1802,11 +1802,35 @@ float NormalizeChartDensity(Mesh& mesh,
 	// (2) A chart wider than the page, when the atlas must fit one. Nothing
 	// wider is representable at any scale, so the clamp costs nothing real and
 	// removes the lever entirely. It is gated on the chart not EARNING its
-	// extent with area: `rawExtent / sqrt(uvArea)` is scale-invariant, ~1 for a
-	// square chart and 10 for a 100:1 ribbon. The gate is load-bearing — a mesh
+	// extent with area: `rawExtent / sqrt(uvArea)` is scale-invariant — 1 for a
+	// square chart, sqrt(aspect) for a ribbon. The gate is load-bearing: a mesh
 	// with few charts has charts that legitimately span most of the page, and an
 	// unconditional page clamp costs the 2-chart Cone 3.2% of occupancy.
-	constexpr double maxExtentRatio = 1e3;
+	//
+	// Note the gate judges ONLY charts already wider than the page — a chart's
+	// scaled extent is D*sqrt(worldArea)*ratio, so a high-ratio chart with little
+	// world area never reaches the clamp at all. That is what separates this from
+	// a universal aspect bound, which clamps by ratio alone: cutToDisk emits
+	// thousands of legitimate small high-ratio ribbons (measured max ratio 1700
+	// on Truck, 1244 on Ignatius, with ZERO charts over the page), and squashing
+	// those is what cost an aspect-8 bound 9.7% of Truck's coverage.
+	//
+	// Calibration, measured 2026-08-31 over every chart of two 4096^2 arms per
+	// mesh (471k-face Ignatius, 476k-face Truck, PGSR splat->mesh class) plus the
+	// 5-mesh quality corpus, splitting charts by whether they exceed the page:
+	//
+	//   legitimately over-page (corpus Cone/OpenCylinder/GridPlane)  ratio 1.4-1.9
+	//   healthy, all arms                                p50 2.1, p99.9 12-15
+	//   pathological over-page (the ribbons that set global k)       ratio 55-606
+	//
+	// 16 sits above the p99.9 of the worst-behaved (cutToDisk) distribution and
+	// 8.6x above the widest legitimate page-spanner, while staying 3.5x under the
+	// mildest ribbon observed. Erring low is deliberate: a gate set too low costs
+	// a few percent of occupancy on a low-chart-count mesh, while one set too
+	// high lets a single chart collapse the atlas 10x (which 1e3 -- admitting
+	// aspect up to 1e6 -- did on Ignatius: coverage 0.1891 against 0.2484 here,
+	// and 0.0200 with foldRescueSlits=2, where one chart reached 7x the page).
+	constexpr double maxExtentRatio = 16.0;
 	// PackAtlas fits a single page whenever the density is auto-derived:
 	// GenerateAtlas hands NormalizeChartDensity the caller's params but packs
 	// with `packParams.fitToResolution = true` when texelsPerUnit == 0, so the

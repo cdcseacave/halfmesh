@@ -433,7 +433,7 @@ until the widest one fits.
 Fixed by bounding the chart's scaled **extent** instead: to the page when the
 atlas must fit one (nothing wider is representable at any scale), and to
 `D·sqrt(worldArea)` for a chart whose flatten is degenerate. The page bound is
-gated on a scale-invariant predicate — `rawExtent > 1e3·sqrt(uvArea)`, i.e. the
+gated on a scale-invariant predicate — `rawExtent > R·sqrt(uvArea)`, i.e. the
 chart is not *earning* its extent with area — so it reaches ribbons and leaves
 alone the charts that legitimately span a page. That gate is load-bearing:
 clamping every chart unconditionally cost the `Cone` corpus mesh 3.2 % of
@@ -442,6 +442,36 @@ chart spanning the page is the correct answer. Both Truck arms and
 both chart counts are bit-identical after the fix; Ignatius defaults moves
 +0.04 %. The pre-existing behaviour is present in 0.3.0 too — this branch's
 segmentation change is what made a mesh reach it.
+
+**The gate's threshold, recalibrated (2026-08-31) — and what the table above
+does not include.** `R` shipped at `1e3`. The ratio is `sqrt(aspect)`, so that
+admits every chart up to a **10⁶ : 1** aspect, and real ribbons are nowhere near
+it. A consumer integration on a 471 814-face Ignatius from the same PGSR class
+hit one at ratio 55.4 spanning 8 816 texels — 2.15× a 4096 page — with every
+knob off, and one at ratio 605.9 spanning 28 912 texels (7.06× the page) with
+`fold_rescue_slits=2`, which cost that arm a **9.5× coverage collapse**
+(0.1891 → 0.0200). Measuring every chart of six arms across two scenes plus the
+5-mesh corpus, split by whether a chart actually exceeds the page:
+
+| population | ratio |
+|---|---|
+| legitimately over-page (corpus `Cone`, `OpenCylinder`, `GridPlane`) | 1.4 – 1.9 |
+| healthy, all arms | p50 2.1, p99.9 12 – 15 |
+| pathological over-page (the ribbons that set global `k`) | 55 – 606 |
+
+`R = 16` now. Note the gate only ever judges charts *already* wider than the
+page — scaled extent is `D·sqrt(worldArea)·ratio` — so `cutToDisk`'s thousands
+of legitimate small high-ratio ribbons (max ratio 1 700 on Truck, 1 244 on
+Ignatius, **zero** charts over the page) never reach the clamp. That is the
+difference between this and a universal aspect bound, which clamps on ratio
+alone and cost Truck 9.7 % at aspect 8.
+
+On the two 471–477 k-face consumer meshes, coverage went 0.1891 → **0.2484**
+(Ignatius defaults) and 0.0200 → **0.2292** (`fold_rescue_slits=2`), with the
+four arms that had no over-page chart bit-identical. **The §7 sweep table above
+predates this recalibration** and was measured on different (522–536 k-face)
+meshes; the arms that had an over-page chart at ratio 16–1000 would read higher
+if re-run. Re-running that campaign is outstanding.
 
 **Criterion: ≤ 55 k charts and coverage ≥ 0.30. Coverage passes, chart count
 does not.**

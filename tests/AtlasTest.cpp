@@ -993,11 +993,27 @@ TEST(PackAtlas, SliverChartDoesNotCollapseSiblingCharts)
 // ---------------------------------------------------------------------------
 TEST(PackAtlas, LargeExtentSliverDoesNotSetPageScale)
 {
-	// `uvHeight` sets the sliver's magnification: 1e-3 keeps it under the
-	// maxScaleMagnitude area guard (~816) so only the page clamp can catch it,
-	// 1e-9 puts it far over (~2.6e7) so it takes the degenerate-flatten branch —
-	// which is the path the real Ignatius ribbon takes, and the one the original
-	// code skipped into raw UVs. Both must hold.
+	// `uvHeight` sets how badly the sliver is shaped, and the three values walk
+	// the whole ladder of ways a chart can claim page it has not earned:
+	//
+	//   4.0  — extent/sqrt(uvArea) ratio 54.8, magnification 0.013. NOT a
+	//          degenerate flatten at all: a chart with real area that is simply
+	//          very long. This is the field shape — measured at ratio 55.4 on a
+	//          471k-face Ignatius mesh with every knob off, where its 8 816-texel
+	//          extent (2.15x a 4096 page) set the packer's global k and cost 21%
+	//          of coverage. Only the page clamp can catch it, so it is the case
+	//          that pins maxExtentRatio's calibration.
+	//   1e-3 — ratio 3 464, magnification ~816: still under the maxScaleMagnitude
+	//          area guard, so again only the page clamp can catch it.
+	//   1e-9 — ratio 3.5e6, magnification ~2.6e7: over the area guard, so it
+	//          takes the degenerate-flatten branch — the one the original code
+	//          skipped into raw UVs.
+	//
+	// All three must hold. The synthetic charts total 204 world units against the
+	// sliver's 2, so D = 256/sqrt(206) and the sliver crosses the page at ratio
+	// ~10 — well inside the gap between real ribbons (>=55) and the widest chart
+	// any healthy mesh produces (3.3 measured across 86k-chart Truck, 78k-chart
+	// Ignatius, and the 5-mesh quality corpus).
 	auto coverageOf = [](float uvHeight) {
 		Mesh mesh;
 		std::vector<unsigned> faceChart;
@@ -1036,7 +1052,7 @@ TEST(PackAtlas, LargeExtentSliverDoesNotSetPageScale)
 	const float without = coverageOf(0.f);
 	ASSERT_GT(without, 0.05f) << "control atlas is itself empty — test is vacuous";
 
-	for (const float uvHeight : {1e-3f, 1e-9f}) {
+	for (const float uvHeight : {4.f, 1e-3f, 1e-9f}) {
 		const float with = coverageOf(uvHeight);
 		EXPECT_GT(with, without * 0.5f)
 		    << "a large-extent sliver chart (uv height " << uvHeight
