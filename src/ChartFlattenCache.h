@@ -107,7 +107,7 @@ struct FoldDiagnosis
 
 // Extended fold bridge: identical verdict; additionally, when `diag` is
 // non-null and the chart DOES fold, fills *diag with the offending faces
-// (global ids, sorted ascending, deduplicated) so the repair (§6.1) can carve
+// (global ids, sorted ascending, deduplicated) so the repair can carve
 // around them. Never affects the verdict, `out`'s artifacts, or any
 // threshold/exemption computed along the way — the diagnosis is gathered by a
 // second collector pass over the already-judged map, run only for folding
@@ -117,7 +117,7 @@ bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
                     FoldDiagnosis* diag);
 
 // Segmentation instrumentation (opt-in via detail::SegmentCharts's trailing
-// `stats` out-param, §6.3): per-stage chart counts + per-round post-repair-merge
+// `stats` out-param): per-stage chart counts + per-round post-repair-merge
 // counters, to diagnose whether postRepairMergeRounds is blocked by the
 // cone-budget gate, the wouldEnclose anti-fold veto, or accepted-then-resplit
 // churn (a merge that re-folds and gets bisected right back by the repair
@@ -142,7 +142,7 @@ struct AtlasSegmentStats
 		unsigned dirtyCharts = 0; // merged charts handed to the repair wave
 		unsigned resplitCharts = 0; // dirty charts the repair split back
 		unsigned chartsAfter = 0; // count after the round's repair
-		// §6.3: merged pairs (minFidA, minFidB — smallest global face id on
+		// Merged pairs (minFidA, minFidB — smallest global face id on
 		// each side, invariant under Compact() relabelling) whose merged chart
 		// this round's repair wave split right back, i.e. folded. Blacklisted
 		// for every later round, so a key here never repeats across stats.rounds.

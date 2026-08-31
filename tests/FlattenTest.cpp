@@ -838,14 +838,14 @@ TEST(Flatten, MeanValueTutteStaysFlipFree)
 }
 
 // ---------------------------------------------------------------------------
-// Fold diagnosis (task 4, §6.1 prerequisite): detail::ChartFacesFold's 5-arg
+// Fold diagnosis (the carve's prerequisite): detail::ChartFacesFold's 5-arg
 // overload must report WHICH faces made a chart fold, as global face ids
 // (sorted, deduped), so a future repair can carve around them.
 //
 // SaddleFan (fan of `n` triangles around an interior apex with total apex
 // angle `angleSum` > 2π, rim zig-zagging in z to embed the excess angle in
 // 3D) now lives in tests/corpus/Corpus.h as hmtest::corpus::SaddleFan — it is
-// shared with tests/ParametrizeTest.cpp's public-path equivalence test (§6.2),
+// shared with tests/ParametrizeTest.cpp's public-path equivalence test,
 // so it moved to the repo's shared-test-helper library rather than being
 // duplicated. A shipped (LSCM/Tutte + SLIM) flattening of this disk must
 // either flip or globally self-overlap.
@@ -870,42 +870,32 @@ TEST(Flatten, FoldDiagnosisReportsOffendingFaces)
 }
 
 // ---------------------------------------------------------------------------
-// Curvature-slit fold rescue (§6.2): a chart that folds from enclosed
+// Curvature-slit fold rescue: a chart that folds from enclosed
 // curvature is re-flattened after cutting a slit from its worst interior
 // vertex to the boundary, up to params.foldRescueSlits times — one chart with
 // one extra seam instead of a split.
 //
-// DEVIATION FROM THE BRIEF'S SKETCH: the brief's own sketch test reused
-// Task 4's SaddleFan (apex + n triangles fanned OPEN, i.e. NOT wrapped back
-// on itself) and asserted the rescue turns it fold-free. Investigated and
-// disproved: SaddleFan's boundary loop walks apex -> rim[1] -> ... ->
-// rim[n+1] -> apex, i.e. EVERY vertex (including the apex) is already on the
-// chart's single boundary loop — there is no interior vertex at all, so
-// WorstInteriorVertex always returns -1 and the rescue is a guaranteed no-op
-// on this exact fixture (confirmed empirically: apex excluded, candidates
-// non-empty, apex=-1, still folds). This is not fixable by tuning the
-// fixture's parameters: a fan closed into a genuine cone (apex fully
-// surrounded, boundary = the rim only) DOES fold and DOES have an interior
-// apex, but ShortestCutEdges' single-source shortest path only ever removes
-// ONE edge incident to that source vertex — never enough to split a fully-
-// cyclic one-ring into two arcs — so the cut converts the apex from interior
-// to boundary WITHOUT duplicating it, reproducing (verified) the exact
-// still-folding open-fan topology. Every synthetic "cone embedded a few rings
-// inside a larger disk" construction tried (annulus, grid-with-bump,
-// multi-ring taper — dozens of (n, amplitude, radius) combinations) instead
-// flattened perfectly flip-free: LSCM's free-boundary least-squares solve
-// pins the two farthest-apart BOUNDARY vertices, and as soon as the boundary
-// is a few rings away from the excess-curvature vertex, the solve simply
-// absorbs the local defect as smooth stretch — it never manifests as a fold
-// at toy scale. A genuinely rescuable fold (a localized bad vertex deep
-// inside an otherwise-good, much larger region) only reproduces on real,
-// irregular geometry. So this test drives the SAME rescue path on
-// tests/data/mesh.ply's pre-repair segmentation (developableFlipRepairRounds
-// = 0, so genuinely-folding charts survive to be tested — the shipped
-// pipeline's own bisect-repair would otherwise have already fixed every one
-// of them): deterministic (fixed corpus mesh + deterministic segmentation,
-// SegmentQuality.SegmentDeterministicRunTwice), and measured to reproducibly
-// yield 133 folding charts of which the slit rescue fixes >=1 (measured: 3).
+// Why a real mesh and not a synthetic fixture: the rescue needs an INTERIOR
+// vertex to cut from, and no toy fixture produces a rescuable fold.
+//   - SaddleFan has no interior vertex at all (its boundary loop walks
+//     apex -> rim[1] -> ... -> rim[n+1] -> apex), so WorstInteriorVertex
+//     returns -1 and the rescue is a guaranteed no-op.
+//   - Closing that fan into a genuine cone does give an interior apex, but
+//     ShortestCutEdges removes only ONE edge incident to the source, which
+//     cannot split a fully-cyclic one-ring into two arcs — the cut moves the
+//     apex to the boundary without duplicating it, reproducing the same
+//     still-folding open-fan topology.
+//   - Embedding a cone inside a larger disk (annulus, grid-with-bump,
+//     multi-ring taper) flattens flip-free instead: LSCM pins the two
+//     farthest-apart BOUNDARY vertices, so once the boundary is a few rings
+//     away the solve absorbs the defect as smooth stretch rather than a fold.
+// A rescuable fold — a localized bad vertex deep inside a much larger good
+// region — only occurs on real, irregular geometry. So this drives the rescue
+// on tests/data/mesh.ply's PRE-repair segmentation (developableFlipRepairRounds
+// = 0, so folding charts survive to be tested; the shipped pipeline's own
+// bisect-repair would otherwise have fixed them all). Deterministic (fixed
+// corpus mesh + deterministic segmentation, SegmentQuality.SegmentDeterministicRunTwice),
+// and measured to yield 133 folding charts of which the rescue fixes 3.
 // ---------------------------------------------------------------------------
 TEST(Flatten, FoldRescueSlitRescuesAtLeastOneRealMeshChart)
 {
@@ -943,6 +933,83 @@ TEST(Flatten, FoldRescueSlitRescuesAtLeastOneRealMeshChart)
 	// The curvature-slit rescue turns at least one of them into a single
 	// fold-free chart instead of leaving it to the split safety net.
 	EXPECT_GT(numRescued, 0);
+}
+
+// ---------------------------------------------------------------------------
+// A spike of height h over a unit ring of n vertices, skirted by a flat annulus
+// out to radius R. The apex carries a severe angle deficit, so any flattening
+// must stretch it — but the skirt keeps the apex INTERIOR and the boundary far
+// away, so LSCM absorbs the deficit as smooth stretch rather than as a fold.
+// That is the shape this test needs: injective, flip-free, and useless.
+// ---------------------------------------------------------------------------
+static Mesh MakeSpike(int n, float h, float R = 3.f)
+{
+	Mesh m;
+	m.vertices.emplace_back(0.f, 0.f, h); // 0 = apex
+	for (int r = 0; r < 2; ++r) {
+		const float rad = (r == 0) ? 1.f : R;
+		for (int i = 0; i < n; ++i) {
+			const float a = 2.f * static_cast<float>(M_PI) * static_cast<float>(i) / static_cast<float>(n);
+			m.vertices.emplace_back(rad * std::cos(a), rad * std::sin(a), 0.f);
+		}
+	}
+	const auto V = [&](int r, int i) { return static_cast<uint32_t>(1 + r * n + (i % n)); };
+	for (int i = 0; i < n; ++i)
+		m.faces.emplace_back(0u, V(0, i), V(0, i + 1));
+	for (int i = 0; i < n; ++i) {
+		m.faces.emplace_back(V(0, i), V(1, i), V(1, i + 1));
+		m.faces.emplace_back(V(0, i), V(1, i + 1), V(0, i + 1));
+	}
+	return m;
+}
+
+// ---------------------------------------------------------------------------
+// Flip-freedom is not sufficient to ship a chart. A chart whose map is
+// injective but stretched past any use must still be split, and with NO
+// distortion budget configured — developableMaxUvDistortion defaults to 0, and
+// before this bar existed that default meant "no distortion check at all", so
+// such a chart shipped. Measured on a 471 814-face Ignatius at defaults, that
+// path shipped 31 charts above the bar, the worst at symmetric-Dirichlet 3.3e8
+// (a ~18 000x stretch), while the injectivity fallback ladder in
+// ParametrizeCharts would have refused to SHIP anything above 200 — the two
+// disagreed, and the repair's acceptance is the one that decides.
+//
+// The `1e9` arm is what makes this a distortion test rather than a fold test:
+// the SAME chart ships when the budget is lifted, so its map is flip-free and
+// non-self-overlapping and only the bar changes the verdict.
+// ---------------------------------------------------------------------------
+TEST(Flatten, OverStretchedChartSplitsWithNoDistortionBudgetSet)
+{
+	Mesh mesh = MakeSpike(24, 30.f);
+	mesh.ListHalfEdges();
+	std::vector<Mesh::FIndex> faces(mesh.faces.size());
+	for (size_t i = 0; i < faces.size(); ++i)
+		faces[i] = static_cast<Mesh::FIndex>(i);
+
+	halfmesh::ParametrizeParams def; // developableMaxUvDistortion == 0
+	EXPECT_TRUE(halfmesh::detail::ChartFacesFold(mesh, faces, def))
+	    << "an unusably stretched chart must be split even with no budget set";
+
+	halfmesh::ParametrizeParams lifted;
+	lifted.developableMaxUvDistortion = 1e9f;
+	EXPECT_FALSE(halfmesh::detail::ChartFacesFold(mesh, faces, lifted))
+	    << "the chart is flip-free and injective — only the distortion bar rejects it";
+
+	halfmesh::ParametrizeParams tight;
+	tight.developableMaxUvDistortion = 4.4f;
+	EXPECT_TRUE(halfmesh::detail::ChartFacesFold(mesh, faces, tight))
+	    << "an explicit budget must still be honoured";
+
+	// The bar must not fire on a merely-curved chart: the same shape at h = 12
+	// stretches, ships, and is only rejected by an explicitly tight budget.
+	Mesh mild = MakeSpike(24, 12.f);
+	mild.ListHalfEdges();
+	std::vector<Mesh::FIndex> mildFaces(mild.faces.size());
+	for (size_t i = 0; i < mildFaces.size(); ++i)
+		mildFaces[i] = static_cast<Mesh::FIndex>(i);
+	EXPECT_FALSE(halfmesh::detail::ChartFacesFold(mild, mildFaces, def))
+	    << "the default bar must not split ordinary curved charts";
+	EXPECT_TRUE(halfmesh::detail::ChartFacesFold(mild, mildFaces, tight));
 }
 
 } // namespace

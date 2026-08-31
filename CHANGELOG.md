@@ -7,159 +7,207 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.3.1]
 
-### Failure-localized repair carve, fold-rescue slits, always-on merge blacklist, per-size padding — all opt-in, defaults unchanged
+### Fixed: one degenerate chart could collapse the whole atlas
 
-- **Repair carve** (§6.1, `ParametrizeParams::repairCarveRings`, opt-in,
-  default `0`): a folding chart is first split by carving off the faces
-  within N `TopoNeighbor` rings of the diagnosed failure — one small extra
-  chart instead of a blind-PCA-bisection cascade — falling back to bisection
-  when the failure isn't localized (region ≥ half the chart). The
-  termination guarantee is unchanged. Measure before enabling it together
-  with `foldRescueSlits`: combined, the two measured *worse* than either
-  alone on `mesh.ply` and fine on a Truck-class mesh, so the interaction is
-  mesh-dependent rather than settled (`docs/BENCHMARKS.md` §4).
-- **Fold-rescue slits** (§6.2, `ParametrizeParams::foldRescueSlits`, opt-in,
-  default `0`): a folding chart is cut from its worst interior vertex to the
-  boundary and re-flattened, up to N times, before any split — the chart
-  ships as ONE chart with one extra seam instead of ≥2 padded rects. Lives
-  inside `FlattenChart` so the repair verdict and the shipped map agree on
-  every path, exactly the `cutToDisk` contract. Same combined-knob caution as
-  `repairCarveRings` above — see `docs/BENCHMARKS.md` §4. The rescue needs an
-  interior vertex to cut from, so it is weakest exactly where charts are
-  already tiny (−2.0 % on a Truck-class mesh at 5.9 faces/chart).
-- **Post-repair merge fold-blacklist** (§6.3, always on, no knob): a
-  candidate pair that demonstrably re-folds after merging is memoized (keyed
-  by the two sides' smallest global face ids, invariant under relabelling)
-  so later merge rounds never retry it — removes accepted-then-resplit
-  churn from the post-repair merge↔repair rounds. **This is a
-  default-segmentation-output change**: chart counts on meshes with
-  fold/re-merge churn may differ slightly (e.g. `mesh.ply`: 2816→2779) even
-  with all opt-in knobs off.
-- **Fixed: one degenerate chart could collapse the whole atlas** (§6.5,
-  `NormalizeChartDensity`). A chart with negligible UV area over a large UV
-  extent — what `cutToDisk` produces when it slits a tube into a ribbon — was
-  left entirely unnormalized, because the guard tested *area* compression
-  (`sqrt(worldArea/uvArea) > 1e4`) and, when it fired, skipped the chart and
-  passed its raw UVs through. `PackAtlas`'s degenerate rescue does not catch
-  that shape either (it tests for a zero-width or zero-height rect; a ribbon
-  has a large `w` and a small-but-positive `h`), so the chart entered
-  `fitToResolution`, whose **max-dimension** constraint then shrank every other
-  chart until the widest one fit. Measured on a 536 k-face Tanks-and-Temples
-  Ignatius mesh with `cutToDisk` on: one triangle spanning 4 092 of 4 096
-  texels took triangle coverage to **0.0189**, against 0.2017 fixed, while
-  `occupancy` reported a plausible 0.196 and nothing errored. The bound is now
-  on the chart's scaled **extent** — the page when the atlas must fit one, and
-  `D·sqrt(worldArea)` for a degenerate flatten. Present in 0.3.0 as well; this
-  release's segmentation change is what made a real mesh reach it.
+`NormalizeChartDensity` bounded a chart's UV *area* but not its *extent*. A
+chart with negligible area over a huge extent — what `cutToDisk` produces when
+it slits a tube into a ribbon — was passed through unnormalized, because the
+guard tested area compression (`sqrt(worldArea/uvArea) > 1e4`) and, when it
+fired, skipped the chart entirely. `PackAtlas`'s degenerate rescue does not
+catch that shape either (it tests for a zero-width or zero-height rect; a
+ribbon has a large `w` and a small-but-positive `h`), so the chart reached
+`fitToResolution`, whose **max-dimension** term then shrank every *other*
+chart until the widest one fit. Nothing errored, and `occupancy` still read
+plausibly — only `coverage` showed the damage.
 
-  The page bound is gated on the chart not *earning* its extent with area
-  (`rawExtent > R·sqrt(uvArea)`), because a mesh with few charts has charts that
-  legitimately span the page and clamping those costs the 2-chart Cone 3.2 % of
-  occupancy. **`R` is 16**, calibrated 2026-08-31 over every chart of six
-  4096²/padding-2 arms across two PGSR splat→mesh scenes (471 814-face
-  Ignatius, 476 690-face Truck) plus the 5-mesh quality corpus, split by whether
-  a chart actually exceeds the page: charts that legitimately do measure
-  **1.4–1.9**; healthy charts sit at p50 2.1, p99.9 12–15; the ribbons that
-  collapse an atlas measure **55–606**. The gate only ever judges charts already
-  wider than the page — a chart's scaled extent is `D·sqrt(worldArea)·R`, so
-  `cutToDisk`'s thousands of legitimate small high-ratio ribbons (max ratio
-  1 700 on Truck, 1 244 on Ignatius) never reach the clamp at all. That is what
-  distinguishes this from a universal aspect bound, which clamps on ratio alone
-  and cost Truck 9.7 % of coverage at aspect 8.
-- **Fixed: the page gate was calibrated two orders of magnitude too loose.**
-  The gate above shipped at `1e3` — and since the ratio is `sqrt(aspect)`, that
-  admits every chart up to a **1 000 000 : 1** aspect, three orders of magnitude
-  above the entire legitimate population. Real ribbons sail through it. Found by
-  a consumer integration on a 471 814-face Ignatius, where one chart at ratio
-  55.4 reached 8 816 texels — 2.15× a 4096 page — and set the packer's global
-  `k = (R − 2·pad)/maxDim` for all 78 123 charts. With `foldRescueSlits=2` the
-  same mesh produced a chart at ratio 605.9 and 28 912 texels, 7.06× the page.
-  **Default-output change** (4096², padding 2), coverage before → after:
+The bound is now on the chart's scaled **extent**: the page when the atlas
+must fit one, `D·sqrt(worldArea)` for a degenerate flatten. Measured at
+4096²/padding 2, triangle coverage before → after:
 
-  | arm | before | after |
-  |---|--:|--:|
-  | Ignatius, defaults | 0.1891 | **0.2484** |
-  | Ignatius, `foldRescueSlits=2` | 0.0200 | **0.2292** |
-  | Ignatius, `foldRescueSlits=1` | 0.2292 | 0.2292 |
-  | Truck, defaults | 0.2334 | 0.2334 |
-  | Truck, `cutToDisk` | 0.2412 | 0.2412 |
-  | Ignatius, `cutToDisk` | 0.2668 | 0.2668 |
+| mesh / knobs | before | after |
+|---|--:|--:|
+| Ignatius (471 814 f), defaults | 0.1891 | **0.2484** |
+| Ignatius, `foldRescueSlits=2` | 0.0200 | **0.2292** |
+| Ignatius, `foldRescueSlits=1` | 0.2292 | 0.2292 |
+| Ignatius, `cutToDisk` | 0.2668 | 0.2668 |
+| Truck (476 690 f), defaults | 0.2334 | 0.2334 |
+| Truck, `cutToDisk` | 0.2412 | 0.2412 |
 
-  Only the two arms that actually had an over-page chart move; the other four
-  are bit-identical, chart counts included. Note this removes a chart's ability
-  to tax its siblings — it does not remove the ribbon, which still occupies a
-  page-wide slot. The `docs/BENCHMARKS.md` §7 sweep table was measured on
-  different (522–536 k-face) meshes before this recalibration and has not been
-  re-run against it.
-- **Triangle coverage metric** (`AtlasResult::coverage`): the fraction of the
-  texel budget actually under UV geometry, as opposed to `occupancy`
-  (padded-rect fill, which reads high with many small charts). Available via
-  the Python `unwrap()` return dict; atlasbench reports its own triangle-occupancy
-  column (`occupancyTri`), which measures the same quantity.
-- **Layout diagnostics** (`AtlasResult::fitScale`, `maxChartExtent`,
-  `minPadding`, `chartsPaddingReduced`; Python `fit_scale`,
-  `max_chart_extent`, `padding_applied{nominal,min,n_charts_reduced}`). All
-  three answer questions the return value previously could not, and each one
-  was a real integration cost:
-  - `fitScale` is the single global scale fit-to-resolution applied. Because
-    the solve is `k = min(k_area, (resolution − 2·padding)/maxDim)`, a
-    `fitScale` far below its area-driven value separates *"charts are small
-    because there are many"* from *"charts are small because ONE chart forced
-    a shrink"* — the failure mode fixed above, which previously had to be
-    inferred from percentiles of per-face UV extents read back out of a
-    written PLY.
-  - `maxChartExtent` is the widest UNPADDED chart side in texels. Compared
-    against `width`, it names the offending chart's shape directly.
-  - `minPadding` / `chartsPaddingReduced` report the *narrowest gutter
-    actually applied* and how many charts got it. With the per-size padding
-    knobs on, the gutter is 1 texel for the selected charts while the nominal
-    `padding` still reads 2, and nothing in the result said so. That
-    difference decides whether the atlas can be mipmapped at all — halving
-    resolution averages 2×2 texel blocks — so a consumer could not tell a
-    mip-safe layout from a partially mip-unsafe one.
-- **Per-size padding** (§6.5, `AtlasParams::tinyChartSide` /
-  `debrisChartFaces`, opt-in, both default `0`/off): charts under an
-  unpadded-bbox-side or face-count trigger get a 1-texel gutter instead of
-  the uniform `padding`, so a uniform gutter stops being a multiplicative
-  tax on exactly the charts that matter least. Packing-only — never changes
-  the chart partition.
-- **`atlasbench` CLI**: `--repair-carve-rings`, `--fold-rescue-slits`,
-  `--tiny-chart-side`, `--debris-chart-faces` flags forwarding to the knobs
-  above.
-- **Python**: `unwrap()` gains `repair_carve_rings`, `fold_rescue_slits`,
-  `tiny_chart_side`, `debris_chart_faces` keyword args, same pattern as the
-  segmentation knobs below, defaults `0`/`0.0` matching the C++ defaults
-  (behavior preserving).
-- **Defaults unchanged**, and measured on both mesh classes
-  (`docs/BENCHMARKS.md` §4). On `tests/data/mesh.ply`, `repairCarveRings=2` +
-  `foldRescueSlits=2` combined measured *worse* than either alone (real
-  flipped triangles and a ~200 000× symmetric-Dirichlet blowup); carve-ring
-  sensitivity is non-monotonic. On a Truck-class mesh (522 738 faces, a
-  Tanks-and-Temples splat reconstruction QEM-decimated to ~500 k) that
-  combined regression does **not** reproduce — but neither knob earns its
-  keep there either: `repairCarveRings=2` moves the chart count −0.2 % and
-  `foldRescueSlits=2` −2.0 %, against the −3.7 % / −9.9 % they show on
-  `mesh.ply`. Both stay `0` (off); the padding knobs stay opt-in. **No golden
-  re-freeze** — `tests/golden/` fixtures are unaffected.
-- **Spec §7 criterion, measured**: on the Truck-class mesh above, coverage
-  clears the bar (0.2325 → 0.3200 with the padding knobs, ≥ 0.30 required)
-  but the chart count does not (86 605 best against ≤ 55 k, 1.57× over), and
-  most of the −15 % that is achieved comes from the pre-existing `cutToDisk`.
-  A global `padding=1` reaches a higher coverage (0.3334) than the per-size
-  padding knobs at an identical partition, because this mesh class has no mix
-  of chart sizes for a size-triggered gutter to exploit. Coverage is texels,
-  not bake quality: `padding` 2→1 is unmeasured against a bake.
+Only the two arms that actually had an over-page chart move; the other four
+are bit-identical, chart counts included.
 
-### Python: segmentation knobs on `unwrap()` + padding-default fix
+The gate fires only when a chart does not *earn* its extent with area
+(`rawExtent > R·sqrt(uvArea)`) — a mesh with few charts has charts that
+legitimately span the page, and clamping those costs the 2-chart Cone 3.2 % of
+occupancy. **`R` is 16**, calibrated over every chart of six 4096² arms across
+two PGSR splat→mesh scenes plus the 5-mesh quality corpus, split by whether a
+chart actually exceeds the page: charts that legitimately do measure
+**1.4–1.9**; healthy charts sit at p50 2.1, p99.9 12–15; the ribbons that
+collapse an atlas measure **55–606**. Since the ratio is `sqrt(aspect)`, `R`
+is a bound on the square root of a chart's aspect — `16` admits 256 : 1.
 
-- `unwrap()` gains `max_cone_error` (→ `ParametrizeParams::developableMaxConeError`),
-  `cut_to_disk` (→ `cutToDisk`) and `max_uv_distortion`
-  (→ `developableMaxUvDistortion`), all behavior-preserving by default.
-  `cut_to_disk` is the chart-count reducer on hole-riddled MVS meshes.
+Because the gate only ever judges charts already wider than the page, it is
+not a universal aspect bound: `cutToDisk` emits thousands of legitimate small
+high-ratio ribbons (max ratio 1 700 on Truck, 1 244 on Ignatius) that never
+reach the clamp, and squashing those is what cost an aspect-8 bound 9.7 % of
+Truck's coverage.
+
+This removes a chart's ability to tax its siblings. It does not by itself
+remove the ribbon, which still occupies a page-wide slot — the distortion bar
+below is what dissolves it. Present in 0.3.0 as well; this release's
+segmentation change is what first made a real mesh reach it.
+
+### Fixed: a flip-free but unusably stretched chart shipped unchecked
+
+The flip repair split a chart for over-distortion only when the caller set
+`developableMaxUvDistortion`, whose default is `0` — and at that default it
+applied no distortion check at all. Any map that was injective shipped,
+however badly stretched. Meanwhile the injectivity fallback ladder in the same
+file refuses to *ship* a map whose area-weighted symmetric-Dirichlet exceeds
+200. The two disagreed about what is shippable, and the repair's acceptance is
+the one that decides — so charts the ladder would have rejected reached the
+atlas, where nothing downstream can fix them. Only a split can, and only
+upstream, while the chart can still be divided.
+
+Worst shipped per-chart symmetric-Dirichlet at 4096²/padding 2 (4.0 is perfect
+isometry; the count in parentheses is charts above the bar):
+
+| mesh / knobs | before | after |
+|---|--:|--:|
+| Ignatius (471 814 f), defaults | 3.3e8 (31) | **22 390** (12) |
+| `mesh.ply`, `cutToDisk` | 18 288 (3) | **1 533** (1) |
+| `mesh.ply`, `cutToDisk` + `carve=2` + `slits=2` | 5 373 (2) | **167** (0) |
+
+On the Ignatius default arm that is a 14 900× reduction in the worst chart for
+199 extra charts out of 78 123 (+0.25 %), and it *raises* coverage, 0.2484 →
+**0.2515**. The widest chart in that atlas drops from 2 071 texels to **640**
+of 4 096, and on the `foldRescueSlits=2` arm from 1 961 to **244**: the
+page-spanning chart that survived the extent gate above was an over-stretched
+chart all along. Splitting it dissolves the ribbon instead of merely capping
+it, which is why coverage goes *up* — the charts being split were the ones
+hogging the page.
+
+`developableMaxUvDistortion` now *tightens* that bar rather than switching the
+check on: `0` selects the internal ship-ability bar, and any explicit value
+replaces it. The mandatory sliver guard is unchanged, so degenerate
+near-zero-area input still cannot runaway-split.
+
+The bar is a floor, not a guarantee: 12 charts on the Ignatius arm and 1 on
+`mesh.ply` + `cutToDisk` still ship above it. The repair stops short by design
+on input a split cannot fix — the sliver guard, the `4·F` runaway cap, and the
+planar fallback for charts with no usable boundary loop all decline to
+subdivide further. That residual is not diagnosed further here.
+
+**Default-output change**, and not always a free one. Charts above the bar are
+bisected, which costs charts and therefore global fit scale — and `coverage`
+scales with the *square* of that scale. Where the split also frees page-hogging
+extent, coverage rises; where it does not, the trade runs the other way:
+
+| arm | coverage before | after | widest chart (of 4 096) |
+|---|--:|--:|--:|
+| Ignatius, defaults | 0.2484 | **0.2515** | 2 071 → **640** |
+| Ignatius, `foldRescueSlits=2` | 0.2292 | **0.2534** | 1 961 → **244** |
+| Ignatius, `cutToDisk` | 0.2668 | 0.2629 | → 293 |
+| Truck, defaults | 0.2334 | 0.2334 | → 140 |
+| `mesh.ply`, `cutToDisk` | 0.4561 | 0.3779 | → 1 233 |
+
+Four of the five arms improve or hold. The `mesh.ply` row is the price of not
+shipping texels that mean nothing: there the split adds charts without
+releasing any page-hogging extent, so the fit scale — and with it coverage —
+drops. Meshes with no chart above the bar are unaffected: every
+`tests/golden/` fixture is byte-identical.
+
+### Added: atlas layout diagnostics
+
+`AtlasResult` gains four fields, exposed to Python from `unwrap()`. Each
+answers a question the return value previously could not, and each was a real
+integration cost — all three had to be reverse-engineered from a written PLY.
+
+- **`fitScale`** (`fit_scale`) — the single global scale fit-to-resolution
+  applied. Because the solve is `k = min(k_area, (resolution − 2·padding)/maxDim)`,
+  a `fitScale` far below its area-driven value separates *"charts are small
+  because there are many"* from *"charts are small because ONE chart forced a
+  shrink"* — the failure mode fixed above.
+- **`maxChartExtent`** (`max_chart_extent`) — widest unpadded chart side in
+  texels. Read against `width`, it names the offending chart directly.
+- **`minPadding` / `chartsPaddingReduced`** (`padding_applied{nominal, min,
+  n_charts_reduced}`) — the narrowest gutter actually applied and how many
+  charts got it. With the per-size padding knobs on, selected charts get 1
+  texel while the nominal `padding` still reads 2. That difference decides
+  whether the atlas can be mipmapped — halving resolution averages 2×2 texel
+  blocks — and nothing in the result had reported it.
+
+### Added: triangle coverage metric
+
+`AtlasResult::coverage` — the fraction of the texel budget actually under UV
+geometry, as opposed to `occupancy` (padded-rect fill, which reads high with
+many small charts). Available from Python `unwrap()`; `atlasbench` reports the
+same quantity as `occupancyTri`.
+
+### Added: four opt-in segmentation and packing knobs, all default off
+
+None of these changes default output. All four measured on both mesh classes
+(`docs/BENCHMARKS.md` section 4); none earns a default.
+
+- **`ParametrizeParams::repairCarveRings`** (default `0`) — a folding chart is
+  first split by carving off the faces within N `TopoNeighbor` rings of the
+  diagnosed failure, one small extra chart instead of a blind-bisection
+  cascade, falling back to bisection when the failure is not localized (region
+  ≥ half the chart). Termination guarantee unchanged. Moves the chart count
+  −3.7 % on `tests/data/mesh.ply`, −0.2 % on a Truck-class mesh.
+- **`ParametrizeParams::foldRescueSlits`** (default `0`) — a folding chart is
+  cut from its worst interior vertex to the boundary and re-flattened, up to N
+  times, before any split, so it can ship as ONE chart with an extra seam
+  instead of ≥ 2 padded rects. Lives inside `FlattenChart`, so the repair
+  verdict and the shipped map agree on every path. **The knob is not
+  monotone and can cost charts.** The repair and the post-repair merge run as
+  an iterative loop, so changing the split predicate perturbs which partition
+  enters the next round, and the fixed point can land either way. Measured on
+  `tests/data/mesh.ply` through the `GenerateAtlas` path at 4096²/padding 2,
+  `foldRescueSlits` 0 → 1 → 2 → 3:
+
+  | slits | 0 | 1 | 2 | 3 |
+  |---|--:|--:|--:|--:|
+  | charts | 2708 | 2734 | 2852 | 2766 |
+  | coverage | 0.3732 | 0.3792 | **0.3388** | 0.3779 |
+
+  Every value with the knob on costs charts, and `2` is a sharp local dip in
+  both. It reduces charts on the Ignatius class and hurts here — measure on
+  your own meshes before enabling it, and do not assume more slits is better.
+- **`AtlasParams::tinyChartSide` / `debrisChartFaces`** (default `0`) — charts
+  under an unpadded-bbox-side or face-count trigger get a 1-texel gutter
+  instead of the uniform `padding`, so a uniform gutter stops being a
+  multiplicative tax on exactly the charts that matter least. Packing-only —
+  never changes the chart partition. On a Truck-class mesh these lift coverage
+  0.2325 → 0.3200, but a global `padding=1` reaches 0.3334 at an identical
+  partition: this mesh class has no mix of chart sizes for a size-triggered
+  gutter to exploit. Coverage is texels, not bake quality — `padding` 2→1 is
+  unmeasured against a bake.
+
+### Changed: post-repair merge remembers pairs that re-fold
+
+Always on, no knob. A candidate pair that demonstrably re-folds after merging
+is memoized (keyed by the two sides' smallest global face ids, invariant under
+relabelling) so later merge rounds never retry it, removing
+accepted-then-resplit churn from the merge↔repair rounds. **This is a
+default-segmentation-output change**: chart counts on meshes with fold/re-merge
+churn may differ slightly (`tests/data/mesh.ply`: 2816 → 2779). `tests/golden/`
+fixtures are unaffected — no re-freeze.
+
+### Python and CLI
+
+- `unwrap()` gains `repair_carve_rings`, `fold_rescue_slits`,
+  `tiny_chart_side`, `debris_chart_faces`, plus `max_cone_error`
+  (→ `developableMaxConeError`), `cut_to_disk` (→ `cutToDisk`) and
+  `max_uv_distortion` (→ `developableMaxUvDistortion`). All default to the
+  C++ defaults and are behavior-preserving. `cut_to_disk` is the chart-count
+  reducer on hole-riddled MVS meshes.
 - The binding's `padding` default drops 4 → 2, matching `AtlasParams::padding`.
   The binding was silently overriding the documented C++ default; the doubled
   gutter cost a texture consumer 1.26 dB of bake PSNR at 4096² (bug fix, not a
   tuning change).
+- `atlasbench` gains `--repair-carve-rings`, `--fold-rescue-slits`,
+  `--tiny-chart-side`, `--debris-chart-faces`.
 
 ## [0.3.0]
 

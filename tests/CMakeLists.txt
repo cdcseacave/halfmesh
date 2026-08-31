@@ -216,7 +216,7 @@ halfmesh_discover_tests(mesh_holes_test)
 
 # parametrize_test: D-Charts chart segmentation
 # Needs src/ on the include path for ChartFlattenCache.h: the public-path
-# equivalence test (§6.2) reaches the cache-aware detail::SegmentCharts /
+# equivalence test reaches the cache-aware detail::SegmentCharts /
 # detail::ParametrizeCharts overloads directly (no public header — mirrors
 # atlas_test/flatten_test's src/ include).
 add_executable(parametrize_test ParametrizeTest.cpp)

@@ -50,7 +50,7 @@ namespace detail {
 // Test seam: 3-arg fold verdict (defined in src/Parametrize.cpp).
 bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
                     const ParametrizeParams& params);
-// Test seam (§6.1, defined in src/AtlasCharting.cpp): delegate to
+// Test seam (defined in src/AtlasCharting.cpp): delegate to
 // CarveFailureRegion with a default-params SegmentState built from `mesh`.
 // Mirrors the ComputeSegmentationSeeds seam pattern below.
 bool CarveFailureRegionForTest(Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
@@ -1291,7 +1291,7 @@ TEST(GenerateAtlas, ExplicitDensityOverflowsToMultiPage)
 }
 
 // ---------------------------------------------------------------------------
-// Test 11b — GenerateAtlas reports true triangle coverage (§6.4): rect
+// Test 11b — GenerateAtlas reports true triangle coverage: rect
 // occupancy (~0.82 by construction of the fit solve) is blind to per-chart
 // bbox waste and the padding tax, so consumers sizing an atlas resolution
 // from occupancy alone overestimate texel density. Cross-checked against a
@@ -1527,7 +1527,7 @@ static Mesh DisjointQuads(int k)
 }
 
 // K DisjointQuads charts (2 faces each), one chart per quad, all sharing the
-// same 4-texel-square local UVs -- the shared fixture for both §6.5 per-size
+// same 4-texel-square local UVs -- the shared fixture for both per-size
 // padding trigger tests below (tinyChartSide via chart side, debrisChartFaces
 // via chart face count).
 static void BuildTinyChartFixture(int k, Mesh& mesh, std::vector<unsigned>& faceChart)
@@ -1548,7 +1548,7 @@ static void BuildTinyChartFixture(int k, Mesh& mesh, std::vector<unsigned>& face
 	}
 }
 
-// §6.5: tiny charts (max unpadded side <= tinyChartSide) get a 1-texel gutter
+// Tiny charts (max unpadded side <= tinyChartSide) get a 1-texel gutter
 // instead of the uniform `padding`. With K=64 identical 4-texel charts packed
 // (no fitToResolution) at a page side of 64, the padded rect area at a 4-texel
 // gutter (64 * 12*12 = 9216) does not fit one 64*64=4096 page (needs several),
@@ -1585,7 +1585,7 @@ TEST(AtlasTest, TinyChartPaddingRaisesCoverage)
 }
 
 // Same mechanism as TinyChartPaddingRaisesCoverage above (same fixture, same
-// resolution=64 rationale), through the OTHER §6.5 trigger: every
+// resolution=64 rationale), through the OTHER per-size trigger: every
 // BuildTinyChartFixture chart has exactly 2 faces, so debrisChartFaces=2
 // qualifies all of them (tinyChartSide stays 0, so only debris fires).
 TEST(AtlasTest, DebrisChartPaddingRaisesCoverage)
@@ -1609,7 +1609,7 @@ TEST(AtlasTest, DebrisChartPaddingRaisesCoverage)
 	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "debrisChartFaces padding let charts overlap";
 }
 
-// §6.5 reporting: the nominal `AtlasParams::padding` does not tell a caller what
+// Padding reporting: the nominal `AtlasParams::padding` does not tell a caller what
 // gutter the layout actually got, because the per-size knobs silently narrow it
 // for the charts they select. A consumer deciding whether the atlas can be
 // mipmapped needs the NARROWEST applied gutter, not the requested one. Same
@@ -1771,9 +1771,10 @@ TEST(SegmentCharts, PostRepairMergeReducesChartsFoldFree)
 }
 
 // ---------------------------------------------------------------------------
-// Test — detail::SegmentCharts's opt-in AtlasSegmentStats out-param (§6.3):
+// Test — detail::SegmentCharts's opt-in AtlasSegmentStats out-param:
 // the post-repair-merge loop's per-round counters (budget vs. wouldEnclose
-// rejects, accepted merges, dirty vs. resplit charts) are what Task 7 uses to
+// rejects, accepted merges, dirty vs. resplit charts) are what the merge
+// diagnosis uses to
 // diagnose why postRepairMergeRounds recovers so few charts in practice.
 // Exercises the cache-aware detail:: overload directly on the challenge
 // fixture (tests/data/mesh.ply) — no public API exposes stats, so this test
@@ -1816,7 +1817,7 @@ TEST(SegmentCharts, SegmentationStatsPopulatedOnChallengeMesh)
 }
 
 // ---------------------------------------------------------------------------
-// Test — §6.3 post-repair fold-blacklist: a merged pair whose resulting
+// Test — post-repair fold-blacklist: a merged pair whose resulting
 // chart the repair wave split right back (a "fold") is recorded per-round in
 // MergeRound::refoldedPairs, keyed by the two sides' smallest global face ids
 // (invariant under the Compact() id relabelling that happens between rounds).
@@ -1840,7 +1841,7 @@ TEST(AtlasTest, PostRepairMergeNeverRetriesAFoldedUnion)
 	std::set<std::pair<Mesh::FIndex, Mesh::FIndex>> seen;
 	for (const auto& r : stats.rounds)
 		for (const auto& p : r.refoldedPairs) {
-			// Contract (minFidA < minFidB, per the brief): asserted rather than
+			// Contract (minFidA < minFidB): asserted rather than
 			// silently canonicalized here, so a producer-side regression that
 			// starts emitting raw root order shows up as a failure at THIS line
 			// instead of being masked by the test re-sorting around it.
@@ -1850,7 +1851,7 @@ TEST(AtlasTest, PostRepairMergeNeverRetriesAFoldedUnion)
 }
 
 // ---------------------------------------------------------------------------
-// Test — §6.1 failure-localized carve seam (detail::CarveFailureRegionForTest,
+// Test — failure-localized carve seam (detail::CarveFailureRegionForTest,
 // defined in src/AtlasCharting.cpp): on a 20x20 grid, carving 2 TopoNeighbor
 // rings around one corner face must produce {small local region, the rest},
 // covering every face exactly once. A non-localized failure (every face is

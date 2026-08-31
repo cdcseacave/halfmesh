@@ -477,7 +477,7 @@ void ComputeVertexDefect(const SegmentState& s, std::vector<double>& dabs,
 // Pair key for two chart identities, keyed by each side's smallest global face
 // id (order-independent, minFidA < minFidB) — the same identity trick as
 // ChartFlattenCache: invariant under the Compact() id relabelling that
-// happens between post-repair merge rounds (§6.3).
+// happens between post-repair merge rounds.
 // This min-fid key over-approximates union identity: after repair splits,
 // later charts carrying the same two min-fids may have smaller face sets
 // whose union could flatten fine, yet the pair remains vetoed — this
@@ -504,7 +504,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 	std::vector<double> W(numCharts, 0.0), sz(numCharts, 0.0);
 	std::vector<Normal> s1(numCharts, Normal::Zero());
 	std::vector<Eigen::Matrix3d> s2(numCharts, Eigen::Matrix3d::Zero());
-	// Per-chart smallest global face id (§6.3 pair identity) — faces are
+	// Per-chart smallest global face id (merge-pair identity) — faces are
 	// visited in global id order, so the first write per chart is its minimum.
 	std::vector<Mesh::FIndex> minFid(numCharts, std::numeric_limits<Mesh::FIndex>::max());
 	for (FIndex f = 0; f < s.numFaces; ++f) {
@@ -638,7 +638,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		if (a == b)
 			return;
 		if (blockedPairs != nullptr && blockedPairs->count(PairKey(minFid[a], minFid[b])) != 0)
-			return; // §6.3: this identity pair already folded in an earlier round
+			return; // this identity pair already folded in an earlier round
 		const double e = combinedError(a, b);
 		if (e > budget) {
 			if (mr != nullptr)
@@ -668,7 +668,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 			continue;
 		// Re-check at pop time, not just at push time: chain absorptions between
 		// this entry's push and pop can drift ar/br's identity (minFid) onto a
-		// pair that became blocked only after the push (§6.3).
+		// pair that became blocked only after the push.
 		if (blockedPairs != nullptr && blockedPairs->count(PairKey(minFid[ar], minFid[br])) != 0)
 			continue;
 		const double cur = combinedError(ar, br);
@@ -691,7 +691,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		// reports root ids for now; translated to compacted chart ids below.
 		// Canonicalized fa < fb here (not left to the heap's root order, which
 		// is arbitrary) so every consumer sees the same (minFidA, minFidB) key
-		// PairKey would compute — matches the brief's minFidA < minFidB contract.
+		// PairKey would compute (minFidA < minFidB).
 		Mesh::FIndex fa = 0, fb = 0;
 		if (mergedPairs != nullptr) {
 			fa = minFid[ar];
@@ -1349,7 +1349,7 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 		// (cut ChartMesh + UVs) in this wave's slot for ParametrizeCharts to reuse.
 		std::vector<char> folds(fn, 0);
 		std::vector<detail::ChartFlattenSlot> slots(cache != nullptr ? fn : std::size_t{0});
-		// Per-wave fold-diagnosis slots (§6.1): allocated only when the carve knob
+		// Per-wave fold-diagnosis slots: allocated only when the carve knob
 		// is on, so an off caller pays zero cost (empty vector, nullptr passed
 		// below). Disjoint slot per frontier index — same write discipline as folds/slots.
 		std::vector<detail::FoldDiagnosis> diags(params.repairCarveRings > 0 ? fn : std::size_t{0});
@@ -1376,7 +1376,7 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 			}
 			const unsigned c = frontier[i];
 			std::vector<Mesh::FIndex> A, B;
-			// §6.1 failure-localized carve: try carving off the small neighborhood
+			// Failure-localized carve: try carving off the small neighborhood
 			// around the fold diagnosis first — one localized failure then costs
 			// ONE small extra chart instead of the PCA bisection's binary-tree
 			// cascade. Falls back to the unconditional bisect when the knob is off,
@@ -1475,7 +1475,7 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 	// Connectivity is enforced over TOPO edges (charts span creases when the surface
 	// is developable across them), so the result is robust to noisy MVS normals.
 	//
-	// `stats` (§6.3, opt-in, default nullptr) records per-stage chart counts plus,
+	// `stats` (opt-in, default nullptr) records per-stage chart counts plus,
 	// for every post-repair merge round, whether pairs are rejected by the cone
 	// budget, the wouldEnclose anti-fold veto, or accepted then split right back
 	// by the repair wave — the three candidate explanations for why
@@ -1502,7 +1502,7 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 		// merged charts — a merge that re-folds is split right back, so the
 		// fold-free guarantee is preserved and a round can never regress.
 		//
-		// §6.3 fold-blacklist (always on, internal only, no knob): rounds
+		// Fold-blacklist (always on, internal only, no knob): rounds
 		// otherwise churn — a pair merges, folds, gets bisected right back by
 		// the repair wave, then a later round re-tries the SAME pair. foldedUnions
 		// memoizes every pair (keyed by each side's smallest global face id, see
@@ -1645,7 +1645,7 @@ std::vector<Mesh::FIndex> ComputeSegmentationSeeds(Mesh& mesh, const Parametrize
 }
 
 // Test-only seam (not in any public header — declared by AtlasTest with an extern
-// forward declaration): delegate to CarveFailureRegion (§6.1) with a
+// forward declaration): delegate to CarveFailureRegion with a
 // default-params SegmentState built from `mesh`. Mirrors ComputeSegmentationSeeds
 // above exactly (SyncFaces/ListHalfEdges/ComputeFaceNormals, then Precompute).
 bool CarveFailureRegionForTest(Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
@@ -1815,9 +1815,9 @@ float NormalizeChartDensity(Mesh& mesh,
 	// on Truck, 1244 on Ignatius, with ZERO charts over the page), and squashing
 	// those is what cost an aspect-8 bound 9.7% of Truck's coverage.
 	//
-	// Calibration, measured 2026-08-31 over every chart of two 4096^2 arms per
-	// mesh (471k-face Ignatius, 476k-face Truck, PGSR splat->mesh class) plus the
-	// 5-mesh quality corpus, splitting charts by whether they exceed the page:
+	// Calibration, over every chart of two 4096^2 arms per mesh (471k-face
+	// Ignatius, 476k-face Truck, PGSR splat->mesh class) plus the 5-mesh quality
+	// corpus, splitting charts by whether they exceed the page:
 	//
 	//   legitimately over-page (corpus Cone/OpenCylinder/GridPlane)  ratio 1.4-1.9
 	//   healthy, all arms                                p50 2.1, p99.9 12-15
@@ -1825,11 +1825,10 @@ float NormalizeChartDensity(Mesh& mesh,
 	//
 	// 16 sits above the p99.9 of the worst-behaved (cutToDisk) distribution and
 	// 8.6x above the widest legitimate page-spanner, while staying 3.5x under the
-	// mildest ribbon observed. Erring low is deliberate: a gate set too low costs
-	// a few percent of occupancy on a low-chart-count mesh, while one set too
-	// high lets a single chart collapse the atlas 10x (which 1e3 -- admitting
-	// aspect up to 1e6 -- did on Ignatius: coverage 0.1891 against 0.2484 here,
-	// and 0.0200 with foldRescueSlits=2, where one chart reached 7x the page).
+	// mildest ribbon observed. Erring low is deliberate: too low costs a few
+	// percent of occupancy on a low-chart-count mesh, while too high lets one
+	// chart collapse the atlas 10x. Since the ratio is sqrt(aspect), 16 admits
+	// charts up to 256:1.
 	constexpr double maxExtentRatio = 16.0;
 	// PackAtlas fits a single page whenever the density is auto-derived:
 	// GenerateAtlas hands NormalizeChartDensity the caller's params but packs

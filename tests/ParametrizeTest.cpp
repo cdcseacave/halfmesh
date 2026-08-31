@@ -290,7 +290,7 @@ TEST(Parametrize, DistanceTermKeepsPartitionContracts)
 	    << "distance term must not break the flip-free guarantee";
 }
 
-// §6.1 failure-localized carve (repairCarveRings > 0) must preserve every
+// Failure-localized carve (repairCarveRings > 0) must preserve every
 // partition contract the blind-bisection repair does: validity, topo-connectivity,
 // the flip-free guarantee. Same fixture as WavyGridFlipFree/DistanceTermKeeps...
 // above — carving is an alternate split strategy inside the same repair loop, so
@@ -314,13 +314,13 @@ TEST(Parametrize, CarveRingsKeepsPartitionContracts)
 	    << "the carve knob must not break the flip-free guarantee";
 }
 
-// §6.2 curvature-slit fold rescue (foldRescueSlits > 0) must preserve every
+// Curvature-slit fold rescue (foldRescueSlits > 0) must preserve every
 // partition contract the split-only repair does: validity, topo-connectivity,
 // the flip-free guarantee. Same fixture as the tests above — the rescue only
 // changes what happens INSIDE FlattenChart before the repair's fold verdict,
 // never the segmentation/repair invariants. (This fixture does not exercise
 // the rescue mechanism itself — MakeWavyGrid(10,10) segments to a single chart
-// that never even folds, per Task 5's own review finding for the analogous
+// that never even folds, as for the analogous
 // carve knob — so this is a knob-doesn't-corrupt smoke test; the real
 // engagement coverage is tests/FlattenTest.cpp's
 // FoldRescueSlitRescuesAtLeastOneRealMeshChart and
@@ -343,7 +343,7 @@ TEST(Parametrize, FoldRescueSlitsKeepsPartitionContracts)
 	    << "the fold-rescue-slit knob must not break the flip-free guarantee";
 }
 
-// Both §6.1 (repairCarveRings) and §6.2 (foldRescueSlits) knobs together: they
+// Both knobs (repairCarveRings and foldRescueSlits) together: they
 // compose (carve/bisect splits a chart the repair rejects; the slit rescue
 // runs INSIDE FlattenChart before that verdict is even reached) — same
 // partition contracts must hold with both on at once.
@@ -645,7 +645,7 @@ TEST(Parametrize, ShippedChartsAreGloballyInjective)
 }
 
 // ---------------------------------------------------------------------------
-// §6.2 public-path equivalence, the DECLINES-to-cut path: on SaddleFan,
+// Fold-rescue public-path equivalence, the DECLINES-to-cut path: on SaddleFan,
 // WorstInteriorVertex returns -1 on the very first rescue attempt (every
 // vertex, including the apex, is already on the chart's one boundary loop —
 // see tests/FlattenTest.cpp's FoldRescueSlitRescuesAtLeastOneRealMeshChart for
@@ -685,7 +685,7 @@ TEST(Parametrize, RescueSlitPublicPathMatchesCachedPipeline)
 }
 
 // ---------------------------------------------------------------------------
-// §6.2 public-path equivalence, a REAL cut: the SaddleFan test above only
+// Fold-rescue public-path equivalence, a REAL cut: the SaddleFan test above only
 // pins the rescue's DECLINE path (no interior vertex found, no cut). This
 // test proves the "verdict ≡ shipped map" contract for the case that
 // actually matters — a chart where the slit rescue performs the real

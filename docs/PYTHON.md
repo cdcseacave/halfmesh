@@ -186,16 +186,18 @@ re-deriving it at the Python boundary.
   slit closed / multiply-connected charts into one disk instead of
   bisecting them; the chart-count reducer on hole-riddled MVS meshes.
 - `max_uv_distortion` — symmetric-Dirichlet cap
-  (`ParametrizeParams::developableMaxUvDistortion`); `0` disables, on-values
-  must exceed the 4.0 isometry floor (4.4 is the sane setting). See
-  `docs/BENCHMARKS.md` §4 for the attribution matrix of these knobs.
+  (`ParametrizeParams::developableMaxUvDistortion`); values must exceed the 4.0
+  isometry floor (4.4 is the sane setting). `0` (the default) does **not**
+  disable the check — it selects an internal ship-ability bar (sym-Dirichlet
+  200), so only charts stretched past all use are split; a value here tightens
+  that bar. See `docs/BENCHMARKS.md` §4 for the attribution matrix.
 - `repair_carve_rings` — failure-localized repair split
   (`ParametrizeParams::repairCarveRings`): `0` disables (the default — blind
   PCA bisection of folding charts); when `> 0`, a folding chart is first split
   by carving off the faces within this many `TopoNeighbor` rings of the
   diagnosed failure, falling back to PCA bisection when the failure isn't
   localized. `2` is the sane on-value. **Default `0` (off)** — see
-  `docs/BENCHMARKS.md` §4 for the Task 9 sweep and why it stayed off.
+  `docs/BENCHMARKS.md` §4 for the measured sweep and why it stayed off.
   Combined with `fold_rescue_slits` this measured *worse* than either knob
   alone on `mesh.ply` and fine on a Truck-class mesh, so measure the pair on
   your own mesh before enabling both. On a Truck-class mesh this knob moves

@@ -408,8 +408,10 @@ Two modules that together turn a raw mesh into per-chart UV layouts:
   `developableMaxVertexDefect` (the anti-fold cap — high-curvature vertices
   stay on chart boundaries), `developableSmoothIters` (virtual Taubin denoise
   of the *segmentation signal* on noisy MVS meshes — the geometry is
-  untouched), and opt-ins `developableDistanceExponent` (compact charts,
-  β=0.7) and `developableMaxUvDistortion` (symmetric-Dirichlet cap).
+  untouched), the opt-in `developableDistanceExponent` (compact charts,
+  β=0.7), and `developableMaxUvDistortion` — a symmetric-Dirichlet cap that
+  *tightens* the always-on ship-ability bar the repair splits on, rather than
+  switching a check on.
 - **Per-chart flattening** — LSCM initialization (falling back to Tutte, then
   PCA) followed by **SLIM** (default) or **ARAP** iterations; flip-free by
   construction via the line search. `cutToDisk` optionally slits annuli/holed

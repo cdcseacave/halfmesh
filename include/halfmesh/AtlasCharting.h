@@ -53,13 +53,14 @@
 //      charts cannot fold, so it converges; incremental — settled charts are not
 //      re-flattened).
 //
-// Two opt-in extensions ride this same flatten/repair machinery (both OFF by default,
-// so the flip-free, fewest-charts result above is unchanged until a knob is set; see
-// docs/BENCHMARKS.md §4 for the attribution matrix):
-//   - developableMaxUvDistortion (Parametrize.h): the flip repair (3) ALSO splits a
-//     flip-FREE but over-stretched chart (shipped area-weighted sym-Dirichlet > budget),
-//     trading a few extra charts for lower per-chart distortion; a mandatory sliver
-//     guard excludes degenerate near-zero-area input so it cannot runaway-split.
+// Two extensions ride this same flatten/repair machinery (see docs/BENCHMARKS.md §4
+// for the attribution matrix):
+//   - developableMaxUvDistortion (Parametrize.h): TIGHTENS the distortion budget the
+//     flip repair (3) splits on. The repair always splits a flip-FREE but unusably
+//     stretched chart (shipped area-weighted sym-Dirichlet above an internal
+//     ship-ability bar); this knob lowers that bar to trade extra charts for lower
+//     per-chart distortion. A mandatory sliver guard excludes degenerate
+//     near-zero-area input so it cannot runaway-split.
 //   - cutToDisk (Parametrize.h, Module B): a closed / multiply-connected chart is
 //     SLIT into a single disk at flatten time (Seamster, Sheffer & Hart 2002) instead
 //     of being bisected into many — far fewer charts on hole-riddled MVS. The flip

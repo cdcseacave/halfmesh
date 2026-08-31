@@ -321,7 +321,7 @@ struct PackedRect
 // one left behind -- provably never more pages than closing the active bin on the
 // first overflow, usually fewer.
 //  - sizes: each input's UNPADDED (width, height); a non-positive entry is skipped
-//  - pads: per-input gutter (§6.5 per-size padding); pads[i] replaces the
+//  - pads: per-input gutter (per-size padding); pads[i] replaces the
 //    uniform `pad` for sizes[i] everywhere -- rect inflation, placement offset,
 //    and packedArea accounting. Same size as `sizes`; a uniform-padding caller
 //    just fills it with one value.
@@ -451,12 +451,12 @@ unsigned PackTwoTier(const std::vector<Eigen::Vector2f>& sizes,
 	return static_cast<unsigned>(bins.size());
 }
 
-// §6.5 per-size padding: a chart matching either AtlasParams trigger (tiny
+// Per-size padding: a chart matching either AtlasParams trigger (tiny
 // unpadded side, or debris few-face count) gets a 1-texel gutter instead of
 // the uniform `pad` -- with very many tiny charts the uniform gutter is a
 // multiplicative tax on exactly the charts that matter least. Both knobs
 // default to 0 (off), so with defaults this always returns `pad` unchanged --
-// byte-identical to the pre-§6.5 uniform-padding math.
+// byte-identical to the uniform-padding math it replaces.
 inline float ChartPad(const AtlasParams& params, float w, float h, unsigned faces, unsigned pad)
 {
 	return ((params.tinyChartSide > 0.f && std::max(w, h) <= params.tinyChartSide)
@@ -614,7 +614,7 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 	std::vector<Eigen::Vector2f> sizes(rects.size());
 	for (size_t i = 0; i < rects.size(); ++i)
 		sizes[i] = Eigen::Vector2f(static_cast<float>(rects[i].width), static_cast<float>(rects[i].height));
-	// Generic rectangles carry no chart concept (no §6.5 tiny/debris triggers
+	// Generic rectangles carry no chart concept (no tiny/debris triggers
 	// here), so every rect gets the same uniform padding -- unchanged behavior.
 	const std::vector<float> pads(rects.size(), static_cast<float>(params.padding));
 
@@ -802,7 +802,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 		cr.h = std::max(cr.h, 1.f);
 	}
 
-	// §6.5 per-size padding: one O(F) pass, counting faces per chart id, feeds
+	// Per-size padding: one O(F) pass, counting faces per chart id, feeds
 	// the debrisChartFaces trigger (PackRects / the fit-solve coefficients
 	// below both re-derive each chart's own pad from this and its rect size).
 	std::vector<unsigned> chartFaces(numCharts, 0u);
@@ -818,7 +818,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 	//      occupancy instead of spilling many small (padded) charts across
 	//      several pages. Solve for the scale k that makes
 	//        Σ (k·w + 2·pad_c)(k·h + 2·pad_c) = targetFill · resolution²
-	//      (a quadratic in k, coefficients accumulated per chart so §6.5's
+	//      (a quadratic in k, coefficients accumulated per chart so per-size
 	//      per-chart pad_c is honored -- uniform pad reproduces the old
 	//      single-pad quadratic exactly), then scale UVs + chart rects by k.
 	// ------------------------------------------------------------------

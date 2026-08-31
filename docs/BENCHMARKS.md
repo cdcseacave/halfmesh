@@ -284,7 +284,7 @@ production, decimate first: million-chart atlases are rarely the goal, and
 distortion/seam totals favour a chart budget matched to the texture
 resolution.)
 
-### Repair carve rings / fold-rescue slits / per-size padding — Task 9 sweep (defaults OFF)
+### Repair carve rings / fold-rescue slits / per-size padding (defaults OFF)
 
 Three more opt-in knobs landed in 0.3.1, all **OFF by default**:
 `repair_carve_rings` (`--repair-carve-rings`, failure-localized
@@ -302,7 +302,7 @@ vertices / 120 943 faces once repaired — 459 non-manifold issues fixed on
 load; `roi100k` and `ours128k` are not present, so those cross-checks were
 not run). A Truck-class mesh is **not** in `tests/data/` either, but is
 derivable on this machine — see the Truck-class sweep below, which is where
-the spec §7 criterion is actually decided. All arms: `--engines halfmesh
+the chart-count / coverage target is actually decided. All arms: `--engines halfmesh
 --resolution 4096 --cut-to-disk` (padding stays at the `AtlasParams` default
 of 2, unchanged by any arm). Wall-clock is indicative only — this machine was
 under load from an unrelated training job during the sweep.
@@ -359,7 +359,7 @@ the padding knobs remain opt-in). Rationale:
 No golden re-freeze: defaults are unchanged, so `tests/golden/` fixtures
 still reflect the current (591/591-green) behavior.
 
-### Truck-class sweep — the spec §7 criterion, measured (2026-08-30)
+### Truck-class sweep — the chart-count / coverage target, measured (2026-08-30)
 
 The sweep above runs on `mesh.ply` (120 943 faces, 0.020 charts/face), which
 is **not** the mesh class the §7 criterion is about: a Truck-class mesh
@@ -468,10 +468,18 @@ alone and cost Truck 9.7 % at aspect 8.
 
 On the two 471–477 k-face consumer meshes, coverage went 0.1891 → **0.2484**
 (Ignatius defaults) and 0.0200 → **0.2292** (`fold_rescue_slits=2`), with the
-four arms that had no over-page chart bit-identical. **The §7 sweep table above
-predates this recalibration** and was measured on different (522–536 k-face)
-meshes; the arms that had an over-page chart at ratio 16–1000 would read higher
-if re-run. Re-running that campaign is outstanding.
+four arms that had no over-page chart bit-identical.
+
+**Every sweep table in this section predates two 0.3.1 changes** — this extent
+recalibration and the always-on distortion bar (`kShipMaxSymDir`, see the
+CHANGELOG) — and was measured on different (522–536 k-face) meshes. Both
+changes move arms that had an over-page or over-stretched chart; the distortion
+bar in particular splits them, so chart counts read low and per-chart
+sym-Dirichlet reads high in these tables relative to what 0.3.1 now produces.
+On the Ignatius default arm the two together take the worst per-chart
+sym-Dirichlet from 3.3e8 to 22 390 and the widest chart from 2 071 to 640
+texels of a 4 096 page, at +0.25 % charts. Re-running this campaign against
+0.3.1 is outstanding.
 
 **Criterion: ≤ 55 k charts and coverage ≥ 0.30. Coverage passes, chart count
 does not.**
@@ -489,7 +497,7 @@ does not.**
   Nearly all of the −15.1 % is `cut_to_disk`, which predates this work:
   `repair_carve_rings=2` is **−0.2 %** (Ignatius −0.3 %) and
   `fold_rescue_slits=2` is **−2.0 %** (Ignatius −1.1 %)
-  here, against −3.7 % and −9.9 % on `mesh.ply`. **Both §6.1/§6.2 knobs are
+  here, against −3.7 % and −9.9 % on `mesh.ply`. **Both knobs are
   near-no-ops on the mesh class they were designed for, on both scenes.**
   A plausible cause
   for the slit rescue: it cuts from the worst *interior* vertex to the
@@ -516,7 +524,7 @@ does not.**
   ridge/curvature feature instead of a blind N-ring band, to avoid slicing
   through the sliver-thin geometry implicated in the sym-Dirichlet blowup
   above.
-- **Enclose-test revision** (per Task 7's gate analysis): the post-repair
+- **Enclose-test revision**: the post-repair
   merge's `wouldEnclose` rejects outnumber budget rejects ~3.3–3.7× on
   `mesh.ply`, yet folding pairs still pass both gates and ship as extra
   fragments — a geometry-aware (rather than blanket) enclose test might let

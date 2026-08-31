@@ -132,11 +132,19 @@ struct ParametrizeParams
 
 	// Distortion-bounded split (0 disables — the default; flip-only repair, the
 	// current SOTA behavior). When > 0 it is a symmetric-Dirichlet cap τ that
-	// EXTENDS the flip-repair: a chart that is flip-FREE but whose SHIPPED map
-	// (full SLIM, area-weighted symmetric-Dirichlet) still exceeds τ is also
-	// spatially bisected and its pieces re-checked, trading a few extra charts
-	// for far lower per-chart stretch. τ = 4.0 is perfect isometry (the floor),
-	// so any on-value must exceed 4; ~4.4 is the sane benchmark setting.
+	// Per-chart distortion budget τ for the flip-repair: a chart that is
+	// flip-FREE but whose SHIPPED map (full SLIM, area-weighted
+	// symmetric-Dirichlet) still exceeds τ is spatially bisected and its pieces
+	// re-checked, trading a few extra charts for far lower per-chart stretch.
+	// τ = 4.0 is perfect isometry (the floor), so any value must exceed 4; ~4.4
+	// is the sane benchmark setting for a quality-first atlas.
+	//
+	// 0 (the default) does NOT disable the check — it selects an internal
+	// ship-ability bar (symmetric-Dirichlet 200, ~14x stretch), the same bar the
+	// injectivity fallback in ParametrizeCharts refuses to ship above. Only a
+	// chart stretched past all use is split at the default; setting a value here
+	// tightens the budget, it does not turn a check on.
+	//
 	// Sliver-dominated charts (near-zero-area input triangles, sym-Dir → ∞ at any
 	// size) are EXCLUDED from the split — bisection cannot fix degenerate input
 	// and would otherwise shatter the chart to the runaway cap.

@@ -110,7 +110,7 @@ struct BenchConfig
 	float seedMult = -1.f; // initial farthest-point extra-seed multiple
 	float coneErr = -1.f; // developableMaxConeError
 	float vdefect = -1.f; // developableMaxVertexDefect (radians)
-	float maxDistortion = -1.f; // developableMaxUvDistortion (sym-Dir cap; 0=off; <0 = default)
+	float maxDistortion = -1.f; // developableMaxUvDistortion (sym-Dir cap; 0 = internal ship bar; <0 = leave default)
 	bool cutToDisk = false; // Seamster cut-to-disk instead of disk-split (fewer MVS charts)
 	// repair / packing knobs; <0 = library default (all default to 0/off)
 	int repairCarveRings = -1; // ParametrizeParams::repairCarveRings (failure-localized repair split)

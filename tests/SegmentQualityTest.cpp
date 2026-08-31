@@ -326,7 +326,7 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 	Measure("UVSphere-on", sphere, on);
 }
 
-// §6.1 failure-localized carve: a property, not exact counts (build-flag
+// Failure-localized carve: a property, not exact counts (build-flag
 // sensitive — see file header). Carving a folding chart into {small local
 // region, the rest} instead of blindly PCA-bisecting it can only ever match or
 // reduce the final chart count on a real mesh: a localized failure that used
@@ -344,16 +344,25 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 // engages both the repair wave and the carve path — is where the invariants
 // are checked against a partition carve actually shaped.
 //
-// Extended (Task 6, §6.2) with two more knob combinations on the SAME
-// baseline (nBase) and mesh copy pattern — foldRescueSlits alone, then
-// combined with repairCarveRings — one extra detail::SegmentCharts
-// invocation per combination, no extra baseline recomputation. Real,
-// build-stable evidence that the rescue mechanism actually engages on this
-// mesh lives in tests/FlattenTest.cpp's
-// FoldRescueSlitRescuesAtLeastOneRealMeshChart (measured: 3 of 133 charts
-// folding under the pre-repair segmentation get rescued); this test instead
-// pins the aggregate, end-to-end property — the shipped chart count with the
-// knob(s) on can only match or improve vs. the shipped default.
+// Two more knob combinations share that baseline (nBase) and mesh copy
+// pattern — foldRescueSlits alone, then combined with repairCarveRings — one
+// extra detail::SegmentCharts invocation each. Evidence that the rescue
+// mechanism actually engages on this mesh lives in tests/FlattenTest.cpp's
+// FoldRescueSlitRescuesAtLeastOneRealMeshChart (3 of 133 charts folding under
+// the pre-repair segmentation get rescued).
+//
+// SCOPE — these are observations on THIS mesh as loaded, not guarantees.
+// "A rescued chart ships as one chart instead of being split, so the count can
+// only drop" does NOT hold in general: the repair and the post-repair merge
+// run as an iterative loop, so changing the split predicate perturbs which
+// partition enters the next round, and the fixed point can land either way.
+// Measured 2026-08-31 on this same mesh after Mesh::RemoveDuplicateVertices /
+// RemoveDegenerateFaces / RemoveUnreferencedVertices — the preprocessing
+// GenerateAtlas and the Python hm.unwrap() path apply — foldRescueSlits
+// 0/1/2/3 gives 2708 / 2734 / 2852 / 2766 charts: the knob costs charts, and
+// non-monotonically. The bound below holds on the mesh as loaded here; it is
+// pinned as a regression guard for THIS input, not as an algebraic property.
+// See docs/BENCHMARKS.md section 4 — the knob stays default-off for this reason.
 TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 {
 	Mesh mesh;
@@ -377,11 +386,12 @@ TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 	EXPECT_TRUE(AllChartsConnectedTopo(meshC, fcCarve, nCarve))
 	    << "the carve-produced partition must still be topo-connected per chart";
 
-	// §6.2 curvature-slit fold rescue: same one-extra-SegmentCharts-call pattern
+	// Curvature-slit fold rescue: same one-extra-SegmentCharts-call pattern
 	// as the carve run above, reusing nBase as the baseline (no second baseline
 	// recomputation). A rescued chart ships as ONE chart with an extra seam
-	// instead of being split, so — like the carve knob — this can only match or
-	// reduce the final chart count.
+	// instead of being split, which is why the count drops on this input — but
+	// see the SCOPE note in the header: that is not a guarantee, and on the
+	// cleaned mesh this same knob costs charts.
 	halfmesh::ParametrizeParams slits;
 	slits.foldRescueSlits = 2;
 	std::vector<unsigned> fcSlits;
@@ -393,7 +403,7 @@ TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 	EXPECT_TRUE(AllChartsConnectedTopo(meshS, fcSlits, nSlits))
 	    << "the slit-rescue partition must still be topo-connected per chart";
 
-	// Both knobs together (§6.1 carve + §6.2 slit compose — see
+	// Both knobs together (carve + slit compose — see
 	// Parametrize.CarveAndFoldRescueSlitsKeepsPartitionContracts): one more
 	// SegmentCharts call, same baseline reuse.
 	halfmesh::ParametrizeParams both;

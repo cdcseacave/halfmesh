@@ -1920,7 +1920,7 @@ bool FlattenChart(ChartMesh& cm, const ParametrizeParams& params,
 	if (params.foldRescueSlits == 0)
 		return true; // exact current behavior (judgedFolds stays whatever the caller init'd)
 
-	// Curvature-slit fold rescue (§6.2, opt-in): a chart that folds from
+	// Curvature-slit fold rescue (opt-in): a chart that folds from
 	// enclosed curvature is re-flattened after cutting a slit from its worst
 	// interior vertex to the boundary, up to params.foldRescueSlits times — ONE
 	// chart with one extra seam instead of a split. A pure, build-stable
@@ -2053,6 +2053,17 @@ ChartMesh ExtractOneChart(const Mesh& mesh, const std::vector<Mesh::FIndex>& fac
 	return cm;
 }
 
+// Largest area-weighted symmetric-Dirichlet a chart may carry and still be
+// worth shipping. Above this a chart is stretched past the point where its
+// texels mean anything (sym-Dir ≈ s² + 1/s² for a pure stretch s, so 200 is
+// roughly a 14× stretch), and no downstream stage can repair it — only a
+// split, upstream, while the chart can still be divided. Used both as the
+// default split budget in ChartFolds and as the acceptance bar for the
+// injectivity fallback ladder in ParametrizeCharts, which must agree: the
+// ladder refusing to SHIP a map the repair was happy to ACCEPT is how a
+// wildly stretched chart used to reach the atlas.
+constexpr float kShipMaxSymDir = 200.f;
+
 // Should this (flip-free) chart be split for OVER-DISTORTION? `uv` is the SHIPPED
 // map (full init + SLIM, exactly what ParametrizeCharts writes). Returns true iff
 // the chart's area-weighted symmetric-Dirichlet exceeds the budget τ AND it is not
@@ -2170,7 +2181,7 @@ void FillFoldDiagnosis(const ChartMesh& cm, std::vector<int>& local, detail::Fol
 // chart can be reused instead of flattened a second time. Never affects the verdict.
 //
 // When `diag` is non-null and the verdict IS "folds", *diag is filled with the
-// offending faces (see detail::FoldDiagnosis) so the repair (§6.1) can carve
+// offending faces (see detail::FoldDiagnosis) so the repair can carve
 // around them: on every return-true path below, the failing collector(s) are
 // re-run (with their out-params) on the SAME judged map that produced the
 // verdict, and the result converted to global ids. This is one extra collector
@@ -2268,10 +2279,22 @@ bool ChartFolds(ChartMesh& cm, const ParametrizeParams& params, FoldAccept* out 
 			diagMapFolds(uv);
 			return true;
 		}
-		if (params.developableMaxUvDistortion > 0.0f && ChartOverDistorted(cm, uv, params.developableMaxUvDistortion)) {
+		// Flip-freedom is necessary but NOT sufficient: an injective map can
+		// still be stretched past any use. developableMaxUvDistortion is the
+		// caller's own budget when set; when it is not (the default), fall back
+		// to kShipMaxSymDir rather than to no check at all. Measured on a
+		// 471 814-face Ignatius at defaults, the unchecked path shipped 31
+		// charts above 200, the worst at 3.3e8 — a ~18 000× stretch — which the
+		// sibling ladder in ParametrizeCharts would have refused to ship.
+		// ChartOverDistorted's own sliver guard still exempts degenerate-input
+		// charts, which splitting cannot fix.
+		const float tau = params.developableMaxUvDistortion > 0.0f
+		                      ? params.developableMaxUvDistortion
+		                      : kShipMaxSymDir;
+		if (ChartOverDistorted(cm, uv, tau)) {
 			if (diag != nullptr) {
 				std::vector<int> over;
-				ChartOverDistorted(cm, uv, params.developableMaxUvDistortion, &over);
+				ChartOverDistorted(cm, uv, tau, &over);
 				FillFoldDiagnosis(cm, over, diag);
 			}
 			return true;
@@ -2439,7 +2462,7 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
 		return a < b; // stable tie-break (scheduling only; does not affect output)
 	});
 	// Charts whose self-overlapping refined map survived the fallback ladder
-	// (no injective alternative within kFallbackMaxSymDir) — reported once below.
+	// (no injective alternative within kShipMaxSymDir) — reported once below.
 	std::atomic<unsigned> keptFolded{0};
 	auto flattenOne = [&](std::size_t ci) {
 		ChartMesh& ecm = charts[ci];
@@ -2499,7 +2522,6 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
 			// the mesh-wide average sym-Dir pin by two orders of magnitude).
 			// The repair loop judges the SHIPPED map at the same probe, so this
 			// ladder is a backstop for numerical drift, not the primary defence.
-			constexpr float kFallbackMaxSymDir = 200.f;
 			ChartMesh cut = *wb;
 			int numLoops = 0;
 			bool hasB = BuildBoundaryLoop(cut, numLoops);
@@ -2542,12 +2564,12 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
 				}
 			}
 			std::vector<Vec2> uvT;
-			if (hasB && numLoops == 1 && TutteInit(cut, uvT, aspect, startK) && !ChartUVSelfOverlaps(cut, uvT, /*gridLongSide=*/512) && !ChartOverDistorted(cut, uvT, kFallbackMaxSymDir)) {
+			if (hasB && numLoops == 1 && TutteInit(cut, uvT, aspect, startK) && !ChartUVSelfOverlaps(cut, uvT, /*gridLongSide=*/512) && !ChartOverDistorted(cut, uvT, kShipMaxSymDir)) {
 				*wb = std::move(cut); // on a cache hit this replaces the entry's
 				// cm — safe: the entry is owned by this
 				// task alone and released below
 				uv = std::move(uvT);
-			} else if (LscmInit(*wb, uvT) && CountRealFlips(*wb, uvT) == 0 && !ChartUVSelfOverlaps(*wb, uvT, /*gridLongSide=*/512) && !ChartOverDistorted(*wb, uvT, kFallbackMaxSymDir)) {
+			} else if (LscmInit(*wb, uvT) && CountRealFlips(*wb, uvT) == 0 && !ChartUVSelfOverlaps(*wb, uvT, /*gridLongSide=*/512) && !ChartOverDistorted(*wb, uvT, kShipMaxSymDir)) {
 				uv = std::move(uvT);
 			} else {
 				// Keep the refined map — no injective alternative within the
