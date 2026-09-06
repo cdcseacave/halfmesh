@@ -252,7 +252,7 @@ after an `untextured-only` operation.
 ## QEM decimation
 
 ```cpp
-void Mesh::Simplify(float decimateRatio, float minEdgeLength = 0.f, float aggressiveness = 0.f);
+void Mesh::Simplify(float decimateRatio, float minEdgeLength = 0.f, float aggressiveness = 0.f, std::span<float> vertexMaxError = {});
 ```
 
 Garland–Heckbert quadric-error-metric edge collapse with boundary/silhouette
@@ -267,6 +267,15 @@ preservation (discontinuity quadrics at ×3 weight).
   queue — best quality); `>0` (recommended 5–8) runs the **fast threshold
   sweep**, multiplying the error threshold by this factor per pass — the right
   choice for very large reductions.
+- `vertexMaxError` (exact mode only): a per-vertex squared-distance bound on
+  the collapse error, in/out over any contiguous `float` buffer: no copy, and
+  on return its first `vertices.size()` entries are the surviving vertices'
+  bounds. An edge collapses
+  only while the mean squared distance of its optimal point to the planes of
+  its merged quadric stays within the smaller bound of its endpoints; zero or
+  less locks a vertex; with a face target the decimation stops at whichever
+  comes first. What makes a tolerance stated in image pixels expressible:
+  `(tolerance * footprint_v)^2`.
 - Topology is preserved: collapses that would break manifoldness are skipped,
   so adversarial input has a reachable floor above the target (a warning is
   logged). The header documents the repair pre-pass that dissolves the

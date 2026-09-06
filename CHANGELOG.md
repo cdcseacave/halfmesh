@@ -14,10 +14,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the mean squared distance of its optimal point to the planes its merged
   quadric holds (the QEM error over the new `TQuadric::Weight()`, the
   accumulated plane weight) is within the smaller bound of its endpoints; the
-  merged vertex keeps that bound and the decimation runs until no edge
-  passes. `decimateRatio` must be 1: the bound is the one stopping rule. The
-  queue still orders by the raw QEM error, so unbounded results are
-  unchanged.
+  merged vertex keeps that bound. A bound of zero or less locks its vertex.
+  Alone (`decimateRatio == 1`) the bound runs the decimation until no edge
+  passes; with a face target it stops at whichever comes first. The queue
+  still orders by the raw QEM error, so unbounded results are unchanged.
+- The bound is a mutable `std::span<float>` over the caller's buffer, in/out:
+  nothing is copied, the buffer is compacted in place alongside the vertices,
+  and on return its first `vertices.size()` entries are the surviving
+  vertices' bounds.
+- Bounded setup filters the edges inside the parallel costing pass, an edge
+  with a locked endpoint is never costed, and a neighbor that fails its bound
+  leaves the queue with a single keyed pop.
 
 ## [0.3.0]
 
