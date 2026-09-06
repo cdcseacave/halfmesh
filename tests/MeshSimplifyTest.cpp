@@ -660,16 +660,14 @@ TEST(MeshSimplifyTest, ClearsAuthoredVertexNormals)
 }
 
 // ---------------------------------------------------------------------------
-// Per-vertex error bound (Simplify's vertexMaxError): the bound is the only
-// stopping rule -- a negative bound collapses nothing, a larger bound collapses
-// more, the result stays a watertight genus-0 surface within a distance of the
-// original commensurate with the bound; and the bound really is per vertex: the
-// hemisphere whose vertices carry a negative bound keeps every one of its faces
-// and vertices while the other hemisphere decimates.
+// Per-vertex error bound (Simplify's vertexMaxError): the bound alone stops the
+// decimation, a larger bound collapses more, the result stays a watertight genus-0
+// surface within a distance commensurate with the bound, and the bound is really
+// per vertex (a locked hemisphere keeps every face while the other decimates).
 // ---------------------------------------------------------------------------
 // a bound is a mean squared plane distance: on a paraboloid z = k(x^2+y^2) the collapsible edge
 // length grows with the square root of the distance bound, so the face count falls roughly with
-// the bound itself, and a bound tight against the mesh's own curvature leaves it nearly intact
+// the bound itself
 TEST(MeshSimplifyAccuracy, PerVertexErrorBoundIsDistance)
 {
 	const auto Build = [](Mesh& mesh) {
@@ -768,8 +766,8 @@ TEST(MeshSimplifyAccuracy, PerVertexErrorBound)
 		EXPECT_LT(m.faces.size(), origFaces) << "the southern hemisphere should decimate";
 		EXPECT_EQ(northFaces1, northFaces0) << "a face of the locked hemisphere collapsed";
 		EXPECT_EQ(northVerts1, northVerts0) << "a vertex of the locked hemisphere went away";
-		// the compacted prefix of the buffer: every locked vertex still carries its -1 and every
-		// southern survivor the bound the merged vertices all shared
+			// the compacted prefix: every locked vertex still carries its -1, every southern
+			// survivor the bound the merged vertices shared
 		const size_t lockedOut = std::count(bound.begin(), bound.begin() + m.vertices.size(), -1.f);
 		EXPECT_EQ(lockedOut, northVerts0) << "a locked vertex must come back with its bound";
 		EXPECT_TRUE(std::all_of(bound.begin(), bound.begin() + m.vertices.size(), [&](float b) { return b == -1.f || b == static_cast<float>(diag * diag); }));

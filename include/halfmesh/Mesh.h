@@ -436,27 +436,24 @@ class Mesh
 	//      adversarial input the threshold variant can stop FARTHER from the
 	//      target than the exact one (measured on a needle-fused CAD assembly)
 	//  - vertexMaxError : optional per-vertex bound on the collapse error, a SQUARED
-	//      distance, IN/OUT in any contiguous float buffer (a std::vector or
+	//      distance, IN/OUT over any contiguous float buffer (a std::vector or
 	//      std::array binds directly, a raw, Eigen or numpy buffer as {data, size};
-	//      empty = no bound). In: one entry per vertex as the half-edge build leaves
-	//      them (a non-manifold mesh is manifoldized on entry and can gain vertices:
-	//      build or repair first; the sizes are asserted). Out: the buffer is
-	//      compacted in place in lockstep with `vertices`, so on return its first
-	//      vertices.size() entries hold the bound of each surviving vertex (the
-	//      smaller bound of everything merged into it) and the tail is stale;
-	//      nothing is copied. An edge collapses only while the mean squared
-	//      distance of its optimal point to the planes its merged quadric
-	//      accumulated (the QEM error over the quadric's plane weight) is at most
-	//      the smaller bound of its two endpoints; the merged vertex keeps that
-	//      smaller bound. A bound of zero or less LOCKS its vertex: no edge touching
-	//      it is a candidate (nor even costed). With decimateRatio == 1 the
-	//      decimation runs until no edge passes its bound; with a face target it
-	//      stops at whichever comes first, the target or no passing edge (no
-	//      shortfall warning then). Exact mode only (aggressiveness 0); the queue
-	//      still orders by the raw QEM error. A bound expressed per vertex is what
-	//      makes a tolerance stated in image pixels possible:
-	//      (tolerance * footprint_v)^2, far vertices tolerating a larger world error
-	//      than near ones.
+	//      empty = no bound). Exact mode only (aggressiveness 0).
+	//      In: one entry per vertex as the half-edge build leaves them (a non-manifold
+	//      mesh is manifoldized on entry and can gain vertices: build or repair first;
+	//      the sizes are asserted). Out: nothing is copied, the buffer is compacted in
+	//      place in lockstep with `vertices`, so its first vertices.size() entries hold
+	//      each survivor's bound (the smaller bound of everything merged into it).
+	//      An edge collapses only while the mean squared distance of its optimal point
+	//      to the planes its merged quadric accumulated (the QEM error over the
+	//      quadric's plane weight) is at most the smaller bound of its two endpoints;
+	//      the queue still orders by the raw QEM error. A bound of zero or less LOCKS
+	//      its vertex: no edge touching it is a candidate, nor even costed. With
+	//      decimateRatio == 1 the decimation runs until no edge passes its bound; with
+	//      a face target it stops at whichever comes first (no shortfall warning then).
+	//      Being per vertex is what makes a tolerance stated in image pixels
+	//      expressible: (tolerance * footprint_v)^2, far vertices tolerating a larger
+	//      world error than near ones.
 	// An empty mesh and the identity call (decimateRatio == 1, no minEdgeLength)
 	// are no-ops. Non-manifold input is first auto-repaired to manifold by the
 	// half-edge build (geometry-preserving, warning logged — see

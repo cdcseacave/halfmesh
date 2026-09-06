@@ -76,10 +76,8 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	ASSERT(ValidateInvariants());
 	ASSERT(decimateRatio > 0);
 	ASSERT(minEdgeLength <= 0 || decimateRatio == 1.f);
-	// the per-vertex error bound lives in the exact mode alone; it stops the decimation
-	// by itself (decimateRatio == 1) or together with a face target. Its buffer is
-	// sized to the vertex count the half-edge build left (a manifoldized mesh can have
-	// gained vertices, which the caller settles by building or repairing first)
+	// exact mode only; the buffer is sized to the vertex count the half-edge build left
+	// (a manifoldized mesh can have gained vertices: build or repair first)
 	ASSERT(vertexMaxError.empty() || (minEdgeLength <= 0 && aggressiveness <= 0 && vertexMaxError.size() == vertices.size()));
 	const bool bounded(!vertexMaxError.empty());
 	TIMER_START("Simplify");
@@ -263,21 +261,18 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 		// decimation — do NOT "optimize" this to track ESize() or the relabel reads
 		// go out of bounds.
 		std::vector<Quadric::Point3> edgePoint(halfMesh.ESize());
-		// the per-vertex bounds live in the caller's buffer and are compacted there in
-		// lockstep with vertices (swap-with-last, no copy): on return its live prefix is
-		// the bound of each surviving vertex, the merged vertex of a collapse keeping the
-		// smaller bound of the two it replaces. An edge whose smaller endpoint bound is
-		// zero or less has a locked endpoint: never a candidate, so never even costed
-		const auto EdgeBound = [vertexMaxError](VIndex a, VIndex b) {
-			return std::min(vertexMaxError[a], vertexMaxError[b]);
+		// An edge's bound is the smaller of its endpoints'; zero or less locks a vertex, so no
+		// edge touching it is ever a candidate (nor even costed).
+		const auto EdgeBound = [vertexMaxError](VIndex v0, VIndex v1) {
+			return std::min(vertexMaxError[v0], vertexMaxError[v1]);
 		};
-		// the size the bound is compared with: the mean squared distance of the optimal point to
-		// the planes the merged quadric accumulated (its error over its plane weight), so that a
-		// vertex which has absorbed many collapses is held to the same distance as a fresh one.
-		// The queue keeps ordering by the raw error (the standard QEM priority)
-		const auto BoundedError = [](const Quadric& quadric, EdgeCost cost) -> EdgeCost {
+		// The bound is compared against the mean squared distance of the optimal point to the
+		// planes the merged quadric accumulated (its error over its plane weight), so a vertex
+		// that absorbed many collapses is held to the same distance as a fresh one; the queue
+		// keeps ordering by the raw error (the standard QEM priority).
+		const auto WithinBound = [](const Quadric& quadric, EdgeCost cost, float bound) {
 			const real weight = quadric.Weight();
-			return weight > 0 ? static_cast<EdgeCost>(cost / weight) : cost;
+			return cost <= bound * (weight > 0 ? weight : real(1));
 		};
 		{
 			const EIndex numEdges = halfMesh.ESize();
@@ -327,24 +322,22 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 				// so the heap layout — and thus the pop order among equal-cost edges —
 				// is bit-identical (4 of the 5 Simplify goldens run this path and must
 				// not change a byte).
-				// A bounded edge is admitted only while its cost is within the bound of both
-				// endpoints. That test runs here, in the parallel pass, where the merged
-				// quadric and the cost are already in hand, and an edge with a locked
-				// endpoint skips the solve altogether. The sequential emplace then only
-				// reads the flag, in EIndex order, so the emplace sequence of the unbounded
-				// path is unchanged (and so are the goldens)
+				// The bound test runs here, where the merged quadric and the cost are already
+				// in hand; the sequential emplace only reads the flag, in EIndex order, so the
+				// unbounded emplace sequence (and the goldens) are unchanged.
 				std::vector<char> edgePass(bounded ? numEdges : 0, 1);
 				ParallelForPool(pool, numEdges, [&](std::size_t iE) {
 					const auto [iV0, iV1] = halfMesh.EVertices(EIndex(iE));
-					if (bounded && EdgeBound(iV0, iV1) <= 0) {
-						edgePass[iE] = 0; // locked endpoint: never a candidate
+					const float bound = bounded ? EdgeBound(iV0, iV1) : 0.f;
+					if (bounded && bound <= 0) {
+						edgePass[iE] = 0; // locked endpoint: not a candidate, skip the solve
 						return;
 					}
 					const Quadric quadric = verticesQuadric[iV0] + verticesQuadric[iV1];
 					const Quadric::Point3 p = quadric.ComputeOptimalPoint(vertices[iV0].cast<real>(), vertices[iV1].cast<real>());
 					edgePoint[iE] = p;
 					edgeCost[iE] = static_cast<EdgeCost>(quadric * p);
-					if (bounded && BoundedError(quadric, edgeCost[iE]) > EdgeBound(iV0, iV1))
+					if (bounded && !WithinBound(quadric, edgeCost[iE], bound))
 						edgePass[iE] = 0;
 				});
 				for (EIndex iE = 0; iE < numEdges; ++iE)
@@ -384,9 +377,8 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 			vertices[vertexMoved] = p;
 			verticesQuadric[vertexMoved] = quadric;
 			if (bounded) {
-				// mirror the swap-with-last compaction above in the caller's buffer, which is
-				// not shrunk: its live prefix is vertices.size() long, the old last slot now
-				// being the first stale one
+				// mirror the swap-with-last compaction in the caller's buffer, which is never
+				// shrunk: its live prefix is vertices.size() long, the old last slot now stale
 				vertexMaxError[removedData.verts[0]] = vertexMaxError[vertices.size()];
 				vertexMaxError[vertexMoved] = boundMerged;
 			}
@@ -408,10 +400,10 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 			// dynamic-length cases here keeps the min-edge candidate set correct.
 			for (EIndex iEAdj : halfMesh.VAdjacentEdges(vertexMoved)) {
 				const VIndex jV0 = halfMesh.EFirstVertex(iEAdj), jV1 = halfMesh.ESecondVertex(iEAdj);
-				if (bounded && EdgeBound(jV0, jV1) <= 0) {
-					// locked endpoint: never a candidate, so skip the solve. Such an edge is
-					// never queued (its bound never passed, and a merged bound is the minimum
-					// of two that did); the pop is an O(1) guard of that invariant
+				const float bound = bounded ? EdgeBound(jV0, jV1) : 0.f;
+				if (bounded && bound <= 0) {
+					// locked endpoint: skip the solve; such an edge is never queued, so the
+					// pop is only an O(1) guard of that invariant
 					queue.pop(iEAdj);
 					continue;
 				}
@@ -419,11 +411,9 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 				const Quadric::Point3 pAdj = quadricAdj.ComputeOptimalPoint(vertices[jV0].cast<real>(), vertices[jV1].cast<real>());
 				edgePoint[iEAdj] = pAdj;
 				const EdgeCost costAdj = static_cast<EdgeCost>(quadricAdj * pAdj);
-				if (bounded && BoundedError(quadricAdj, costAdj) > EdgeBound(jV0, jV1)) {
-					// past the bound of its endpoints (the merged vertex's tighter bound, or a
-					// cost the collapse raised): no longer a candidate, and it must leave the
-					// queue now, since nothing checks the bound at pop time (pop(key) is a
-					// no-op for an edge not queued)
+				if (bounded && !WithinBound(quadricAdj, costAdj, bound)) {
+					// past its bound (tightened by the merge, or a cost the collapse raised):
+					// it must leave the queue now, nothing checks the bound at pop time
 					queue.pop(iEAdj);
 					continue;
 				}
