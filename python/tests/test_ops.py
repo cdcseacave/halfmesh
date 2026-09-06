@@ -172,6 +172,13 @@ def test_simplify_rejects_bad_vertex_max_error():
         hm.simplify(v, f, 0.5, 7.0, vertex_max_error=np.full(len(v), 0.01, dtype=np.float32))
 
 
+def test_simplify_vertex_max_error_rejects_input_requiring_repair():
+    v, f = _cube_mesh()
+    duplicate_face = np.concatenate([f, f[:1]])
+    with pytest.raises(ValueError, match="requires topology repair"):
+        hm.simplify(v, duplicate_face, 1.0, vertex_max_error=np.ones(len(v), dtype=np.float32))
+
+
 def test_simplify_without_vertex_max_error_returns_a_pair():
     v, f = _cube_mesh()
     assert len(hm.simplify(v, f, 1.0)) == 2

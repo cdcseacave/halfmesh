@@ -102,7 +102,7 @@ other value raises `ValueError`.
 smoothing/less noise at the cost of more (recoverable) surface flattening.
 `iterations <= 0` raises `ValueError`.
 
-### `simplify(vertices, faces, target, aggressiveness=0.0, vertex_max_error=None) -> (v, f)`
+### `simplify(vertices, faces, target, aggressiveness=0.0, vertex_max_error=None) -> (v, f) | (v, f, vertex_max_error)`
 
 QEM (quadric error metric) edge-collapse decimation. `target` is
 **dual-magnitude**:
@@ -128,7 +128,8 @@ distance** per input vertex — that caps how far the decimation may deviate
 *locally*. An edge collapses only while the mean squared distance of its
 optimal point to the planes of its merged quadric stays within the smaller
 bound of its two endpoints; the merged vertex inherits that bound. A bound of
-**zero or less locks its vertex**, so no edge touching it is ever a candidate.
+**zero or less locks its vertex**; NaN locks it too. No edge touching a locked
+vertex is ever a candidate.
 
 Passing it **returns a 3-tuple** `(v, f, vertex_max_error)`, whose third entry
 is one bound per *surviving* vertex, aligned with the returned `v` (the input
@@ -154,9 +155,8 @@ Notes:
 - Exact mode only: passing `aggressiveness > 0` alongside it raises
   `ValueError`.
 - A length other than `len(vertices)`, or a non-1-D array, raises
-  `ValueError`. Non-manifold input is auto-repaired before decimation, which
-  renumbers vertices and can add them; when that happens the bound no longer
-  addresses the mesh, so this also raises `ValueError` — call `repair()` first
+  `ValueError`. Input that requires topology repair is rejected before
+  decimation because repair may remap or add vertices; call `repair()` first
   and state the bound over *its* output.
 
 ### `close_holes(vertices, faces, max_hole_edges=30) -> (v, f, closed)`

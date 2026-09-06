@@ -14,7 +14,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the mean squared distance of its optimal point to the planes its merged
   quadric holds (the QEM error over `TQuadric::Weight()`, the accumulated plane
   weight) is within the smaller bound of its endpoints; the merged vertex keeps
-  that bound, and a bound of zero or less locks its vertex. Alone
+  that bound, and a bound of zero or less (or NaN) locks its vertex. Alone
   (`decimateRatio == 1`) it runs the decimation until no edge passes; with a
   face target it stops at whichever comes first. The queue still orders by the
   raw QEM error, so unbounded results are unchanged.
@@ -29,11 +29,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **Python**: `hm.simplify(..., vertex_max_error=None)` takes the bound as an
   `[N]` float32 array and returns `(v, f, vertex_max_error)` — one bound per
   surviving vertex — instead of the usual `(v, f)`. The input array is copied,
-  never mutated. A wrong shape, `aggressiveness > 0`, or input the half-edge
-  build had to manifoldize (which invalidates the per-input-vertex indexing)
-  raises `ValueError`.
-- The new defaulted parameter keeps `Simplify` source-compatible but changes
-  its mangled name: relink against this version.
+  never mutated. A wrong shape, `aggressiveness > 0`, or input that requires
+  topology repair (which may invalidate per-input-vertex indexing) raises
+  `ValueError`.
+- The existing three-argument `Simplify` overload remains exported, preserving
+  existing calls and binary compatibility; bounded calls use the new
+  four-argument overload.
 
 ## [0.3.0]
 

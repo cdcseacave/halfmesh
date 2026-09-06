@@ -55,6 +55,11 @@ using detail::ParallelForPool;
 // exclusively, `minEdgeLength` collapses every edge shorter than the given length;
 // a per-vertex error bound (exact mode) stops when no edge passes it, alone or
 // together with a face target (whichever comes first).
+void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressiveness)
+{
+	Simplify(decimateRatio, minEdgeLength, aggressiveness, {});
+}
+
 void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressiveness, std::span<float> vertexMaxError)
 {
 	// One stopping rule: decimateRatio (<1 = fraction of input, >1 = absolute
@@ -272,10 +277,11 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 		// decimation — do NOT "optimize" this to track ESize() or the relabel reads
 		// go out of bounds.
 		std::vector<Quadric::Point3> edgePoint(halfMesh.ESize());
-		// An edge's bound is the smaller of its endpoints'; zero or less locks a vertex, so no
-		// edge touching it is ever a candidate (nor even costed).
+		// An edge's bound is the smaller of its endpoints'; non-positive or NaN locks a
+		// vertex, so no edge touching it is ever a candidate (nor even costed).
 		const auto EdgeBound = [vertexMaxError](VIndex v0, VIndex v1) {
-			return std::min(vertexMaxError[v0], vertexMaxError[v1]);
+			const float b0 = vertexMaxError[v0], b1 = vertexMaxError[v1];
+			return b0 > 0.f && b1 > 0.f ? std::min(b0, b1) : 0.f;
 		};
 		// The bound is compared against the mean squared distance of the optimal point to the
 		// planes the merged quadric accumulated (its error over its plane weight), so a vertex

@@ -710,8 +710,8 @@ TEST(MeshSimplifyAccuracy, PerVertexErrorBound)
 	const size_t origFaces = orig.faces.size();
 	const double diag = BBoxDiag(orig);
 
-	// nothing passes a negative bound, and zero locks a vertex just the same
-	for (const float locked : {-1.f, 0.f}) {
+	// nothing passes a negative, zero or NaN bound
+	for (const float locked : {-1.f, 0.f, std::numeric_limits<float>::quiet_NaN()}) {
 		Mesh m = orig;
 		std::vector<float> never(orig.vertices.size(), locked);
 		m.Simplify(1.f, 0.f, 0.f, never);

@@ -450,7 +450,8 @@ class Mesh
 	//      to the planes its merged quadric accumulated (the QEM error over the
 	//      quadric's plane weight) is at most the smaller bound of its two endpoints;
 	//      the queue still orders by the raw QEM error. A bound of zero or less LOCKS
-	//      its vertex: no edge touching it is a candidate, nor even costed. With
+	//      its vertex; NaN locks it too. No edge touching a locked vertex is a
+	//      candidate, nor even costed. With
 	//      decimateRatio == 1 the decimation runs until no edge passes its bound; with
 	//      a face target it stops at whichever comes first (no shortfall warning then).
 	//      Being per vertex is what makes a tolerance stated in image pixels
@@ -468,7 +469,8 @@ class Mesh
 	// For such input run RemoveDegenerateFaces(1e-5f) + RemoveUnreferencedVertices()
 	// + FixNonManifold() first — it dissolves the phantom 3-cycles that block
 	// collapses (measured: target reached at +3% area vs +50% at the raw floor).
-	void Simplify(float decimateRatio, float minEdgeLength = 0.f, float aggressiveness = 0.f, std::span<float> vertexMaxError = {});
+	void Simplify(float decimateRatio, float minEdgeLength = 0.f, float aggressiveness = 0.f);
+	void Simplify(float decimateRatio, float minEdgeLength, float aggressiveness, std::span<float> vertexMaxError);
 
 	// fill every hole (boundary loop) spanned by at most maxHoleEdges edges,
 	// smallest first, by Liepa minimum-weight triangulation followed by refining

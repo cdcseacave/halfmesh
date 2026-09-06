@@ -154,15 +154,15 @@ PYBIND11_MODULE(_halfmesh, m)
 		if (!bounds.empty())
 			std::memcpy(bounds.data(), b.data(), sizeof(float) * bounds.size());
 		if (!mesh.faces.empty()) {
+			bool built = false;
 			{
 				py::gil_scoped_release release;
-				mesh.ListHalfEdges();
+				built = mesh.halfMesh.Build(mesh);
 			}
-			// The build manifoldizes non-manifold input, which renumbers vertices and can
-			// add them; the bound is stated per INPUT vertex, so it would no longer address
-			// the mesh Simplify is about to decimate.
-			if (mesh.vertices.size() != bounds.size())
-				throw py::value_error("non-manifold input was repaired to " + std::to_string(mesh.vertices.size()) + " vertices, so vertex_max_error (" + std::to_string(bounds.size()) + ") no longer matches; call repair() first and state the bound over its output");
+			// A failed build would make Simplify repair and potentially remap vertices. The
+			// bound is stated over INPUT indices, so require callers to repair first instead.
+			if (!built)
+				throw py::value_error("input requires topology repair, so vertex_max_error may no longer address its vertices; call repair() first and state the bound over its output");
 			{
 				py::gil_scoped_release release;
 				mesh.Simplify(target, /*minEdgeLength=*/0.f, aggressiveness, bounds);
