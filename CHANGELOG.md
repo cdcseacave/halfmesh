@@ -21,7 +21,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The bound is a mutable `std::span<float>` over the caller's buffer, in/out:
   nothing is copied, the buffer is compacted in place alongside the vertices,
   and on return its first `vertices.size()` entries are the surviving
-  vertices' bounds.
+  vertices' bounds. A wrong-sized buffer, or one passed with `minEdgeLength`
+  or `aggressiveness`, is refused with a warning and the decimation runs
+  unbounded — never indexed out of.
+- `TQuadric::Weight()` — the accumulated plane weight (the trace of the 3x3
+  block), which turns the raw QEM error into a mean squared plane distance.
+- **Python**: `hm.simplify(..., vertex_max_error=None)` takes the bound as an
+  `[N]` float32 array and returns `(v, f, vertex_max_error)` — one bound per
+  surviving vertex — instead of the usual `(v, f)`. The input array is copied,
+  never mutated. A wrong shape, `aggressiveness > 0`, or input the half-edge
+  build had to manifoldize (which invalidates the per-input-vertex indexing)
+  raises `ValueError`.
+- The new defaulted parameter keeps `Simplify` source-compatible but changes
+  its mangled name: relink against this version.
 
 ## [0.3.0]
 

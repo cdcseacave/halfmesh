@@ -766,8 +766,8 @@ TEST(MeshSimplifyAccuracy, PerVertexErrorBound)
 		EXPECT_LT(m.faces.size(), origFaces) << "the southern hemisphere should decimate";
 		EXPECT_EQ(northFaces1, northFaces0) << "a face of the locked hemisphere collapsed";
 		EXPECT_EQ(northVerts1, northVerts0) << "a vertex of the locked hemisphere went away";
-			// the compacted prefix: every locked vertex still carries its -1, every southern
-			// survivor the bound the merged vertices shared
+		// the compacted prefix: every locked vertex still carries its -1, every southern
+		// survivor the bound the merged vertices shared
 		const size_t lockedOut = std::count(bound.begin(), bound.begin() + m.vertices.size(), -1.f);
 		EXPECT_EQ(lockedOut, northVerts0) << "a locked vertex must come back with its bound";
 		EXPECT_TRUE(std::all_of(bound.begin(), bound.begin() + m.vertices.size(), [&](float b) { return b == -1.f || b == static_cast<float>(diag * diag); }));
@@ -801,6 +801,35 @@ TEST(MeshSimplifyAccuracy, PerVertexErrorBoundWithTarget)
 		m.Simplify(static_cast<float>(target), 0.f, 0.f, bound);
 		EXPECT_LE(m.faces.size(), target);
 		EXPECT_GE(m.faces.size() + 2, target) << "the target must stop the decimation, not the bound";
+		EXPECT_TRUE(RebuildsHalfMesh(m));
+	}
+}
+
+// a bound the exact mode cannot honor (wrong size, or combined with the min-edge/fast modes)
+// is refused rather than indexed out of: the call decimates unbounded, or is the documented
+// identity when the bound was the only stopping rule
+TEST(MeshSimplifyTest, PerVertexErrorBoundRejectedWhenUnusable)
+{
+	const Mesh orig = corpus::UVSphere(12, 16);
+	const size_t origFaces = orig.faces.size();
+	{ // wrong size, no other stopping rule: identity
+		Mesh m = orig;
+		std::vector<float> tooShort(orig.vertices.size() - 1, 1e9f);
+		m.Simplify(1.f, 0.f, 0.f, tooShort);
+		EXPECT_EQ(m.faces.size(), origFaces);
+	}
+	{ // wrong size with a face target: the target still applies
+		Mesh m = orig;
+		std::vector<float> tooLong(orig.vertices.size() + 1, 1e9f);
+		m.Simplify(0.5f, 0.f, 0.f, tooLong);
+		EXPECT_LT(m.faces.size(), origFaces);
+		EXPECT_TRUE(RebuildsHalfMesh(m));
+	}
+	{ // right size but the fast mode: the bound is dropped, aggressiveness decimates
+		Mesh m = orig;
+		std::vector<float> bound(orig.vertices.size(), 0.f); // would lock every vertex if honored
+		m.Simplify(0.5f, 0.f, 7.f, bound);
+		EXPECT_LT(m.faces.size(), origFaces);
 		EXPECT_TRUE(RebuildsHalfMesh(m));
 	}
 }

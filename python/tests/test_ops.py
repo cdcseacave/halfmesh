@@ -129,6 +129,54 @@ def test_simplify_rejects_nonpositive_target():
         hm.simplify(v, f, 0.0)
 
 
+def test_simplify_vertex_max_error_bounds_the_decimation():
+    v, f = _grid_mesh(noise=0.0)
+    tight = np.full(len(v), 1e-12, dtype=np.float32)
+    loose = np.full(len(v), 0.01, dtype=np.float32)
+    tv, tf, tb = hm.simplify(v, f, 1.0, vertex_max_error=tight)
+    lv, lf, lb = hm.simplify(v, f, 1.0, vertex_max_error=loose)
+    assert len(lf) < len(tf) <= len(f)
+    # the bound comes back compacted onto the survivors, one entry each
+    assert tb.shape == (len(tv),) and lb.shape == (len(lv),)
+    assert tb.dtype == np.float32
+    assert np.all(lb == np.float32(0.01))
+    assert not np.shares_memory(loose, lb) and np.all(loose == np.float32(0.01))
+
+
+def test_simplify_vertex_max_error_of_zero_locks_every_vertex():
+    v, f = _grid_mesh(noise=0.0, n=16)
+    locked = np.zeros(len(v), dtype=np.float32)
+    sv, sf, sb = hm.simplify(v, f, 1.0, vertex_max_error=locked)
+    assert len(sf) == len(f)
+    assert len(sb) == len(sv)
+
+
+def test_simplify_vertex_max_error_stops_at_whichever_comes_first():
+    v, f = _grid_mesh(noise=0.0)
+    loose = np.full(len(v), 0.01, dtype=np.float32)
+    _, by_bound, _ = hm.simplify(v, f, 1.0, vertex_max_error=loose)
+    # a target above what the bound allows is what stops the decimation
+    target = (len(f) + len(by_bound)) // 2
+    _, by_target, _ = hm.simplify(v, f, float(target), vertex_max_error=loose)
+    assert len(by_target) <= target
+    assert len(by_target) > len(by_bound)
+
+
+def test_simplify_rejects_bad_vertex_max_error():
+    v, f = _grid_mesh(noise=0.0, n=8)
+    with pytest.raises(ValueError):  # wrong length
+        hm.simplify(v, f, 1.0, vertex_max_error=np.zeros(len(v) - 1, dtype=np.float32))
+    with pytest.raises(ValueError):  # wrong rank
+        hm.simplify(v, f, 1.0, vertex_max_error=np.zeros((len(v), 1), dtype=np.float32))
+    with pytest.raises(ValueError):  # exact mode only
+        hm.simplify(v, f, 0.5, 7.0, vertex_max_error=np.full(len(v), 0.01, dtype=np.float32))
+
+
+def test_simplify_without_vertex_max_error_returns_a_pair():
+    v, f = _cube_mesh()
+    assert len(hm.simplify(v, f, 1.0)) == 2
+
+
 def test_close_holes_makes_an_open_cube_watertight():
     v, f = _cube_mesh()
     rv, rf, closed = hm.close_holes(v, f[:-1].copy(), 4)

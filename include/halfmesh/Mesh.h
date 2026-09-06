@@ -441,9 +441,11 @@ class Mesh
 	//      empty = no bound). Exact mode only (aggressiveness 0).
 	//      In: one entry per vertex as the half-edge build leaves them (a non-manifold
 	//      mesh is manifoldized on entry and can gain vertices: build or repair first;
-	//      the sizes are asserted). Out: nothing is copied, the buffer is compacted in
-	//      place in lockstep with `vertices`, so its first vertices.size() entries hold
-	//      each survivor's bound (the smaller bound of everything merged into it).
+	//      a wrong-sized buffer, or one combined with minEdgeLength/aggressiveness, is
+	//      refused with a warning and the decimation runs unbounded). Out: nothing is
+	//      copied, the buffer is compacted in place in lockstep with `vertices`, so its
+	//      first vertices.size() entries hold each survivor's bound (the smaller bound
+	//      of everything merged into it).
 	//      An edge collapses only while the mean squared distance of its optimal point
 	//      to the planes its merged quadric accumulated (the QEM error over the
 	//      quadric's plane weight) is at most the smaller bound of its two endpoints;

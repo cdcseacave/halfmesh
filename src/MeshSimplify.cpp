@@ -76,9 +76,20 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	ASSERT(ValidateInvariants());
 	ASSERT(decimateRatio > 0);
 	ASSERT(minEdgeLength <= 0 || decimateRatio == 1.f);
-	// exact mode only; the buffer is sized to the vertex count the half-edge build left
-	// (a manifoldized mesh can have gained vertices: build or repair first)
-	ASSERT(vertexMaxError.empty() || (minEdgeLength <= 0 && aggressiveness <= 0 && vertexMaxError.size() == vertices.size()));
+	// Exact mode only, and one entry per vertex as the half-edge build left them (a
+	// manifoldized mesh can have gained vertices: build or repair first). A wrong-sized
+	// buffer is a caller bug that would index out of it, so refuse it and decimate
+	// unbounded — the documented default — rather than trust it in a no-ASSERT build.
+	if (!vertexMaxError.empty() && (minEdgeLength > 0 || aggressiveness > 0 || vertexMaxError.size() != vertices.size())) {
+		REPORT_WARNING("Simplify: vertexMaxError has {} entries for {} vertices and needs the exact mode "
+		               "(minEdgeLength {}, aggressiveness {}); ignoring it",
+		               vertexMaxError.size(), vertices.size(), minEdgeLength, aggressiveness);
+		vertexMaxError = {};
+		if (minEdgeLength <= 0 && decimateRatio == 1.f) {
+			SyncFacesOnPublicExit();
+			return; // the rejected bound was the only stopping rule: identity
+		}
+	}
 	const bool bounded(!vertexMaxError.empty());
 	TIMER_START("Simplify");
 	const size_t numFaces = halfMesh.FSize();
