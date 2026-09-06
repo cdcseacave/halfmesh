@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Per-vertex decimation error bound
+
+- **`Simplify(..., vertexMaxError)`.** An optional per-vertex collapse-error
+  bound (a squared distance) in the exact mode: an edge collapses only while
+  the mean squared distance of its optimal point to the planes its merged
+  quadric holds (the QEM error over the new `TQuadric::Weight()`, the
+  accumulated plane weight) is within the smaller bound of its endpoints; the
+  merged vertex keeps that bound and the decimation runs until no edge
+  passes. `decimateRatio` must be 1: the bound is the one stopping rule. The
+  queue still orders by the raw QEM error, so unbounded results are
+  unchanged.
+
 ## [0.3.0]
 
 ### Half-edge–primary mesh processing

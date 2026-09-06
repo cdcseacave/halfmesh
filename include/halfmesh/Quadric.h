@@ -167,6 +167,12 @@ class TQuadric
 	}
 	Scalar operator[](int c) const { return m[c]; }
 
+	// the accumulated plane weight: the sum of the squared normal lengths of every plane added
+	// (the trace of the 3x3 block), one per unit-normal plane. The quadric error divided by it
+	// is the weighted mean squared distance to those planes, a size that does not grow with the
+	// number of planes a vertex has accumulated
+	Scalar Weight() const { return a + e + h; }
+
 	private:
 	// compose axis determinant
 	template <

@@ -53,7 +53,7 @@ using detail::ParallelForPool;
 //
 // Stopping: `decimateRatio` in (0,1] sets a target face count (ratio*faces); or,
 // exclusively, `minEdgeLength` collapses every edge shorter than the given length.
-void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressiveness)
+void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressiveness, const std::vector<float>* vertexMaxError)
 {
 	// One stopping rule: decimateRatio (<1 = fraction of input, >1 = absolute
 	// target face count) or minEdgeLength (>0); the two are mutually exclusive,
@@ -66,7 +66,7 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	// The identity guard precedes ListHalfEdges(): a build is not free, and on
 	// non-manifold input the safe path repairs/manifoldizes in place, so probing
 	// connectivity first would let an identity call mutate topology.
-	if (minEdgeLength <= 0 && decimateRatio == 1.f) {
+	if (minEdgeLength <= 0 && decimateRatio == 1.f && vertexMaxError == nullptr) {
 		SyncFacesOnPublicExit();
 		return; // identity: nothing to decimate
 	}
@@ -74,9 +74,12 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	ASSERT(ValidateInvariants());
 	ASSERT(decimateRatio > 0);
 	ASSERT(minEdgeLength <= 0 || decimateRatio == 1.f);
+	// the per-vertex error bound is its own stopping rule, in the exact mode alone
+	ASSERT(vertexMaxError == nullptr || (decimateRatio == 1.f && minEdgeLength <= 0 && aggressiveness <= 0 && vertexMaxError->size() == vertices.size()));
+	const bool bounded(vertexMaxError != nullptr);
 	TIMER_START("Simplify");
 	const size_t numFaces = halfMesh.FSize();
-	const size_t numTargetFaces(minEdgeLength > 0     ? 1u
+	const size_t numTargetFaces(minEdgeLength > 0 || bounded ? 1u
 	                            : decimateRatio > 1.f ? static_cast<size_t>(std::llround(decimateRatio))
 	                                                  : RoundCast<size_t>(numFaces * decimateRatio));
 	BS::light_thread_pool pool; // persistent worker pool for the parallel setup phases
@@ -255,6 +258,22 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 		// decimation — do NOT "optimize" this to track ESize() or the relabel reads
 		// go out of bounds.
 		std::vector<Quadric::Point3> edgePoint(halfMesh.ESize());
+		// the per-vertex bounds, compacted in lockstep with vertices; the merged vertex of a
+		// collapse keeps the smaller bound of the two it replaces
+		std::vector<float> maxError;
+		if (bounded)
+			maxError = *vertexMaxError;
+		const auto EdgeBound = [&maxError](VIndex a, VIndex b) {
+			return std::min(maxError[a], maxError[b]);
+		};
+		// the size the bound is compared with: the mean squared distance of the optimal point to
+		// the planes the merged quadric accumulated (its error over its plane weight), so that a
+		// vertex which has absorbed many collapses is held to the same distance as a fresh one.
+		// The queue keeps ordering by the raw error (the standard QEM priority)
+		const auto BoundedError = [](const Quadric& quadric, EdgeCost cost) -> EdgeCost {
+			const real weight = quadric.Weight();
+			return weight > 0 ? static_cast<EdgeCost>(cost / weight) : cost;
+		};
 		{
 			const EIndex numEdges = halfMesh.ESize();
 			queue.reserve(numEdges);
@@ -310,8 +329,17 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 					edgePoint[iE] = p;
 					edgeCost[iE] = static_cast<EdgeCost>(quadric * p);
 				});
-				for (EIndex iE = 0; iE < numEdges; ++iE)
+				// a bounded edge enters the queue only while its cost is within the bound of
+				// both endpoints; every other edge enters as before (the unbounded emplace
+				// sequence is unchanged, so the goldens are)
+				for (EIndex iE = 0; iE < numEdges; ++iE) {
+					if (bounded) {
+						const auto [iV0, iV1] = halfMesh.EVertices(iE);
+						if (BoundedError(verticesQuadric[iV0] + verticesQuadric[iV1], edgeCost[iE]) > EdgeBound(iV0, iV1))
+							continue;
+					}
 					queue.emplace(iE, edgeCost[iE]);
+				}
 			}
 		}
 		// remove edges in order
@@ -335,6 +363,7 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 				continue;
 			}
 			// collapse edge
+			const float boundMerged(bounded ? EdgeBound(iV0, iV1) : 0.f);
 			HalfMesh::RemovedData removedData;
 			const VIndex vertexMoved = halfMesh.ERemove(iE, removedData);
 			ASSERT(removedData.numVerts == 1);
@@ -344,6 +373,11 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 			verticesQuadric.pop_back();
 			vertices[vertexMoved] = p;
 			verticesQuadric[vertexMoved] = quadric;
+			if (bounded) {
+				maxError[removedData.verts[0]] = maxError.back();
+				maxError.pop_back();
+				maxError[vertexMoved] = boundMerged;
+			}
 			// remove edges
 			for (uint8_t i = 0; i < removedData.numEdges; ++i) {
 				queue.pop(removedData.edges[i]);
@@ -366,6 +400,14 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 				const Quadric::Point3 pAdj = quadricAdj.ComputeOptimalPoint(vertices[jV0].cast<real>(), vertices[jV1].cast<real>());
 				edgePoint[iEAdj] = pAdj;
 				const EdgeCost costAdj = static_cast<EdgeCost>(quadricAdj * pAdj);
+				if (bounded && BoundedError(quadricAdj, costAdj) > EdgeBound(jV0, jV1)) {
+					// past the bound of its endpoints (the merged vertex's tighter bound, or a
+					// cost the collapse raised): no longer a candidate, and it must leave the
+					// queue now, since nothing checks the bound at pop time
+					if (queue.contains(iEAdj))
+						queue.pop(iEAdj);
+					continue;
+				}
 				if (minEdgeLength > 0 && (vertices[jV0] - vertices[jV1]).norm() > minEdgeLength) {
 					// Min-edge mode, neighbor now longer than the threshold: it is not
 					// a collapse candidate, so keep it OUT of the queue (preserving the
@@ -401,7 +443,7 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 	// target (2026-08 review, pipes_textured: floor at 59.85% of faces for any
 	// requested ratio). minEdgeLength mode targets 1 face by design, so the
 	// warning applies only to ratio/count mode.
-	if (minEdgeLength <= 0 && halfMesh.FSize() > numTargetFaces)
+	if (minEdgeLength <= 0 && !bounded && halfMesh.FSize() > numTargetFaces)
 		REPORT_WARNING("Simplify: stopped at {} faces (target {}): no remaining edge passes the collapse "
 		               "validity checks; for needle/T-junction-heavy input run RemoveDegenerateFaces(1e-5f) + "
 		               "RemoveUnreferencedVertices() + FixNonManifold() before Simplify",

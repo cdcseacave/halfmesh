@@ -434,6 +434,17 @@ class Mesh
 	//      0 (the default) runs the exact priority-queue variant instead; on
 	//      adversarial input the threshold variant can stop FARTHER from the
 	//      target than the exact one (measured on a needle-fused CAD assembly)
+	//  - vertexMaxError : optional per-vertex bound on the collapse error, a SQUARED
+	//      distance (one entry per input vertex): an edge collapses only while the
+	//      mean squared distance of its optimal point to the planes its merged
+	//      quadric accumulated (the QEM error over the quadric's plane weight) is at
+	//      most the smaller bound of its two endpoints; the merged vertex keeps that
+	//      smaller bound, and the decimation runs until no edge passes its bound
+	//      (decimateRatio must then be 1 and aggressiveness 0: the bound is the one
+	//      stopping rule, exact mode only). The queue still orders by the raw QEM
+	//      error. A bound expressed per vertex is what makes a tolerance stated in
+	//      image pixels possible: (tolerance * footprint_v)^2, far vertices
+	//      tolerating a larger world error than near ones.
 	// An empty mesh and the identity call (decimateRatio == 1, no minEdgeLength)
 	// are no-ops. Non-manifold input is first auto-repaired to manifold by the
 	// half-edge build (geometry-preserving, warning logged — see
@@ -446,7 +457,7 @@ class Mesh
 	// For such input run RemoveDegenerateFaces(1e-5f) + RemoveUnreferencedVertices()
 	// + FixNonManifold() first — it dissolves the phantom 3-cycles that block
 	// collapses (measured: target reached at +3% area vs +50% at the raw floor).
-	void Simplify(float decimateRatio, float minEdgeLength = 0.f, float aggressiveness = 0.f);
+	void Simplify(float decimateRatio, float minEdgeLength = 0.f, float aggressiveness = 0.f, const std::vector<float>* vertexMaxError = nullptr);
 
 	// fill every hole (boundary loop) spanned by at most maxHoleEdges edges,
 	// smallest first, by Liepa minimum-weight triangulation followed by refining
