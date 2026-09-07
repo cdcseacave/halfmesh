@@ -659,5 +659,180 @@ TEST(MeshSimplifyTest, ClearsAuthoredVertexNormals)
 	EXPECT_TRUE(m.ValidateInvariants());
 }
 
+// ---------------------------------------------------------------------------
+// Per-vertex error bound (Simplify's vertexMaxError): the bound alone stops the
+// decimation, a larger bound collapses more, the result stays a watertight genus-0
+// surface within a distance commensurate with the bound, and the bound is really
+// per vertex (a locked hemisphere keeps every face while the other decimates).
+// ---------------------------------------------------------------------------
+// a bound is a mean squared plane distance: on a paraboloid z = k(x^2+y^2) the collapsible edge
+// length grows with the square root of the distance bound, so the face count falls roughly with
+// the bound itself
+TEST(MeshSimplifyAccuracy, PerVertexErrorBoundIsDistance)
+{
+	const auto Build = [](Mesh& mesh) {
+		const int n = 32;
+		const float k = 0.02f;
+		mesh.vertices.clear();
+		mesh.faces.clear();
+		for (int j = 0; j <= n; ++j)
+			for (int i = 0; i <= n; ++i) {
+				const float x = float(i) - n / 2.f, y = float(j) - n / 2.f;
+				mesh.vertices.emplace_back(x, y, k * (x * x + y * y));
+			}
+		for (int j = 0; j < n; ++j)
+			for (int i = 0; i < n; ++i) {
+				const Mesh::VIndex v00 = j * (n + 1) + i, v10 = v00 + 1, v01 = v00 + n + 1, v11 = v01 + 1;
+				mesh.faces.emplace_back(v00, v10, v11);
+				mesh.faces.emplace_back(v00, v11, v01);
+			}
+	};
+	const auto FacesWithin = [&Build](float distance) {
+		Mesh mesh;
+		Build(mesh);
+		std::vector<float> bounds(mesh.vertices.size(), distance * distance);
+		mesh.Simplify(1.f, 0.f, 0.f, bounds);
+		return mesh.faces.size();
+	};
+	const size_t input = 2 * 32 * 32;
+	const size_t tight = FacesWithin(0.005f); // below the deviation of any unit-edge collapse
+	const size_t loose = FacesWithin(0.05f);
+	const size_t looser = FacesWithin(0.2f);
+	EXPECT_GT(tight, input / 2) << "a bound tighter than the mesh's own curvature must keep most faces";
+	EXPECT_LT(loose, input / 4) << "a 0.05 bound on a 0.02 paraboloid must collapse to a few-unit edges";
+	EXPECT_LT(looser, loose) << "a looser bound must collapse further";
+	EXPECT_GT(looser, size_t(0));
+}
+
+TEST(MeshSimplifyAccuracy, PerVertexErrorBound)
+{
+	const Mesh orig = corpus::UVSphere(24, 32);
+	const size_t origFaces = orig.faces.size();
+	const double diag = BBoxDiag(orig);
+
+	// nothing passes a negative, zero or NaN bound
+	for (const float locked : {-1.f, 0.f, std::numeric_limits<float>::quiet_NaN()}) {
+		Mesh m = orig;
+		std::vector<float> never(orig.vertices.size(), locked);
+		m.Simplify(1.f, 0.f, 0.f, never);
+		EXPECT_EQ(m.faces.size(), origFaces) << "a bound of " << locked << " must collapse nothing";
+	}
+	// a bound: reduces, stays valid, stays close; a larger bound reduces more
+	size_t facesSmall = 0;
+	for (const double tol : {0.002 * diag, 0.01 * diag}) {
+		SCOPED_TRACE("tolerance " + std::to_string(tol));
+		Mesh m = orig;
+		std::vector<float> bound(orig.vertices.size(), static_cast<float>(tol * tol));
+		m.Simplify(1.f, 0.f, 0.f, bound);
+		// the buffer came back compacted with the vertices: its live prefix is the bound of
+		// every surviving vertex, here the one value they all started with
+		EXPECT_TRUE(std::all_of(bound.begin(), bound.begin() + m.vertices.size(), [&](float b) { return b == static_cast<float>(tol * tol); }));
+		EXPECT_GT(m.faces.size(), 0u);
+		EXPECT_LT(m.faces.size(), origFaces) << "the bound should allow some collapses";
+		EXPECT_TRUE(RebuildsHalfMesh(m));
+		const auto topo = metrics::ComputeTopology(m);
+		EXPECT_TRUE(topo.isWatertight);
+		EXPECT_EQ(topo.genus, 0);
+		EXPECT_TRUE(metrics::ScanFinite(m));
+		EXPECT_GT(MinFaceDoubleArea(m), 0.0);
+		// every merged vertex sits within sqrt(cost) of each plane its quadric holds; the
+		// symmetric Hausdorff also carries the chord sag of the coarser facets, hence the slack
+		const double hd = metrics::ComputeDistanceKdTree(orig, m).hausdorffSymmetric;
+		EXPECT_LT(hd, 8.0 * tol) << "decimated surface strays too far for the bound";
+		if (facesSmall == 0)
+			facesSmall = m.faces.size();
+		else
+			EXPECT_LT(m.faces.size(), facesSmall) << "a larger bound must collapse more";
+	}
+	// per vertex: the northern hemisphere is locked by a negative bound
+	{
+		Mesh m = orig;
+		std::vector<float> bound(orig.vertices.size());
+		for (size_t v = 0; v < orig.vertices.size(); ++v)
+			bound[v] = orig.vertices[v].z() > 0 ? -1.f : static_cast<float>(diag * diag);
+		const auto CountNorth = [](const Mesh& mesh, size_t& faces, size_t& verts) {
+			faces = verts = 0;
+			for (const auto& f : mesh.faces)
+				if (mesh.vertices[f[0]].z() > 0 && mesh.vertices[f[1]].z() > 0 && mesh.vertices[f[2]].z() > 0)
+					++faces;
+			for (const auto& v : mesh.vertices)
+				if (v.z() > 0)
+					++verts;
+		};
+		size_t northFaces0, northVerts0, northFaces1, northVerts1;
+		CountNorth(orig, northFaces0, northVerts0);
+		m.Simplify(1.f, 0.f, 0.f, bound);
+		CountNorth(m, northFaces1, northVerts1);
+		EXPECT_LT(m.faces.size(), origFaces) << "the southern hemisphere should decimate";
+		EXPECT_EQ(northFaces1, northFaces0) << "a face of the locked hemisphere collapsed";
+		EXPECT_EQ(northVerts1, northVerts0) << "a vertex of the locked hemisphere went away";
+		// the compacted prefix: every locked vertex still carries its -1, every southern
+		// survivor the bound the merged vertices shared
+		const size_t lockedOut = std::count(bound.begin(), bound.begin() + m.vertices.size(), -1.f);
+		EXPECT_EQ(lockedOut, northVerts0) << "a locked vertex must come back with its bound";
+		EXPECT_TRUE(std::all_of(bound.begin(), bound.begin() + m.vertices.size(), [&](float b) { return b == -1.f || b == static_cast<float>(diag * diag); }));
+	}
+}
+
+// a face target combined with the bound stops at whichever comes first: the bound when the target
+// lies below what it allows (the result is then the bound's own), the target otherwise
+TEST(MeshSimplifyAccuracy, PerVertexErrorBoundWithTarget)
+{
+	const Mesh orig = corpus::UVSphere(24, 32);
+	const size_t origFaces = orig.faces.size();
+	const float tol = static_cast<float>(0.01 * BBoxDiag(orig));
+	const std::vector<float> uniform(orig.vertices.size(), tol * tol);
+	Mesh byBound = orig;
+	std::vector<float> bound = uniform;
+	byBound.Simplify(1.f, 0.f, 0.f, bound);
+	const size_t boundFaces = byBound.faces.size();
+	ASSERT_GT(boundFaces, 4u);
+	ASSERT_LT(boundFaces, origFaces);
+	{
+		Mesh m = orig;
+		bound = uniform;
+		m.Simplify(static_cast<float>(boundFaces / 2), 0.f, 0.f, bound);
+		EXPECT_TRUE(metrics::CanonicallyEqual(m, byBound)) << "an unreachable target must not change the bounded result";
+	}
+	{
+		const size_t target = (origFaces + boundFaces) / 2;
+		Mesh m = orig;
+		bound = uniform;
+		m.Simplify(static_cast<float>(target), 0.f, 0.f, bound);
+		EXPECT_LE(m.faces.size(), target);
+		EXPECT_GE(m.faces.size() + 2, target) << "the target must stop the decimation, not the bound";
+		EXPECT_TRUE(RebuildsHalfMesh(m));
+	}
+}
+
+// a bound the exact mode cannot honor (wrong size, or combined with the min-edge/fast modes)
+// is refused rather than indexed out of: the call decimates unbounded, or is the documented
+// identity when the bound was the only stopping rule
+TEST(MeshSimplifyTest, PerVertexErrorBoundRejectedWhenUnusable)
+{
+	const Mesh orig = corpus::UVSphere(12, 16);
+	const size_t origFaces = orig.faces.size();
+	{ // wrong size, no other stopping rule: identity
+		Mesh m = orig;
+		std::vector<float> tooShort(orig.vertices.size() - 1, 1e9f);
+		m.Simplify(1.f, 0.f, 0.f, tooShort);
+		EXPECT_EQ(m.faces.size(), origFaces);
+	}
+	{ // wrong size with a face target: the target still applies
+		Mesh m = orig;
+		std::vector<float> tooLong(orig.vertices.size() + 1, 1e9f);
+		m.Simplify(0.5f, 0.f, 0.f, tooLong);
+		EXPECT_LT(m.faces.size(), origFaces);
+		EXPECT_TRUE(RebuildsHalfMesh(m));
+	}
+	{ // right size but the fast mode: the bound is dropped, aggressiveness decimates
+		Mesh m = orig;
+		std::vector<float> bound(orig.vertices.size(), 0.f); // would lock every vertex if honored
+		m.Simplify(0.5f, 0.f, 7.f, bound);
+		EXPECT_LT(m.faces.size(), origFaces);
+		EXPECT_TRUE(RebuildsHalfMesh(m));
+	}
+}
+
 } // namespace
 } // namespace halfmesh
