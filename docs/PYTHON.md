@@ -102,7 +102,7 @@ other value raises `ValueError`.
 smoothing/less noise at the cost of more (recoverable) surface flattening.
 `iterations <= 0` raises `ValueError`.
 
-### `simplify(vertices, faces, target, aggressiveness=0.0) -> (v, f)`
+### `simplify(vertices, faces, target, aggressiveness=0.0, vertex_max_error=None) -> (v, f) | (v, f, vertex_max_error)`
 
 QEM (quadric error metric) edge-collapse decimation. `target` is
 **dual-magnitude**:
@@ -120,6 +120,44 @@ mode that can overshoot the target face count somewhat in exchange for much
 higher throughput on large meshes. Use `0.0` when you need the target hit
 precisely; raise it when you're decimating large meshes and an approximate
 result is fine.
+
+#### Per-vertex error bound
+
+`vertex_max_error` is an optional `[N]` float32 array — one **squared
+distance** per input vertex — that caps how far the decimation may deviate
+*locally*. An edge collapses only while the mean squared distance of its
+optimal point to the planes of its merged quadric stays within the smaller
+bound of its two endpoints; the merged vertex inherits that bound. A bound of
+**zero or less locks its vertex**; NaN locks it too. No edge touching a locked
+vertex is ever a candidate.
+
+Passing it **returns a 3-tuple** `(v, f, vertex_max_error)`, whose third entry
+is one bound per *surviving* vertex, aligned with the returned `v` (the input
+array is never mutated). This is what lets you chain calls, or read back which
+vertices stayed locked.
+
+```python
+# a 1 mm tolerance, tightened to 0.1 mm over a region of interest
+tol = np.full(len(v), (1e-3) ** 2, dtype=np.float32)
+tol[roi] = (1e-4) ** 2
+v, f, tol = hm.simplify(v, f, target=1.0, vertex_max_error=tol)
+```
+
+Because the bound is per vertex, a tolerance stated in *image pixels* is
+expressible as `(tolerance * footprint_v) ** 2`, letting far vertices tolerate
+a larger world-space error than near ones.
+
+Notes:
+
+- With `target=1.0` the bound alone stops the decimation — unlike the plain
+  `simplify(v, f, 1.0)`, which is the identity call. With a face target as
+  well, decimation stops at whichever comes first.
+- Exact mode only: passing `aggressiveness > 0` alongside it raises
+  `ValueError`.
+- A length other than `len(vertices)`, or a non-1-D array, raises
+  `ValueError`. Input that requires topology repair is rejected before
+  decimation because repair may remap or add vertices; call `repair()` first
+  and state the bound over *its* output.
 
 ### `close_holes(vertices, faces, max_hole_edges=30) -> (v, f, closed)`
 

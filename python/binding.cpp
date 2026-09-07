@@ -12,6 +12,7 @@
 // numpy-only by design: consumers using torch convert via torch.from_numpy().
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <pybind11/stl.h>
 
 #include <halfmesh/Mesh.h>
 #include <halfmesh/Version.h>
@@ -20,8 +21,10 @@
 #include <halfmesh/AtlasPacking.h>
 
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -31,6 +34,7 @@ namespace {
 
 using VertArray = py::array_t<float, py::array::c_style | py::array::forcecast>;
 using FaceArray = py::array_t<uint32_t, py::array::c_style | py::array::forcecast>;
+using BoundArray = py::array_t<float, py::array::c_style | py::array::forcecast>;
 
 // The memcpy bulk copies below require the element types to be padding-free
 // scalar triples. Size-only, like the asserts guarding the same copies in
@@ -128,15 +132,49 @@ PYBIND11_MODULE(_halfmesh, m)
 		}
 		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("iterations"), py::arg("method"), "Smooth vertex positions: 'taubin' (band-pass, ~zero shrink) or 'hc' (anti-shrink Laplacian).");
 
-	m.def("simplify", [](const VertArray& v, const FaceArray& f, float target, float aggressiveness) {
+	m.def("simplify", [](const VertArray& v, const FaceArray& f, float target, float aggressiveness, std::optional<BoundArray> vertexMaxError) -> py::object {
 		if (target <= 0.f)
 			throw py::value_error("simplify target must be > 0 (fraction in (0,1) or absolute count > 1)");
 		Mesh mesh = MeshFromArrays(v, f);
-		{
-			py::gil_scoped_release release;
-			mesh.Simplify(target, /*minEdgeLength=*/0.f, aggressiveness);
+		if (!vertexMaxError) {
+			{
+				py::gil_scoped_release release;
+				mesh.Simplify(target, /*minEdgeLength=*/0.f, aggressiveness);
+			}
+			return ArraysFromMesh(mesh);
 		}
-		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("target"), py::arg("aggressiveness") = 0.f, "QEM edge-collapse decimation. target in (0,1) = keep-fraction, > 1 = absolute face count.");
+		const BoundArray& b = *vertexMaxError;
+		if (b.ndim() != 1 || b.shape(0) != v.shape(0))
+			throw py::value_error("vertex_max_error must have shape [N] matching the N vertices");
+		if (aggressiveness > 0.f)
+			throw py::value_error("vertex_max_error is exact-mode only: leave aggressiveness at 0");
+		// Copied, never aliased: Simplify compacts the bound in place, and the module
+		// contract is that inputs are not mutated.
+		std::vector<float> bounds(static_cast<size_t>(b.shape(0)));
+		if (!bounds.empty())
+			std::memcpy(bounds.data(), b.data(), sizeof(float) * bounds.size());
+		if (!mesh.faces.empty()) {
+			bool built = false;
+			{
+				py::gil_scoped_release release;
+				built = mesh.halfMesh.Build(mesh);
+			}
+			// A failed build would make Simplify repair and potentially remap vertices. The
+			// bound is stated over INPUT indices, so require callers to repair first instead.
+			if (!built)
+				throw py::value_error("input requires topology repair, so vertex_max_error may no longer address its vertices; call repair() first and state the bound over its output");
+			{
+				py::gil_scoped_release release;
+				mesh.Simplify(target, /*minEdgeLength=*/0.f, aggressiveness, bounds);
+			}
+		}
+		py::tuple vf = ArraysFromMesh(mesh);
+		// the live prefix Simplify compacted the bound into: one entry per survivor
+		bounds.resize(mesh.vertices.size());
+		py::array_t<float> out(static_cast<py::ssize_t>(bounds.size()));
+		if (!bounds.empty())
+			std::memcpy(out.mutable_data(), bounds.data(), sizeof(float) * bounds.size());
+		return py::make_tuple(vf[0], vf[1], std::move(out)); }, py::arg("vertices"), py::arg("faces"), py::arg("target"), py::arg("aggressiveness") = 0.f, py::arg("vertex_max_error") = py::none(), "QEM edge-collapse decimation. target in (0,1) = keep-fraction, > 1 = absolute face count.\n\nvertex_max_error: optional [N] float32 per-vertex bound on the collapse error, a SQUARED distance (exact mode only, so leave aggressiveness at 0). An edge collapses only while the mean squared distance of its optimal point to the planes of its merged quadric stays within the smaller bound of its endpoints; zero or less LOCKS its vertex. With target == 1 the bound alone stops the decimation (it is no longer the identity call); with a face target, whichever comes first. Passing it returns a 3-tuple (vertices, faces, vertex_max_error) whose third entry holds each surviving vertex's bound.");
 
 	m.def("close_holes", [](const VertArray& v, const FaceArray& f, unsigned max_hole_edges) {
 		Mesh mesh = MeshFromArrays(v, f);

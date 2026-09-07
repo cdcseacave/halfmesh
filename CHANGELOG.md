@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Per-vertex decimation error bound
+
+- **`Simplify(..., vertexMaxError)`.** An optional per-vertex collapse-error
+  bound (a squared distance) in the exact mode: an edge collapses only while
+  the mean squared distance of its optimal point to the planes its merged
+  quadric holds (the QEM error over `TQuadric::Weight()`, the accumulated plane
+  weight) is within the smaller bound of its endpoints; the merged vertex keeps
+  that bound, and a bound of zero or less (or NaN) locks its vertex. Alone
+  (`decimateRatio == 1`) it runs the decimation until no edge passes; with a
+  face target it stops at whichever comes first. The queue still orders by the
+  raw QEM error, so unbounded results are unchanged.
+- The bound is a mutable `std::span<float>` over the caller's buffer, in/out:
+  nothing is copied, the buffer is compacted in place alongside the vertices,
+  and on return its first `vertices.size()` entries are the surviving
+  vertices' bounds. A wrong-sized buffer, or one passed with `minEdgeLength`
+  or `aggressiveness`, is refused with a warning and the decimation runs
+  unbounded — never indexed out of.
+- `TQuadric::Weight()` — the accumulated plane weight (the trace of the 3x3
+  block), which turns the raw QEM error into a mean squared plane distance.
+- **Python**: `hm.simplify(..., vertex_max_error=None)` takes the bound as an
+  `[N]` float32 array and returns `(v, f, vertex_max_error)` — one bound per
+  surviving vertex — instead of the usual `(v, f)`. The input array is copied,
+  never mutated. A wrong shape, `aggressiveness > 0`, or input that requires
+  topology repair (which may invalidate per-input-vertex indexing) raises
+  `ValueError`.
+- The existing three-argument `Simplify` overload remains exported, preserving
+  existing calls and binary compatibility; bounded calls use the new
+  four-argument overload.
+
 ## [0.3.1]
 
 ### Fixed: one degenerate chart could collapse the whole atlas
