@@ -970,78 +970,65 @@ TEST(PackAtlas, SliverChartDoesNotCollapseSiblingCharts)
 	}
 }
 
+// Eight healthy synthetic charts plus, when uvHeight > 0, one ribbon chart:
+// world area 2 under a near-collinear UV triangle of raw extent 6000 x uvHeight
+// — the shape cutToDisk produces when it slits a tube, negligible area over an
+// enormous span. Normalized and packed at 256²/padding 2 with fitToResolution
+// (the vulnerable path, GenerateAtlas's default); `mesh` receives the packed UVs.
+static AtlasResult PackRibbonFixture(float uvHeight, Mesh& mesh)
+{
+	std::vector<unsigned> faceChart;
+	unsigned numCharts = 0;
+	BuildSyntheticCharts(mesh, faceChart, numCharts, 8u);
+	if (uvHeight > 0.f) {
+		const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+		mesh.vertices.push_back({100.f, 0.f, 0.f});
+		mesh.vertices.push_back({102.f, 0.f, 0.f});
+		mesh.vertices.push_back({102.f, 2.f, 0.f});
+		mesh.faces.push_back({base, base + 1, base + 2});
+		faceChart.push_back(8u);
+		mesh.faceTexcoords.push_back({0.f, 0.f});
+		mesh.faceTexcoords.push_back({6000.f, 0.f});
+		mesh.faceTexcoords.push_back({6000.f, uvHeight});
+		numCharts = 9u;
+	}
+	AtlasParams params;
+	params.resolution = 256;
+	params.padding = 2;
+	params.fitToResolution = true;
+	NormalizeChartDensity(mesh, faceChart, numCharts, params);
+	return PackAtlas(mesh, faceChart, numCharts, params);
+}
+
 // ---------------------------------------------------------------------------
 // The sibling-collapse guard above only bites when the compressed chart's RAW
-// extent is small. Slitting a tube open (cutToDisk) produces the dangerous
-// shape instead: a ribbon whose uvArea is tiny yet positive AND whose raw UV
-// extent is large. NormalizeChartDensity used to leave such a chart entirely
-// unnormalized (scale 0 -> raw UVs passed through), and PackAtlas's degenerate
-// rescue does not catch it either, because that only tests for a ZERO-width or
-// ZERO-height rect (AtlasPacking.cpp: `cr.degenerate = (cr.w <= 0 || cr.h <= 0)`)
-// while a ribbon has a large w and a small-but-positive h. It therefore entered
-// fitToResolution's global solve, whose binding term is MAX DIMENSION -- every
-// chart shrinks until the widest one fits -- and so it set the page scale for
-// every sibling. (Not the sum-of-w*h term: a ribbon's bbox area is near zero.)
-//
-// Measured on a real mesh (Ignatius, 536k faces, cutToDisk on): one triangle
-// spanning 4092 of 4096 texels held triangle coverage at 0.0189, against 0.2017
-// once bounded and 0.2226 on 0.3.0, with occupancy still reporting a plausible
-// 0.196 and no error anywhere. Assert the
-// invariant that actually broke -- adding one degenerate chart must not destroy
-// the atlas -- rather than the >=1-texel rect floor, which the packer clamps and
-// which therefore holds even under total collapse.
+// extent is small. A ribbon (tiny but positive uvArea, huge raw extent) used to
+// leave NormalizeChartDensity unnormalized, and PackAtlas's degenerate rescue
+// only catches a ZERO-width or ZERO-height rect — so it entered fitToResolution's
+// global solve, whose binding term is MAX DIMENSION, and set the page scale for
+// every sibling (a 12x coverage loss on a real mesh; CHANGELOG 0.3.1). Assert
+// the invariant that actually broke — adding one degenerate chart must not
+// destroy the atlas — rather than the >=1-texel rect floor, which the packer
+// clamps and which therefore holds even under total collapse.
 // ---------------------------------------------------------------------------
 TEST(PackAtlas, LargeExtentSliverDoesNotSetPageScale)
 {
-	// `uvHeight` sets how badly the sliver is shaped, and the three values walk
-	// the whole ladder of ways a chart can claim page it has not earned:
-	//
-	//   4.0  — extent/sqrt(uvArea) ratio 54.8, magnification 0.013. NOT a
-	//          degenerate flatten at all: a chart with real area that is simply
-	//          very long. This is the field shape — measured at ratio 55.4 on a
-	//          471k-face Ignatius mesh with every knob off, where its 8 816-texel
-	//          extent (2.15x a 4096 page) set the packer's global k and cost 21%
-	//          of coverage. Only the page clamp can catch it, so it is the case
-	//          that pins maxExtentRatio's calibration.
-	//   1e-3 — ratio 3 464, magnification ~816: still under the maxScaleMagnitude
-	//          area guard, so again only the page clamp can catch it.
-	//   1e-9 — ratio 3.5e6, magnification ~2.6e7: over the area guard, so it
-	//          takes the degenerate-flatten branch — the one the original code
-	//          skipped into raw UVs.
-	//
-	// All three must hold. The synthetic charts total 204 world units against the
-	// sliver's 2, so D = 256/sqrt(206) and the sliver crosses the page at ratio
-	// ~10 — well inside the gap between real ribbons (>=55) and the widest chart
-	// any healthy mesh produces (3.3 measured across 86k-chart Truck, 78k-chart
-	// Ignatius, and the 5-mesh quality corpus).
+	// The three uvHeight values walk every way a chart can claim page it has
+	// not earned; all must hold:
+	//   4.0  — extent/sqrt(uvArea) ratio ~55, magnification 0.013: NOT a
+	//          degenerate flatten, just a chart with real area that is very
+	//          long — the field shape, which only the page clamp catches (the
+	//          case that pins maxExtentRatio's calibration).
+	//   1e-3 — ratio ~3500, magnification ~816: still under the
+	//          maxScaleMagnitude area guard, so again only the page clamp.
+	//   1e-9 — ratio 3.5e6, magnification ~2.6e7: over the area guard — the
+	//          degenerate-flatten branch the original code skipped into raw UVs.
+	// The synthetic charts total 204 world units against the ribbon's 2, so
+	// D = 256/sqrt(206) and the ribbon crosses the page at ratio ~10 — inside
+	// the gap between real ribbons (>= 55) and the widest healthy chart (~3.3).
 	auto coverageOf = [](float uvHeight) {
 		Mesh mesh;
-		std::vector<unsigned> faceChart;
-		unsigned numCharts = 0;
-		BuildSyntheticCharts(mesh, faceChart, numCharts, 8u);
-
-		if (uvHeight > 0.f) {
-			// World area 2.0, a near-collinear UV triangle, raw UV extent 6000 --
-			// the slit-ribbon shape: negligible area over an enormous span.
-			const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
-			mesh.vertices.push_back({100.f, 0.f, 0.f});
-			mesh.vertices.push_back({102.f, 0.f, 0.f});
-			mesh.vertices.push_back({102.f, 2.f, 0.f});
-			mesh.faces.push_back({base, base + 1, base + 2});
-			faceChart.push_back(8u);
-			mesh.faceTexcoords.push_back({0.f, 0.f});
-			mesh.faceTexcoords.push_back({6000.f, 0.f});
-			mesh.faceTexcoords.push_back({6000.f, uvHeight});
-			numCharts = 9u;
-		}
-
-		AtlasParams params;
-		params.resolution = 256;
-		params.padding = 2;
-		params.fitToResolution = true; // the vulnerable path (GenerateAtlas default)
-
-		NormalizeChartDensity(mesh, faceChart, numCharts, params);
-		const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
+		const AtlasResult res = PackRibbonFixture(uvHeight, mesh);
 		for (const Mesh::TexCoord& uv : mesh.faceTexcoords) {
 			EXPECT_TRUE(std::isfinite(uv.x()));
 			EXPECT_TRUE(std::isfinite(uv.y()));
@@ -1563,7 +1550,7 @@ static void BuildTinyChartFixture(int k, Mesh& mesh, std::vector<unsigned>& face
 // Also verifies the per-chart pad vector cannot make charts bleed into each
 // other: every padded chart bbox must stay disjoint from every other chart's
 // on the same page (ChartBBoxes / BoundingRectsDisjoint, defined above).
-TEST(AtlasTest, TinyChartPaddingRaisesCoverage)
+TEST(AtlasTest, PerSizePaddingRaisesCoverage)
 {
 	constexpr int K = 64;
 	Mesh mesh;
@@ -1574,46 +1561,28 @@ TEST(AtlasTest, TinyChartPaddingRaisesCoverage)
 	uniform.padding = 4;
 	Mesh meshU = mesh;
 	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform);
-	halfmesh::AtlasParams tiny = uniform;
-	tiny.tinyChartSide = 8.f; // every 4-texel chart qualifies → pad 1
-	Mesh meshT = mesh;
-	const auto rT = halfmesh::PackAtlas(meshT, faceChart, K, tiny);
-	EXPECT_GT(rT.coverage, rU.coverage); // less gutter, same triangles
+	// Through either trigger: every fixture chart is 4 texels across and 2 faces.
+	for (const bool debrisTrigger : {false, true}) {
+		SCOPED_TRACE(debrisTrigger ? "debrisChartFaces" : "tinyChartSide");
+		halfmesh::AtlasParams reduced = uniform;
+		if (debrisTrigger)
+			reduced.debrisChartFaces = 2;
+		else
+			reduced.tinyChartSide = 8.f;
+		Mesh meshR = mesh;
+		const auto rR = halfmesh::PackAtlas(meshR, faceChart, K, reduced);
+		EXPECT_GT(rR.coverage, rU.coverage); // less gutter, same triangles
 
-	const auto rects = ChartBBoxes(meshT, faceChart, K, rT.chartPage, rT.width, rT.height);
-	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "tinyChartSide padding let charts overlap";
-}
-
-// Same mechanism as TinyChartPaddingRaisesCoverage above (same fixture, same
-// resolution=64 rationale), through the OTHER per-size trigger: every
-// BuildTinyChartFixture chart has exactly 2 faces, so debrisChartFaces=2
-// qualifies all of them (tinyChartSide stays 0, so only debris fires).
-TEST(AtlasTest, DebrisChartPaddingRaisesCoverage)
-{
-	constexpr int K = 64;
-	Mesh mesh;
-	std::vector<unsigned> faceChart;
-	BuildTinyChartFixture(K, mesh, faceChart);
-	halfmesh::AtlasParams uniform;
-	uniform.resolution = 64;
-	uniform.padding = 4;
-	Mesh meshU = mesh;
-	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform);
-	halfmesh::AtlasParams debris = uniform;
-	debris.debrisChartFaces = 2; // every 2-face chart qualifies → pad 1
-	Mesh meshD = mesh;
-	const auto rD = halfmesh::PackAtlas(meshD, faceChart, K, debris);
-	EXPECT_GT(rD.coverage, rU.coverage); // less gutter, same triangles
-
-	const auto rects = ChartBBoxes(meshD, faceChart, K, rD.chartPage, rD.width, rD.height);
-	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "debrisChartFaces padding let charts overlap";
+		const auto rects = ChartBBoxes(meshR, faceChart, K, rR.chartPage, rR.width, rR.height);
+		EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "per-size padding let charts overlap";
+	}
 }
 
 // Padding reporting: the nominal `AtlasParams::padding` does not tell a caller what
 // gutter the layout actually got, because the per-size knobs silently narrow it
 // for the charts they select. A consumer deciding whether the atlas can be
 // mipmapped needs the NARROWEST applied gutter, not the requested one. Same
-// fixture and resolution rationale as the two coverage tests above; here we
+// fixture and resolution rationale as the coverage test above; here we
 // assert the reported numbers rather than their effect.
 TEST(AtlasTest, ReportsNarrowestAppliedPadding)
 {
@@ -1658,27 +1627,7 @@ TEST(PackAtlas, ReportsFitScaleAndMaxChartExtent)
 {
 	auto packWith = [](float uvHeight) {
 		Mesh mesh;
-		std::vector<unsigned> faceChart;
-		unsigned numCharts = 0;
-		BuildSyntheticCharts(mesh, faceChart, numCharts, 8u);
-		if (uvHeight > 0.f) {
-			const auto base = static_cast<Mesh::VIndex>(mesh.vertices.size());
-			mesh.vertices.push_back({100.f, 0.f, 0.f});
-			mesh.vertices.push_back({102.f, 0.f, 0.f});
-			mesh.vertices.push_back({102.f, 2.f, 0.f});
-			mesh.faces.push_back({base, base + 1, base + 2});
-			faceChart.push_back(8u);
-			mesh.faceTexcoords.push_back({0.f, 0.f});
-			mesh.faceTexcoords.push_back({6000.f, 0.f});
-			mesh.faceTexcoords.push_back({6000.f, uvHeight});
-			numCharts = 9u;
-		}
-		AtlasParams params;
-		params.resolution = 256;
-		params.padding = 2;
-		params.fitToResolution = true;
-		NormalizeChartDensity(mesh, faceChart, numCharts, params);
-		return PackAtlas(mesh, faceChart, numCharts, params);
+		return PackRibbonFixture(uvHeight, mesh);
 	};
 
 	const AtlasResult plain = packWith(0.f);

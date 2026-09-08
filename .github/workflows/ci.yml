@@ -318,26 +318,17 @@ jobs:
           # Valgrind serialises the threads inside one process, so the only
           # parallelism left is across binaries -- and the suite is lopsided
           # enough that feed order decides the wall clock. Measured inside the
-          # 4-worker sweep itself (run 33430459632): segment_quality 46m,
-          # atlas 29m, parametrize 23m, flatten 13m, remesh 11m, holes 4m --
-          # 6 of 28 binaries, ~95% of the time, everything else seconds apiece.
+          # 4-worker sweep (run 33430459632): segment_quality 46m, atlas 29m,
+          # parametrize 23m, flatten 13m, remesh 11m, holes 4m -- 6 of 28
+          # binaries, ~95% of the time, everything else seconds apiece.
           #
-          # Longest first, so a pole is never left straggling after the cheap
-          # ones drained the workers. That ordering is load-bearing, not
-          # cosmetic: segment_quality was listed 5th back when it cost 11m, and
-          # that stale position is what cost it run 33425166826 once it had
-          # grown to 46m -- 5th in a 4-worker queue meant it did not start
-          # until a worker freed at 11m, inherited the remaining 29m of the
-          # then-40m budget, and was killed mid-run as the only binary of 28
-          # that never reported.
-          #
-          # The sweep is now bounded by ONE indivisible binary rather than by
-          # total work, so the next heavy test landing in segment_quality_test
-          # or atlas_test wants sharding (feed gtest filters, not whole
-          # binaries) rather than another budget bump.
-          #
-          # Purely a scheduling hint: a binary that is new, renamed or simply
-          # unlisted still runs, just later.
+          # Longest first: a pole listed behind cheaper binaries starts late and
+          # inherits only what is left of the budget (segment_quality, still
+          # listed 5th from when it cost 11m, was killed mid-run once it had
+          # grown to 46m). The sweep is now bounded by ONE indivisible binary
+          # rather than by total work, so the next heavy test wants gtest-filter
+          # sharding, not another budget bump. Purely a scheduling hint: a
+          # binary that is new, renamed or unlisted still runs, just later.
           SLOW="segment_quality_test atlas_test parametrize_test flatten_test
                 mesh_remesh_test mesh_holes_test"
           : > vg-order.txt

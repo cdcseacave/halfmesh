@@ -28,6 +28,7 @@
 
 #include "Corpus.h"
 #include "Metrics.h"
+#include "PartitionChecks.h"
 
 // Internal Module A<->B bridge header (src/ on this target's include path —
 // see tests/CMakeLists.txt): brings in detail::AtlasSegmentStats + the
@@ -148,79 +149,8 @@ QualityRow Measure(const char* name, const Mesh& input,
 	return row;
 }
 
-// ---------------------------------------------------------------------------
-// Partition/connectivity invariants — same contract ParametrizeTest.cpp's
-// ExpectValidPartition/AllChartsConnectedTopo pin on synthetic fixtures.
-// Duplicated locally (per-TU helper, same convention as this file's own
-// TestMeshPath) rather than shared: both are small, and the synthetic
-// fixtures never actually drive CarveFailureRegion (see
-// Parametrize.CarveRingsKeepsPartitionContracts's own comment), so this real
-// mesh is where these invariants are checked against a partition the carve
-// mechanism actually produced.
-// ---------------------------------------------------------------------------
-void ExpectValidPartition(const std::vector<unsigned>& fc, unsigned n, size_t numFaces)
-{
-	ASSERT_EQ(fc.size(), numFaces);
-	ASSERT_GE(n, 1u);
-	std::vector<char> seen(n, 0);
-	for (unsigned c : fc) {
-		ASSERT_LT(c, n) << "chart id out of range";
-		seen[c] = 1;
-	}
-	for (unsigned c = 0; c < n; ++c)
-		EXPECT_TRUE(seen[c]) << "chart " << c << " is empty (ids not compact)";
-}
-
-bool AllChartsConnectedTopo(const Mesh& m, const std::vector<unsigned>& fc, unsigned n)
-{
-	const halfmesh::HalfMesh& hm = m.halfMesh;
-	const size_t nf = m.faces.size();
-	const bool hasTexblobs = m.faceTexblobs.size() == m.faces.size();
-	auto topoNb = [&](halfmesh::HalfMesh::HIndex iHe) -> halfmesh::HalfMesh::FIndex {
-		const halfmesh::HalfMesh::HIndex tw = hm.HeTwin(iHe);
-		if (hm.HeIsBoundary(iHe) || hm.HeIsBoundary(tw))
-			return math::NO_ID;
-		if (hm.EDegree(hm.HeEdge(iHe)) != 2)
-			return math::NO_ID;
-		const halfmesh::HalfMesh::FIndex nb = hm.HeFace(tw);
-		if (nb == math::NO_ID)
-			return math::NO_ID;
-		if (hasTexblobs && m.faceTexblobs[hm.HeFace(iHe)] != m.faceTexblobs[nb])
-			return math::NO_ID;
-		return nb;
-	};
-	std::vector<char> visited(nf, 0);
-	for (unsigned c = 0; c < n; ++c) {
-		size_t seed = nf, total = 0;
-		for (size_t f = 0; f < nf; ++f)
-			if (fc[f] == c) {
-				if (seed == nf)
-					seed = f;
-				++total;
-			}
-		if (seed == nf)
-			continue; // empty chart — ExpectValidPartition already flags this
-		std::queue<size_t> q;
-		q.push(seed);
-		visited[seed] = 1;
-		size_t count = 1;
-		while (!q.empty()) {
-			const size_t f = q.front();
-			q.pop();
-			for (halfmesh::HalfMesh::HIndex iHe : hm.FAdjacentHalfedges(static_cast<halfmesh::HalfMesh::FIndex>(f))) {
-				const halfmesh::HalfMesh::FIndex nb = topoNb(iHe);
-				if (nb == math::NO_ID || visited[nb] || fc[nb] != c)
-					continue;
-				visited[nb] = 1;
-				++count;
-				q.push(nb);
-			}
-		}
-		if (count != total)
-			return false; // chart c is disconnected via topo edges
-	}
-	return true;
-}
+using hmtest::checks::AllChartsConnectedTopo;
+using hmtest::checks::ExpectValidPartition;
 
 } // namespace
 
@@ -326,105 +256,52 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 	Measure("UVSphere-on", sphere, on);
 }
 
-// Failure-localized carve: a property, not exact counts (build-flag
-// sensitive — see file header). Carving a folding chart into {small local
-// region, the rest} instead of blindly PCA-bisecting it can only ever match or
-// reduce the final chart count on a real mesh: a localized failure that used
-// to cascade into several bisection fragments now costs one extra chart.
-//
-// Also asserts the carve run actually ENGAGES the repair wave (repairSplits >
-// 0 via the cache-aware detail::SegmentCharts + AtlasSegmentStats overload —
-// same single segmentation call, just with a stats out-param, not a third
-// invocation), and that its resulting partition still satisfies the same
-// validity/connectivity contract Parametrize.CarveRingsKeepsPartitionContracts
-// pins on a synthetic fixture. That synthetic fixture never actually drives
-// CarveFailureRegion (its own comment notes the split strategy only changes
-// WHICH pieces a folding chart lands in — and the fixture there never folds
-// under the flip repair to begin with), so this real mesh — which measurably
-// engages both the repair wave and the carve path — is where the invariants
-// are checked against a partition carve actually shaped.
-//
-// Two more knob combinations share that baseline (nBase) and mesh copy
-// pattern — foldRescueSlits alone, then combined with repairCarveRings — one
-// extra detail::SegmentCharts invocation each. Evidence that the rescue
-// mechanism actually engages on this mesh lives in tests/FlattenTest.cpp's
-// FoldRescueSlitRescuesAtLeastOneRealMeshChart (3 of 133 charts folding under
-// the pre-repair segmentation get rescued).
-//
-// SCOPE — these are observations on THIS mesh as loaded, not guarantees.
-// "A rescued chart ships as one chart instead of being split, so the count can
-// only drop" does NOT hold in general: the repair and the post-repair merge
-// run as an iterative loop, so changing the split predicate perturbs which
-// partition enters the next round, and the fixed point can land either way.
-// Measured 2026-08-31 on this same mesh after Mesh::RemoveDuplicateVertices /
-// RemoveDegenerateFaces / RemoveUnreferencedVertices — the preprocessing
-// GenerateAtlas and the Python hm.unwrap() path apply — foldRescueSlits
-// 0/1/2/3 gives 2708 / 2734 / 2852 / 2766 charts: the knob costs charts, and
-// non-monotonically. Which side of the baseline the fixed point lands on is
-// not even stable across builds of the SAME input: a -march=native build
-// measured 2617 → 2666 for the slits arm. So only the CARVE arm asserts a
-// decrease (it is this test's namesake claim, and holds across every measured
-// platform and build); the slit arms assert a bound, not monotonicity. See
-// docs/BENCHMARKS.md section 4 — the knob stays default-off for this reason.
+// Failure-localized carve and slit rescue on a real mesh: a property, not exact
+// counts (build-flag sensitive — see file header). Carving a folding chart into
+// {small local region, the rest} instead of blindly PCA-bisecting it can only
+// match or reduce the final chart count, so the carve arm asserts a decrease and
+// that the repair wave actually engaged (repairSplits > 0). The synthetic fixture
+// in Parametrize.SplitKnobsKeepPartitionContracts never folds, so this is where
+// a partition CarveFailureRegion actually shaped is checked. The slit arms assert
+// only a bound: the repair and the post-repair merge iterate to a fixed point
+// that a changed split predicate perturbs either way, and foldRescueSlits
+// measured non-monotone on this mesh (CHANGELOG 0.3.1, docs/BENCHMARKS.md §4).
+// What IS real is that a rescue either ships a folding chart as ONE chart or
+// falls through to the same split safety net the baseline used, so the count
+// stays in the baseline's neighbourhood.
 TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
 {
 	Mesh mesh;
 	if (!mesh.Load(TestMeshPath())) {
 		GTEST_SKIP() << "tests/data/mesh.ply not found";
 	}
-	halfmesh::ParametrizeParams base; // bisect (default)
-	halfmesh::ParametrizeParams carve;
-	carve.repairCarveRings = 2;
-	std::vector<unsigned> fcBase, fcCarve;
-	Mesh meshB = mesh, meshC = mesh;
+	const halfmesh::ParametrizeParams base; // bisect (default)
+	Mesh meshB = mesh;
+	std::vector<unsigned> fcBase;
 	const unsigned nBase = halfmesh::SegmentCharts(meshB, base, fcBase);
-	halfmesh::detail::AtlasSegmentStats statsCarve;
-	const unsigned nCarve = halfmesh::detail::SegmentCharts(meshC, carve, fcCarve, nullptr, &statsCarve);
-	std::printf("[segment-quality] carve: nBase=%u nCarve=%u repairSplits=%u\n",
-	            nBase, nCarve, statsCarve.repairSplits);
-	EXPECT_LE(nCarve, nBase); // the whole point; equality allowed (no folds → no carves)
-	EXPECT_GT(statsCarve.repairSplits, 0u)
-	    << "fixture must actually engage the repair wave, or this comparison is vacuous";
-	ExpectValidPartition(fcCarve, nCarve, meshC.faces.size());
-	EXPECT_TRUE(AllChartsConnectedTopo(meshC, fcCarve, nCarve))
-	    << "the carve-produced partition must still be topo-connected per chart";
 
-	// Curvature-slit fold rescue: same one-extra-SegmentCharts-call pattern
-	// as the carve run above, reusing nBase as the baseline (no second baseline
-	// recomputation). Unlike carve, this arm asserts NO decrease, because the
-	// knob does not have one to give: the SCOPE note above measured it COSTING
-	// charts, non-monotonically (0/1/2/3 → 2708/2734/2852/2766 on the cleaned
-	// mesh), and a -march=native build lands the same way on the mesh as loaded
-	// here (2617 → 2666). Asserting ≤ here would contradict that note and pin a
-	// fixed point that is floating-point-implementation dependent. What IS real
-	// is that the rescue cannot shatter the partition: each attempt either
-	// ships a folding chart as ONE chart with an extra seam, or falls through
-	// to the very split safety net the baseline already used, so the count
-	// stays in the baseline's neighbourhood either way.
-	halfmesh::ParametrizeParams slits;
-	slits.foldRescueSlits = 2;
-	std::vector<unsigned> fcSlits;
-	Mesh meshS = mesh;
-	const unsigned nSlits = halfmesh::SegmentCharts(meshS, slits, fcSlits);
-	std::printf("[segment-quality] slits: nBase=%u nSlits=%u\n", nBase, nSlits);
-	EXPECT_LE(nSlits, nBase + nBase / 10) << "the slit rescue must not inflate the chart count";
-	ExpectValidPartition(fcSlits, nSlits, meshS.faces.size());
-	EXPECT_TRUE(AllChartsConnectedTopo(meshS, fcSlits, nSlits))
-	    << "the slit-rescue partition must still be topo-connected per chart";
-
-	// Both knobs together (carve + slit compose — see
-	// Parametrize.CarveAndFoldRescueSlitsKeepsPartitionContracts): one more
-	// SegmentCharts call, same baseline reuse. Bounded, not monotone, for the
-	// same reason as the slits arm — it contains one.
-	halfmesh::ParametrizeParams both;
-	both.repairCarveRings = 2;
-	both.foldRescueSlits = 2;
-	std::vector<unsigned> fcBoth;
-	Mesh meshCS = mesh;
-	const unsigned nBoth = halfmesh::SegmentCharts(meshCS, both, fcBoth);
-	std::printf("[segment-quality] carve+slits: nBase=%u nBoth=%u\n", nBase, nBoth);
-	EXPECT_LE(nBoth, nBase + nBase / 10) << "carve+slits must not inflate the chart count";
-	ExpectValidPartition(fcBoth, nBoth, meshCS.faces.size());
-	EXPECT_TRUE(AllChartsConnectedTopo(meshCS, fcBoth, nBoth))
-	    << "the carve+slit-rescue partition must still be topo-connected per chart";
+	struct Arm
+	{
+		const char* name;
+		unsigned carveRings, slits;
+	};
+	for (const Arm& arm : {Arm{"carve", 2, 0}, Arm{"slits", 0, 2}, Arm{"carve+slits", 2, 2}}) {
+		SCOPED_TRACE(arm.name);
+		halfmesh::ParametrizeParams params;
+		params.repairCarveRings = arm.carveRings;
+		params.foldRescueSlits = arm.slits;
+		Mesh m = mesh;
+		std::vector<unsigned> fc;
+		halfmesh::detail::AtlasSegmentStats stats;
+		const unsigned n = halfmesh::detail::SegmentCharts(m, params, fc, nullptr, &stats);
+		std::printf("[segment-quality] %s: nBase=%u n=%u repairSplits=%u\n", arm.name, nBase, n, stats.repairSplits);
+		if (arm.slits == 0) {
+			EXPECT_LE(n, nBase); // the namesake claim; equality allowed (no folds → no carves)
+			EXPECT_GT(stats.repairSplits, 0u) << "fixture must actually engage the repair wave, or this comparison is vacuous";
+		} else {
+			EXPECT_LE(n, nBase + nBase / 10) << "the slit rescue must not inflate the chart count";
+		}
+		ExpectValidPartition(fc, n, m.faces.size());
+		EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n)) << "the partition must still be topo-connected per chart";
+	}
 }

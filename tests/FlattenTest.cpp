@@ -972,14 +972,11 @@ static Mesh MakeSpike(int n, float h, float R = 3.f)
 
 // ---------------------------------------------------------------------------
 // Flip-freedom is not sufficient to ship a chart. A chart whose map is
-// injective but stretched past any use must still be split, and with NO
-// distortion budget configured — developableMaxUvDistortion defaults to 0, and
-// before this bar existed that default meant "no distortion check at all", so
-// such a chart shipped. Measured on a 471 814-face Ignatius at defaults, that
-// path shipped 31 charts above the bar, the worst at symmetric-Dirichlet 3.3e8
-// (a ~18 000x stretch), while the injectivity fallback ladder in
-// ParametrizeCharts would have refused to SHIP anything above 200 — the two
-// disagreed, and the repair's acceptance is the one that decides.
+// injective but stretched past any use must still be split, even with NO
+// distortion budget configured: developableMaxUvDistortion defaults to 0, which
+// selects the internal ship-ability bar (kShipMaxSymDir) rather than no check —
+// before that, the repair accepted charts the injectivity ladder in
+// ParametrizeCharts would have refused to ship (CHANGELOG 0.3.1).
 //
 // The `1e9` arm is what makes this a distortion test rather than a fold test:
 // the SAME chart ships when the budget is lifted, so its map is flip-free and

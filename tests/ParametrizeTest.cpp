@@ -29,6 +29,7 @@
 #include <gtest/gtest.h>
 
 #include "Corpus.h"
+#include "PartitionChecks.h"
 
 // Internal Module A<->B bridge header (src/ on this target's include path — see
 // tests/CMakeLists.txt): brings in the cache-aware detail::SegmentCharts /
@@ -108,79 +109,8 @@ Mesh MakeCube()
 	return m;
 }
 
-// ---------------------------------------------------------------------------
-// Property: valid partition. Every face has a chart id in [0, N).
-// ---------------------------------------------------------------------------
-void ExpectValidPartition(const std::vector<unsigned>& fc, unsigned n, size_t numFaces)
-{
-	ASSERT_EQ(fc.size(), numFaces);
-	ASSERT_GE(n, 1u);
-	std::vector<char> seen(n, 0);
-	for (unsigned c : fc) {
-		ASSERT_LT(c, n) << "chart id out of range";
-		seen[c] = 1;
-	}
-	for (unsigned c = 0; c < n; ++c)
-		EXPECT_TRUE(seen[c]) << "chart " << c << " is empty (ids not compact)";
-}
-
-// ---------------------------------------------------------------------------
-// Property: each chart is a single connected face set over TOPO edges — every
-// edge EXCEPT the seams a chart may never span (mesh-border, non-manifold,
-// texblob-border). This matches the developable contract: charts span creases
-// freely when the surface is developable across them, so connectivity is checked
-// across creases too — only true topological/material seams block traversal.
-// ---------------------------------------------------------------------------
-bool AllChartsConnectedTopo(const Mesh& m, const std::vector<unsigned>& fc, unsigned n)
-{
-	const HalfMesh& hm = m.halfMesh;
-	const size_t nf = m.faces.size();
-	const bool hasTexblobs = m.faceTexblobs.size() == m.faces.size();
-	auto topoNb = [&](HalfMesh::HIndex iHe) -> HalfMesh::FIndex {
-		const HalfMesh::HIndex tw = hm.HeTwin(iHe);
-		if (hm.HeIsBoundary(iHe) || hm.HeIsBoundary(tw))
-			return math::NO_ID;
-		if (hm.EDegree(hm.HeEdge(iHe)) != 2)
-			return math::NO_ID;
-		const HalfMesh::FIndex nb = hm.HeFace(tw);
-		if (nb == math::NO_ID)
-			return math::NO_ID;
-		if (hasTexblobs && m.faceTexblobs[hm.HeFace(iHe)] != m.faceTexblobs[nb])
-			return math::NO_ID;
-		return nb;
-	};
-	std::vector<char> visited(nf, 0);
-	for (unsigned c = 0; c < n; ++c) {
-		size_t seed = nf, total = 0;
-		for (size_t f = 0; f < nf; ++f)
-			if (fc[f] == c) {
-				if (seed == nf)
-					seed = f;
-				++total;
-			}
-		if (seed == nf)
-			return false; // empty chart
-		std::queue<size_t> q;
-		q.push(seed);
-		visited[seed] = 1;
-		size_t count = 1;
-		while (!q.empty()) {
-			const size_t f = q.front();
-			q.pop();
-			for (HalfMesh::HIndex iHe : hm.FAdjacentHalfedges(static_cast<HalfMesh::FIndex>(f))) {
-				const HalfMesh::FIndex nb = topoNb(iHe);
-				if (nb == math::NO_ID || visited[nb] || fc[nb] != c)
-					continue;
-				visited[nb] = 1;
-				++count;
-				q.push(nb);
-			}
-		}
-		if (count != total)
-			return false; // chart c is disconnected via topo edges
-	}
-	return true;
-}
+using hmtest::checks::AllChartsConnectedTopo;
+using hmtest::checks::ExpectValidPartition;
 
 // Flatten the partition and count FOLDS: per chart, the smaller of its positive-
 // vs negative-UV-area face counts (a flip-free chart has every face one sign). A
@@ -290,80 +220,38 @@ TEST(Parametrize, DistanceTermKeepsPartitionContracts)
 	    << "distance term must not break the flip-free guarantee";
 }
 
-// Failure-localized carve (repairCarveRings > 0) must preserve every
-// partition contract the blind-bisection repair does: validity, topo-connectivity,
-// the flip-free guarantee. Same fixture as WavyGridFlipFree/DistanceTermKeeps...
-// above — carving is an alternate split strategy inside the same repair loop, so
-// it can only ever change WHICH pieces a folding chart is split into, never the
-// invariants the loop enforces.
-TEST(Parametrize, CarveRingsKeepsPartitionContracts)
+// The opt-in split knobs — repairCarveRings (an alternate split strategy inside
+// the same repair loop) and foldRescueSlits (a rescue INSIDE FlattenChart, before
+// the repair's fold verdict) — alone and together must preserve every partition
+// contract the split-only repair does: validity, topo-connectivity, the
+// flip-free guarantee. Knob-doesn't-corrupt smoke tests: MakeWavyGrid(10,10)
+// segments to a chart that never folds, so neither mechanism engages here — the
+// engagement coverage is FlattenTest's FoldRescueSlitRescuesAtLeastOneRealMeshChart
+// and SegmentQualityTest's mesh.ply runs.
+TEST(Parametrize, SplitKnobsKeepPartitionContracts)
 {
-	Mesh m = MakeWavyGrid(10, 10);
-	m.ListHalfEdges();
-	m.ComputeFaceNormals();
+	struct Arm
+	{
+		const char* name;
+		unsigned carveRings, slits;
+	};
+	for (const Arm& arm : {Arm{"carve", 2, 0}, Arm{"slits", 0, 2}, Arm{"carve+slits", 2, 2}}) {
+		SCOPED_TRACE(arm.name);
+		Mesh m = MakeWavyGrid(10, 10);
+		m.ListHalfEdges();
+		m.ComputeFaceNormals();
 
-	ParametrizeParams params;
-	params.repairCarveRings = 2;
-	std::vector<unsigned> fc;
-	const unsigned n = SegmentCharts(m, params, fc);
+		ParametrizeParams params;
+		params.repairCarveRings = arm.carveRings;
+		params.foldRescueSlits = arm.slits;
+		std::vector<unsigned> fc;
+		const unsigned n = SegmentCharts(m, params, fc);
 
-	ExpectValidPartition(fc, n, m.faces.size());
-	EXPECT_GE(n, 1u);
-	EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n));
-	EXPECT_EQ(CountFlattenFlips(m, fc, n, params), 0)
-	    << "the carve knob must not break the flip-free guarantee";
-}
-
-// Curvature-slit fold rescue (foldRescueSlits > 0) must preserve every
-// partition contract the split-only repair does: validity, topo-connectivity,
-// the flip-free guarantee. Same fixture as the tests above — the rescue only
-// changes what happens INSIDE FlattenChart before the repair's fold verdict,
-// never the segmentation/repair invariants. (This fixture does not exercise
-// the rescue mechanism itself — MakeWavyGrid(10,10) segments to a single chart
-// that never even folds, as for the analogous
-// carve knob — so this is a knob-doesn't-corrupt smoke test; the real
-// engagement coverage is tests/FlattenTest.cpp's
-// FoldRescueSlitRescuesAtLeastOneRealMeshChart and
-// tests/SegmentQualityTest.cpp's mesh.ply runs.)
-TEST(Parametrize, FoldRescueSlitsKeepsPartitionContracts)
-{
-	Mesh m = MakeWavyGrid(10, 10);
-	m.ListHalfEdges();
-	m.ComputeFaceNormals();
-
-	ParametrizeParams params;
-	params.foldRescueSlits = 2;
-	std::vector<unsigned> fc;
-	const unsigned n = SegmentCharts(m, params, fc);
-
-	ExpectValidPartition(fc, n, m.faces.size());
-	EXPECT_GE(n, 1u);
-	EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n));
-	EXPECT_EQ(CountFlattenFlips(m, fc, n, params), 0)
-	    << "the fold-rescue-slit knob must not break the flip-free guarantee";
-}
-
-// Both knobs (repairCarveRings and foldRescueSlits) together: they
-// compose (carve/bisect splits a chart the repair rejects; the slit rescue
-// runs INSIDE FlattenChart before that verdict is even reached) — same
-// partition contracts must hold with both on at once.
-TEST(Parametrize, CarveAndFoldRescueSlitsKeepsPartitionContracts)
-{
-	Mesh m = MakeWavyGrid(10, 10);
-	m.ListHalfEdges();
-	m.ComputeFaceNormals();
-
-	ParametrizeParams params;
-	params.repairCarveRings = 2;
-	params.foldRescueSlits = 2;
-	std::vector<unsigned> fc;
-	const unsigned n = SegmentCharts(m, params, fc);
-
-	ExpectValidPartition(fc, n, m.faces.size());
-	EXPECT_GE(n, 1u);
-	EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n));
-	EXPECT_EQ(CountFlattenFlips(m, fc, n, params), 0)
-	    << "carve + fold-rescue-slit together must not break the flip-free guarantee";
+		ExpectValidPartition(fc, n, m.faces.size());
+		EXPECT_GE(n, 1u);
+		EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n));
+		EXPECT_EQ(CountFlattenFlips(m, fc, n, params), 0) << "the knob must not break the flip-free guarantee";
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -226,6 +226,19 @@ between Modules A and B.
   so the chart-id labelling and the texcoord writeback are untouched. Best on moderately-noisy MVS;
   on very-noisy sliver meshes it opens sliver-dominated charts the split cannot rescue (off by
   default for that reason). See `docs/BENCHMARKS.md` §4.
+- **`repair_carve_rings`** (default 0 = off). When a chart folds, the repair first tries to carve
+  off the faces within N `TopoNeighbor` rings of the offending triangles (`FoldDiagnosis` — the
+  faces `CountRealFlips` / `ChartUVSelfOverlaps` flagged), so one localized failure costs ONE
+  small extra chart instead of a PCA-bisection cascade. Falls back to the bisection when the
+  failure is not localized (region ≥ half the chart, or either side not a single topo-connected
+  blob), so the termination argument is unchanged. `2` is the sane on-value.
+- **`fold_rescue_slits`** (default 0 = off). Inside `FlattenChart`, a chart that folds is cut
+  from its worst interior vertex (largest quantized angle defect, restricted to fold-incident
+  vertices when the failure is localized) to the boundary and re-flattened, up to N times, so it
+  ships as ONE chart with one extra seam instead of ≥ 2 padded rects. Lives in the shipper, so the
+  repair verdict and the shipped map agree on every path (the `cut_to_disk` contract); a chart
+  still folding after the last slit falls through to the carve/bisect safety net. Non-monotone
+  and can cost charts — see `docs/BENCHMARKS.md` §4.
 
 ### Module B — per-chart flattening (`src/Parametrize.cpp`)
 
@@ -273,6 +286,8 @@ primitives.
 | `developable_flip_repair_rounds` | 16 | flip/topology repair (0 = off). |
 | `developable_max_uv_distortion` | 0.0 | symmetric-Dirichlet split cap τ (floor 4.0; ~4.4 on-value). 0 selects the internal ship-ability bar (200), **not** off. |
 | `cut_to_disk` | false (**opt-in**) | Seamster cut-to-disk instead of bisecting non-disk charts. |
+| `repair_carve_rings` | 0 (**opt-in**) | failure-localized carve before PCA bisection in the flip repair; `2` on-value. |
+| `fold_rescue_slits` | 0 (**opt-in**) | curvature-slit fold rescue inside `FlattenChart`, up to N slits; `2` on-value. |
 | `face_weight` | area | per-face importance hook (signal-aware weighting). |
 
 ### Module B — flattening

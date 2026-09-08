@@ -194,8 +194,9 @@ None of these changes default output. All four measured on both mesh classes
   monotone and can cost charts.** The repair and the post-repair merge run as
   an iterative loop, so changing the split predicate perturbs which partition
   enters the next round, and the fixed point can land either way. Measured on
-  `tests/data/mesh.ply` through the `GenerateAtlas` path at 4096²/padding 2,
-  `foldRescueSlits` 0 → 1 → 2 → 3:
+  `tests/data/mesh.ply` through the `GenerateAtlas` path at 4096²/padding 2
+  with `cutToDisk` off (with it on, the same knob reads −9.9 % on this mesh —
+  `docs/BENCHMARKS.md` §4), `foldRescueSlits` 0 → 1 → 2 → 3:
 
   | slits | 0 | 1 | 2 | 3 |
   |---|--:|--:|--:|--:|
@@ -589,6 +590,7 @@ Initial release.
   UV-atlas and remeshing benchmarks (`HALFMESH_BUILD_BENCH`), ASan+UBSan
   (`HALFMESH_SANITIZE`), and verbose atlas diagnostics (`HALFMESH_ATLAS_DEBUG`).
 
+[0.3.1]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.3.1
 [0.3.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.1.0
