@@ -708,23 +708,21 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 			tryPush(r, n);
 	}
 
-	for (FIndex f = 0; f < s.numFaces; ++f)
-		chart[f] = find(chart[f]);
-	// Translate mergedPairs' pre-Compact root ids to the shipped compacted chart
-	// ids: pick one representative face per root (chart[] already holds final
-	// roots above), then re-read chart[] after Compact() remaps in place — same
-	// root always maps to the same new id, so the representative's new id IS
-	// the merged chart's compacted id.
-	std::unordered_map<unsigned, Mesh::FIndex> rootFace;
-	if (mergedPairs != nullptr)
-		for (FIndex f = 0; f < s.numFaces; ++f)
-			rootFace.try_emplace(chart[f], f);
+	// Resolve every face to its final root, remembering one representative face
+	// per root so mergedPairs' root ids can be read back as compacted chart ids
+	// after Compact() remaps chart[] in place.
+	std::vector<Mesh::FIndex> rootFace(mergedPairs != nullptr ? numCharts : 0u, NONE);
+	for (FIndex f = 0; f < s.numFaces; ++f) {
+		const unsigned r = find(chart[f]);
+		chart[f] = r;
+		if (mergedPairs != nullptr && rootFace[r] == NONE)
+			rootFace[r] = f;
+	}
 	const unsigned nc = Compact(chart);
 	if (mergedPairs != nullptr)
 		for (auto& [fa, fb, root] : *mergedPairs) {
-			const auto it = rootFace.find(find(root));
-			ASSERT(it != rootFace.end());
-			root = chart[it->second];
+			ASSERT(rootFace[find(root)] != NONE);
+			root = chart[rootFace[find(root)]];
 		}
 	return nc;
 }
@@ -1192,41 +1190,20 @@ void BisectFaces(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
 	}
 }
 
-// Is `region` a single topo-connected blob (edges staying inside `region`)?
-// Shared by CarveFailureRegion to confirm BOTH the carved-off piece and what
-// remains are each one connected blob, not a scatter of fragments — the
-// property its own bisection-vs-cascade trade-off assumes (see below).
-bool IsTopoConnected(const SegmentState& s, const std::unordered_set<Mesh::FIndex>& region)
-{
-	if (region.empty())
-		return true;
-	std::unordered_set<Mesh::FIndex> visited;
-	std::queue<Mesh::FIndex> q;
-	const Mesh::FIndex seed = *region.begin();
-	visited.insert(seed);
-	q.push(seed);
-	while (!q.empty()) {
-		const Mesh::FIndex f = q.front();
-		q.pop();
-		for (HIndex he : s.hm.FAdjacentHalfedges(f)) {
-			const FIndex nb = s.TopoNeighbor(he);
-			if (nb != NONE && region.count(nb) && visited.insert(nb).second)
-				q.push(nb);
-		}
-	}
-	return visited.size() == region.size();
-}
-
 // Carve the failure out of a folding chart: A = the faces within `rings`
-// TopoNeighbor hops of any offending face (the FoldDiagnosis), B = the rest.
-// One localized failure then costs one small chart, where the PCA bisection
-// halves the chart and cascades. Returns false — caller falls back to
-// BisectFaces — when the failure is not localized (region ≥ half the chart,
-// or A/B are not each a single topo-connected blob — see below) or a side
-// would be empty; the repair's termination argument is untouched because
-// every successful carve still yields strictly smaller pieces.
+// TopoNeighbor hops of any offending face (the FoldDiagnosis), B = the rest, so
+// one localized failure costs one small chart where the PCA bisection halves the
+// chart and cascades. Declines (false, A/B left empty — the caller falls back to
+// BisectFaces) when the failure is not localized: region ≥ half the chart, or
+// A / B not each a single topo-connected blob (a scattered diagnosis, or an ear
+// that severs the remainder, would hand ConnectedComponents many fragments from
+// ONE carve — the cascade this exists to avoid; measured, it regressed the count
+// past the bisection baseline). Every accepted carve yields two strictly smaller
+// pieces, so the repair's termination argument is untouched. `mark` is
+// ConnectedComponents' scratch buffer (face count, all-zero on entry and exit).
 bool CarveFailureRegion(const SegmentState& s, const std::vector<Mesh::FIndex>& faces,
                         const std::vector<Mesh::FIndex>& badFaces, unsigned rings,
+                        std::vector<char>& mark,
                         std::vector<Mesh::FIndex>& A, std::vector<Mesh::FIndex>& B)
 {
 	if (badFaces.empty() || badFaces.size() * 2 >= faces.size())
@@ -1253,36 +1230,14 @@ bool CarveFailureRegion(const SegmentState& s, const std::vector<Mesh::FIndex>& 
 	}
 	if (depth.size() * 2 >= faces.size())
 		return false; // not localized — the blind bisection handles it better
-	// Both pieces must themselves be single connected blobs — this method
-	// carves off THE (singular) neighborhood containing the failure, not a
-	// scatter of disjoint ring-islands around a widespread diagnosis, and not
-	// an ear that snakes through the chart and severs the remainder. Either
-	// would hand the caller's ConnectedComponents many fragments from ONE
-	// "carve" — exactly the cascade this method exists to avoid — so decline
-	// (fall back to BisectFaces) the same as a non-localized failure. Measured
-	// on the challenge fixture: without this guard a scattered diagnosis
-	// averages ~10 components per carve and the final chart count regresses
-	// above the blind-bisection baseline; with it, carve measurably beats
-	// bisection (SegmentQualityTest.cpp, CarveNeverIncreasesChartCountOnChallengeMesh).
-	// These two extra BFS passes are paid only here — on an ATTEMPTED carve
-	// that already passed the size guard above — never on the (default) off
-	// path or on a chart that isn't folding.
-	std::unordered_set<Mesh::FIndex> aSet;
-	aSet.reserve(depth.size());
-	for (const auto& kv : depth)
-		aSet.insert(kv.first);
-	if (!IsTopoConnected(s, aSet))
-		return false;
-	std::unordered_set<Mesh::FIndex> bSet;
-	bSet.reserve(faces.size() - depth.size());
-	for (Mesh::FIndex f : faces)
-		if (!depth.count(f))
-			bSet.insert(f);
-	if (!IsTopoConnected(s, bSet))
-		return false;
 	for (Mesh::FIndex f : faces) // faces sorted → A and B stay sorted
 		(depth.count(f) ? A : B).push_back(f);
-	return !A.empty() && !B.empty();
+	if (ConnectedComponents(s, A, mark).size() != 1 || ConnectedComponents(s, B, mark).size() != 1) {
+		A.clear();
+		B.clear();
+		return false;
+	}
+	return true;
 }
 
 unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params,
@@ -1376,21 +1331,13 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 			}
 			const unsigned c = frontier[i];
 			std::vector<Mesh::FIndex> A, B;
-			// Failure-localized carve: try carving off the small neighborhood
-			// around the fold diagnosis first — one localized failure then costs
-			// ONE small extra chart instead of the PCA bisection's binary-tree
-			// cascade. Falls back to the unconditional bisect when the knob is off,
-			// there is no diagnosis (chart folded via the safety-net path), or the
-			// carve itself declines (failure not localized — see CarveFailureRegion).
-			bool carved = false;
-			if (params.repairCarveRings > 0 && !diags[i].badFaces.empty())
-				carved = CarveFailureRegion(s, fl[c], diags[i].badFaces,
-				                            params.repairCarveRings, A, B);
-			if (!carved) {
-				A.clear();
-				B.clear();
+			// Failure-localized carve (opt-in): carve off the small neighborhood
+			// around the fold diagnosis first; fall back to the PCA bisection when
+			// the knob is off, there is no diagnosis, or the carve declines.
+			const bool carved = params.repairCarveRings > 0 && !diags[i].badFaces.empty()
+			                    && CarveFailureRegion(s, fl[c], diags[i].badFaces, params.repairCarveRings, mark, A, B);
+			if (!carved)
 				BisectFaces(mesh, fl[c], A, B);
-			}
 			if (A.empty() || B.empty())
 				continue;
 			std::vector<std::vector<Mesh::FIndex>> comps = ConnectedComponents(s, A, mark);
@@ -1534,25 +1481,13 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 				if (dirtyFlag[c])
 					dirty.push_back(c);
 			if (dirty.empty()) {
-				// Nothing merged, but tryPush/pop still did real rejection work this
-				// round (budget/enclose vetoes) — record it (dirtyCharts=0,
-				// resplitCharts=0 vacuously) so an all-rejected round is still
-				// visible in stats->rounds instead of silently vanishing.
+				// Converged. Still record the round: its budget/enclose rejections
+				// are why nothing merged, and they should not vanish from stats.
 				if (stats != nullptr) {
-					roundStats.dirtyCharts = 0;
-					roundStats.resplitCharts = 0;
 					roundStats.chartsAfter = numCharts;
 					stats->rounds.push_back(roundStats);
-#ifdef HM_ATLAS_DEBUG
-					std::cerr << "[re-merge] round " << round << ": " << before << " -> " << numCharts
-					          << " charts (no merges accepted)"
-					          << " pushed=" << roundStats.pairsPushed
-					          << " budget-rejects=" << roundStats.pairsBudgetRejected
-					          << " enclose-rejects=" << roundStats.pairsEncloseRejected
-					          << " merges=" << roundStats.merges << "\n";
-#endif
 				}
-				break; // nothing merged — converged
+				break;
 			}
 			if (stats != nullptr)
 				roundStats.dirtyCharts = static_cast<unsigned>(dirty.size());
@@ -1660,7 +1595,8 @@ bool CarveFailureRegionForTest(Mesh& mesh, const std::vector<Mesh::FIndex>& face
 	const ParametrizeParams params;
 	SegmentState s(mesh, params);
 	Precompute(s);
-	return CarveFailureRegion(s, faces, badFaces, rings, A, B);
+	std::vector<char> mark(s.numFaces, 0);
+	return CarveFailureRegion(s, faces, badFaces, rings, mark, A, B);
 }
 } // namespace detail
 
@@ -1769,73 +1705,34 @@ float NormalizeChartDensity(Mesh& mesh,
 	// -----------------------------------------------------------------------
 	// Pre-compute per-chart scale factors.
 	std::vector<float> scale(numCharts, 0.f);
-	// A chart that leaves here with an unbounded UV bbox does not just waste its
-	// own slot — it sets the scale for every other chart. fitToResolution solves
-	// one global k, and its binding term is the MAX-DIMENSION constraint: every
-	// chart shrinks by whatever ratio makes the widest one fit the page. So one
-	// over-wide chart collapses the whole atlas to sub-texel size, silently.
+	// A chart that leaves here with an unbounded UV extent does not just waste
+	// its own slot: fitToResolution solves ONE global scale whose binding term is
+	// the max-dimension constraint, so every chart shrinks until the widest one
+	// fits, and a single over-wide chart collapses the whole atlas to sub-texel
+	// size, silently. The bound therefore has to be on the chart's SCALED EXTENT
+	// — area alone cannot see the shape that does this (cutToDisk slits a tube
+	// into a ribbon: negligible UV area over an enormous extent at an ordinary
+	// area magnification), and skipping such a chart, as the old guard did, left
+	// raw UVs of arbitrary magnitude that PackAtlas's zero-width/height rescue
+	// does not catch. Two bounds, for two different failures:
 	//
-	// The bound therefore has to be on the chart's SCALED EXTENT. Area alone
-	// cannot see the shape that does this: cutToDisk slits a tube into a ribbon
-	// — negligible UV area over an enormous extent — whose area magnification is
-	// perfectly ordinary (816 on the regression case in AtlasTest.cpp, far under
-	// any sane area cap) because bbox area >> triangle area for a ribbon. Nor is
-	// it enough to SKIP such a chart, which is what the old guard did: an
-	// unnormalized chart keeps whatever extent the flattener produced, and
-	// PackAtlas's degenerate rescue only catches a rect with zero width or
-	// height, so a ribbon (large w, small-but-positive h) passes straight into
-	// the global solve. Measured on Ignatius (536k faces, cutToDisk on): one
-	// ribbon left a single triangle spanning 4092 of the 4096 texels and dragged
-	// triangle coverage to 0.0189, against 0.2017 once bounded, while occupancy
-	// still reported a healthy-looking 0.196 and nothing errored.
-	//
-	// Two bounds, because two different things go wrong.
-	//
-	// (1) A collapsed flatten, in either packing mode. Past this magnification a
-	// chart carries essentially no UV area, so its extent is earning nothing;
-	// cap it at the side its own world area warrants. This is deliberately a
-	// test for collapse, not for elongation — genuinely elongated charts are
-	// common and must pass through untouched, and an aspect ceiling tight enough
-	// to be interesting (64:1) clipped real Truck charts at a cost of 9.7% of
-	// coverage.
+	// (1) A collapsed flatten (either packing mode): past this magnification the
+	//     chart carries essentially no UV area, so cap its extent at the side
+	//     its own world area warrants. A test for collapse, not elongation —
+	//     genuinely elongated charts are common and must pass untouched.
 	constexpr double maxScaleMagnitude = 1e4;
-	// (2) A chart wider than the page, when the atlas must fit one. Nothing
-	// wider is representable at any scale, so the clamp costs nothing real and
-	// removes the lever entirely. It is gated on the chart not EARNING its
-	// extent with area: `rawExtent / sqrt(uvArea)` is scale-invariant — 1 for a
-	// square chart, sqrt(aspect) for a ribbon. The gate is load-bearing: a mesh
-	// with few charts has charts that legitimately span most of the page, and an
-	// unconditional page clamp costs the 2-chart Cone 3.2% of occupancy.
-	//
-	// Note the gate judges ONLY charts already wider than the page — a chart's
-	// scaled extent is D*sqrt(worldArea)*ratio, so a high-ratio chart with little
-	// world area never reaches the clamp at all. That is what separates this from
-	// a universal aspect bound, which clamps by ratio alone: cutToDisk emits
-	// thousands of legitimate small high-ratio ribbons (measured max ratio 1700
-	// on Truck, 1244 on Ignatius, with ZERO charts over the page), and squashing
-	// those is what cost an aspect-8 bound 9.7% of Truck's coverage.
-	//
-	// Calibration, over every chart of two 4096^2 arms per mesh (471k-face
-	// Ignatius, 476k-face Truck, PGSR splat->mesh class) plus the 5-mesh quality
-	// corpus, splitting charts by whether they exceed the page:
-	//
-	//   legitimately over-page (corpus Cone/OpenCylinder/GridPlane)  ratio 1.4-1.9
-	//   healthy, all arms                                p50 2.1, p99.9 12-15
-	//   pathological over-page (the ribbons that set global k)       ratio 55-606
-	//
-	// 16 sits above the p99.9 of the worst-behaved (cutToDisk) distribution and
-	// 8.6x above the widest legitimate page-spanner, while staying 3.5x under the
-	// mildest ribbon observed. Erring low is deliberate: too low costs a few
-	// percent of occupancy on a low-chart-count mesh, while too high lets one
-	// chart collapse the atlas 10x. Since the ratio is sqrt(aspect), 16 admits
-	// charts up to 256:1.
+	// (2) A chart wider than the page, when the atlas must fit one: nothing
+	//     wider is representable at any scale, so clamping it costs nothing
+	//     real. Gated on the chart not EARNING its extent with area — the
+	//     scale-invariant rawExtent/sqrt(uvArea) is 1 for a square chart and
+	//     sqrt(aspect) for a ribbon — because a mesh with few charts has charts
+	//     that legitimately span the page (an unconditional clamp costs the
+	//     2-chart Cone 3.2 % of occupancy); and only charts already over the
+	//     page are judged, so cutToDisk's thousands of small legitimate ribbons
+	//     never reach it. 16 admits 256:1, sits above the p99.9 of every healthy
+	//     chart distribution measured (1.4–15) and well under the mildest
+	//     atlas-collapsing ribbon (55) — calibration in docs/BENCHMARKS.md §4.
 	constexpr double maxExtentRatio = 16.0;
-	// PackAtlas fits a single page whenever the density is auto-derived:
-	// GenerateAtlas hands NormalizeChartDensity the caller's params but packs
-	// with `packParams.fitToResolution = true` when texelsPerUnit == 0, so the
-	// flag on `params` alone does not tell us which mode we are normalising for.
-	const bool willFitToPage =
-	    params.fitToResolution || params.texelsPerUnit <= 0.f;
 
 	for (unsigned c = 0; c < numCharts; ++c) {
 		const ChartStats& cs = stats[c];
@@ -1850,22 +1747,11 @@ float NormalizeChartDensity(Mesh& mesh,
 		                                  static_cast<double>(cs.uvMaxY) - cs.uvMinY);
 		if (rawExtent > 0.0) {
 			double maxExtent = std::numeric_limits<double>::infinity();
-			if (mag > maxScaleMagnitude) {
-				// This chart's flatten is degenerate: it carries essentially no
-				// UV area, so its extent is not earning anything and must not be
-				// allowed to claim page. Bound it to the side its own world area
-				// warrants. (The old code skipped such a chart entirely, leaving
-				// raw UVs of arbitrary magnitude — the actual defect.)
-				maxExtent = density * std::sqrt(cs.worldArea);
-			}
-			if (willFitToPage && params.resolution > 0
-			    && rawExtent > maxExtentRatio * std::sqrt(cs.uvArea)) {
-				// This chart spans far more than its own UV area can justify, and
-				// the packer shrinks EVERY chart until the widest one fits — so
-				// left alone it sets the scale for all its siblings. Nothing wider
-				// than the page is representable at any scale anyway.
-				maxExtent = std::min(maxExtent, static_cast<double>(params.resolution));
-			}
+			if (mag > maxScaleMagnitude)
+				maxExtent = density * std::sqrt(cs.worldArea); // (1) collapsed flatten
+			if (params.fitToResolution && params.resolution > 0
+			    && rawExtent > maxExtentRatio * std::sqrt(cs.uvArea))
+				maxExtent = std::min(maxExtent, static_cast<double>(params.resolution)); // (2) over-page ribbon
 			s = std::min(s, maxExtent / rawExtent);
 		}
 		scale[c] = static_cast<float>(s);
@@ -1919,19 +1805,24 @@ AtlasResult GenerateAtlas(Mesh& mesh,
 	std::vector<unsigned> faceChart;
 	detail::ChartFlattenCache flattenCache;
 	const unsigned numCharts = detail::SegmentCharts(mesh, pparams, faceChart, &flattenCache);
-	if (numCharts == 0)
-		return AtlasResult{};
+	if (numCharts == 0) {
+		AtlasResult empty;
+		empty.minPadding = aparams.padding;
+		return empty;
+	}
 
 	detail::ParametrizeCharts(mesh, faceChart, numCharts, pparams, &flattenCache);
-	NormalizeChartDensity(mesh, faceChart, numCharts, aparams);
-	// When no explicit density is requested (texelsPerUnit == 0), target a
+	// When no explicit density is requested (texelsPerUnit <= 0), target a
 	// single atlas of the requested resolution (like xatlas) by enabling
 	// fit-to-resolution packing. When the caller DID request a density, honor
 	// their fitToResolution flag so they can preserve that density and overflow
-	// into multiple pages (texelsPerUnit > 0, fitToResolution = false).
+	// into multiple pages (texelsPerUnit > 0, fitToResolution = false). Decided
+	// once, here: NormalizeChartDensity's over-page extent bound reads the same
+	// flag, so both stages agree on whether the atlas must fit a page.
 	AtlasParams packParams = aparams;
-	if (aparams.texelsPerUnit == 0.f)
+	if (aparams.texelsPerUnit <= 0.f)
 		packParams.fitToResolution = true;
+	NormalizeChartDensity(mesh, faceChart, numCharts, packParams);
 	return PackAtlas(mesh, faceChart, numCharts, packParams);
 }
 

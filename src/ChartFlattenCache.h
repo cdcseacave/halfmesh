@@ -106,26 +106,20 @@ struct FoldDiagnosis
 };
 
 // Extended fold bridge: identical verdict; additionally, when `diag` is
-// non-null and the chart DOES fold, fills *diag with the offending faces
-// (global ids, sorted ascending, deduplicated) so the repair can carve
-// around them. Never affects the verdict, `out`'s artifacts, or any
-// threshold/exemption computed along the way — the diagnosis is gathered by a
-// second collector pass over the already-judged map, run only for folding
-// charts (the accept path above stays untouched).
+// non-null and the chart DOES fold, fills *diag with the offending faces so
+// the repair can carve around them. Never affects the verdict or `out`'s
+// artifacts — the diagnosis is collected from the already-judged map, only for
+// folding charts.
 bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
                     const ParametrizeParams& params, ChartFlattenSlot* out,
                     FoldDiagnosis* diag);
 
 // Segmentation instrumentation (opt-in via detail::SegmentCharts's trailing
-// `stats` out-param): per-stage chart counts + per-round post-repair-merge
-// counters, to diagnose whether postRepairMergeRounds is blocked by the
-// cone-budget gate, the wouldEnclose anti-fold veto, or accepted-then-resplit
-// churn (a merge that re-folds and gets bisected right back by the repair
-// wave). All counting happens in DevelopableMerge's serial heap-pop loop and
-// RepairDevelopableFlips' serial harvest — never from the parallel verdict
-// wave — so passing a non-null `stats` cannot alter any decision or introduce
-// a race. Defaults to nullptr everywhere: zero cost and zero behavior change
-// when absent.
+// `stats` out-param): per-stage chart counts plus, per post-repair merge round,
+// whether pairs were rejected by the cone budget, the wouldEnclose anti-fold
+// veto, or accepted and then split right back by the repair wave. Counted only
+// in the serial heap-pop loop and harvest, never in the parallel verdict wave,
+// so a non-null `stats` alters no decision; nullptr (the default) costs nothing.
 struct AtlasSegmentStats
 {
 	unsigned lloydCharts = 0; // after ConeLloydSegment + EnforceConnectivity

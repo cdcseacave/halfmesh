@@ -131,10 +131,10 @@ struct ParametrizeParams
 	unsigned repairCarveRings = 0;
 
 	// Distortion-bounded split: per-chart distortion budget τ for the
-	// flip-repair. A chart that is
-	// flip-FREE but whose SHIPPED map (full SLIM, area-weighted
-	// symmetric-Dirichlet) still exceeds τ is spatially bisected and its pieces
-	// re-checked, trading a few extra charts for far lower per-chart stretch.
+	// flip-repair. A chart that is flip-FREE but whose SHIPPED map (full SLIM,
+	// area-weighted symmetric-Dirichlet) still exceeds τ is spatially bisected
+	// and its pieces re-checked, trading a few extra charts for far lower
+	// per-chart stretch.
 	// τ = 4.0 is perfect isometry (the floor), so any value must exceed 4; ~4.4
 	// is the sane benchmark setting for a quality-first atlas.
 	//

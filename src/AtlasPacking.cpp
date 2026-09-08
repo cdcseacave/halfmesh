@@ -470,15 +470,15 @@ inline float ChartPad(const AtlasParams& params, float w, float h, unsigned face
 // error. The public rectangle API below is integral, hence the two thin wrappers
 // over the shared packer.
 //
-// `chartFaces` (size == numCharts) feeds the debris trigger; pads are
-// re-derived from THIS call's `crects` sizes every time, so a fit-to-resolution
-// probe that passes rescaled trial sizes gets pads recomputed against the
-// SCALED size, not the original.
+// `chartFaces` (size == numCharts) feeds the debris trigger. Pads are derived
+// from THIS call's `crects`, so a fit-to-resolution probe passing rescaled trial
+// sizes re-tiers against the SCALED size; `outPads` returns what was applied.
 void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
                const AtlasParams& params, unsigned pad,
                const std::vector<unsigned>& chartFaces,
                std::vector<Placement>& placements, unsigned& outPages,
-               unsigned& outPw, unsigned& outPh, float& outPackedArea)
+               unsigned& outPw, unsigned& outPh, float& outPackedArea,
+               std::vector<float>* outPads = nullptr)
 {
 	// Page dims: requested resolution grown to fit the largest padded chart, so
 	// every chart is placeable and nothing is dropped.
@@ -515,6 +515,8 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 	outPw = pageW;
 	outPh = pageH;
 	outPackedArea = static_cast<float>(packedArea);
+	if (outPads != nullptr)
+		*outPads = std::move(pads);
 }
 
 } // namespace
@@ -681,6 +683,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 	mesh.SyncFaces();
 	const size_t nf = mesh.faces.size();
 	AtlasResult result;
+	result.minPadding = params.padding; // nominal until a per-size knob narrows it
 	if (nf == 0 || numCharts == 0)
 		return result;
 
@@ -802,15 +805,13 @@ AtlasResult PackAtlas(Mesh& mesh,
 		cr.h = std::max(cr.h, 1.f);
 	}
 
-	// Per-size padding: one O(F) pass, counting faces per chart id, feeds
-	// the debrisChartFaces trigger (PackRects / the fit-solve coefficients
-	// below both re-derive each chart's own pad from this and its rect size).
+	// Per-chart face counts feed the debrisChartFaces trigger (ChartPad); only
+	// counted when that knob is on, so the default path skips the O(F) pass.
 	std::vector<unsigned> chartFaces(numCharts, 0u);
-	for (size_t fi = 0; fi < nf; ++fi) {
-		const unsigned cid = faceChart[fi];
-		if (cid < numCharts)
-			++chartFaces[cid];
-	}
+	if (params.debrisChartFaces > 0)
+		for (size_t fi = 0; fi < nf; ++fi)
+			if (faceChart[fi] < numCharts)
+				++chartFaces[faceChart[fi]];
 
 	// ------------------------------------------------------------------
 	// 1.5. Fit-to-resolution: globally rescale so the total PADDED chart area
@@ -850,14 +851,18 @@ AtlasResult PackAtlas(Mesh& mesh,
 			// than params.resolution — silently violating the documented one
 			// resolution² page contract (the shrink loop below only tested the
 			// page COUNT). Rotation cannot help: the long side must fit either way.
-			double maxDim = 0.0;
+			double maxDim = 0.0, maxDimPad = pad; // the widest chart's own gutter
 			for (unsigned c = 0; c < numCharts; ++c) {
 				if (crects[c].degenerate)
 					continue;
-				maxDim = std::max({maxDim, static_cast<double>(crects[c].w), static_cast<double>(crects[c].h)});
+				const double side = std::max(crects[c].w, crects[c].h);
+				if (side > maxDim) {
+					maxDim = side;
+					maxDimPad = ChartPad(params, crects[c].w, crects[c].h, chartFaces[c], pad);
+				}
 			}
-			if (maxDim > 0.0 && R > 2.0 * pad)
-				k = std::min(k, (R - 2.0 * pad) / maxDim);
+			if (maxDim > 0.0 && R > 2.0 * maxDimPad)
+				k = std::min(k, (R - 2.0 * maxDimPad) / maxDim);
 			// The single 0.82-fill solve is open-loop: if actual skyline waste exceeds
 			// ~18% (elongated / high-aspect charts) the pack overflows to a nearly-empty
 			// SECOND page at the same density, doubling texture memory instead of fitting
@@ -930,7 +935,8 @@ AtlasResult PackAtlas(Mesh& mesh,
 	std::vector<Placement> placements;
 	unsigned numPages = 0, pageW = 0, pageH = 0;
 	float packedAreaTotal = 0.f;
-	PackRects(crects, numCharts, params, pad, chartFaces, placements, numPages, pageW, pageH, packedAreaTotal);
+	std::vector<float> pads;
+	PackRects(crects, numCharts, params, pad, chartFaces, placements, numPages, pageW, pageH, packedAreaTotal, &pads);
 	for (unsigned c = 0; c < numCharts; ++c)
 		result.chartPage[c] = placements[c].page;
 
@@ -939,24 +945,17 @@ AtlasResult PackAtlas(Mesh& mesh,
 	result.height = pageH;
 	result.faceChart = faceChart; // copy so callers can verify per-face layout
 
-	// Layout diagnostics. `crects` is final here (fit-to-resolution has already
-	// applied kfinal above), and the pads are re-derived from exactly the inputs
-	// PackRects just used, so both describe the layout that ships. Degenerate
-	// charts are excluded: they hold a fixed ≥1-texel slot and are not part of
-	// either the extent story or the gutter the caller reasons about.
-	result.maxChartExtent = 0.f;
-	result.minPadding = pad;
-	result.chartsPaddingReduced = 0;
+	// Layout diagnostics of the layout that ships: `crects` is final (fit-to-
+	// resolution already applied kfinal) and `pads` is what PackRects just used.
+	// Degenerate charts hold a fixed ≥1-texel slot and stay out of the extent.
 	for (unsigned c = 0; c < numCharts; ++c) {
-		if (crects[c].degenerate)
-			continue;
-		result.maxChartExtent = std::max({result.maxChartExtent, crects[c].w, crects[c].h});
-		const float padC = ChartPad(params, crects[c].w, crects[c].h, chartFaces[c], pad);
-		if (padC < static_cast<float>(pad)) {
+		if (!crects[c].degenerate)
+			result.maxChartExtent = std::max({result.maxChartExtent, crects[c].w, crects[c].h});
+		if (pads[c] < static_cast<float>(pad))
 			++result.chartsPaddingReduced;
-			result.minPadding = std::min(result.minPadding, static_cast<unsigned>(padC));
-		}
 	}
+	// ChartPad only ever narrows a gutter to 1 texel, so the minimum is implied.
+	result.minPadding = result.chartsPaddingReduced > 0 ? std::min(1u, pad) : pad;
 
 	const float totalAtlasArea =
 	    static_cast<float>(result.numPages) * static_cast<float>(pageW) * static_cast<float>(pageH);
@@ -1034,10 +1033,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 	for (size_t fi = 0; fi < nf; ++fi) {
 		if (faceChart[fi] >= numCharts)
 			continue;
-		const TexCoord& t0 = mesh.faceTexcoords[fi * 3 + 0];
-		const TexCoord& t1 = mesh.faceTexcoords[fi * 3 + 1];
-		const TexCoord& t2 = mesh.faceTexcoords[fi * 3 + 2];
-		triArea += 0.5 * std::abs(static_cast<double>(t1.x() - t0.x()) * (t2.y() - t0.y()) - static_cast<double>(t2.x() - t0.x()) * (t1.y() - t0.y()));
+		triArea += 0.5 * std::abs(static_cast<double>(Mesh::ComputeTriangleDoubleArea2D(mesh.faceTexcoords[fi * 3 + 0], mesh.faceTexcoords[fi * 3 + 1], mesh.faceTexcoords[fi * 3 + 2])));
 	}
 	result.coverage = (numPages > 0)
 	                      ? std::min(1.f, static_cast<float>(triArea / numPages))
