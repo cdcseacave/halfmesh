@@ -1188,5 +1188,47 @@ TEST(MeshRemesh, CallerSuppliedSizingFieldGrades)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Test 16: with `adapt` on as well, the caller's field and the curvature field are
+// two constraints on the same quantity and must intersect, not override. On a
+// sphere the curvature field asks for a fine edge everywhere; a caller field that
+// is coarser than that must therefore change nothing, while one that is finer must
+// take over. Anything else (last-writer-wins either way) fails one of the two.
+// ---------------------------------------------------------------------------
+TEST(MeshRemesh, SizingFieldIntersectsCurvature)
+{
+	const auto faceCount = [](float callerTarget, bool adapt) {
+		Mesh m = hmtest::corpus::UVSphere(24, 48);
+		m.ListHalfEdges();
+		const float L = static_cast<float>(ComputeEdgeStats(m).meanLen);
+		std::vector<float> sizing(m.vertices.size(), callerTarget * L);
+		Mesh::RemeshParams p;
+		p.SetEdgeLength(L);
+		p.iterations = 5;
+		if (adapt)
+			p.SetAdaptive(0.f, 0.25f, 4.f);
+		if (callerTarget > 0)
+			p.vertexSizing = std::span<const float>(sizing.data(), sizing.size());
+		m.RemeshIsotropic(p);
+		return m.faces.size();
+	};
+
+	const size_t curvatureOnly = faceCount(0.f, true);
+	const size_t withCoarseCaller = faceCount(4.f, true);
+	const size_t withFineCaller = faceCount(0.5f, true);
+	std::cout << "[SizingIntersect] curvature=" << curvatureOnly
+	          << " +coarse caller=" << withCoarseCaller
+	          << " +fine caller=" << withFineCaller << std::endl;
+
+	// A coarser caller field is not the binding constraint, so the intersection IS the
+	// curvature field and the mesh has to come out the one curvature alone gives. Both
+	// bounds are needed: a field that REPLACED the curvature one would ask for a 4x edge
+	// and land near a sixteenth of these faces, which a one-sided upper bound would pass.
+	EXPECT_GT(withCoarseCaller, curvatureOnly * 3 / 4);
+	EXPECT_LT(withCoarseCaller, curvatureOnly * 4 / 3);
+	// a finer one is binding, and must refine past what curvature alone produced
+	EXPECT_GT(withFineCaller, curvatureOnly * 3 / 2);
+}
+
 } // namespace
 } // namespace halfmesh

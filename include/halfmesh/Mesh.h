@@ -579,12 +579,20 @@ class Mesh
 		// contiguous float buffer (a std::vector or std::array binds directly, a raw,
 		// Eigen or numpy buffer as {data, size}; empty = none), one entry per vertex as
 		// the half-edge build leaves them (a non-manifold mesh is manifoldized on entry
-		// and can gain vertices: build or repair first). It REPLACES the curvature field
-		// -- when it is non-empty `adapt`, `approxError` and the adaptive multipliers are
-		// ignored, and the split, collapse and tangential-smoothing passes grade against
-		// it exactly as they do in curvature mode. `SetEdgeLength` is still required (the
+		// and can gain vertices: build or repair first). A sizing field is a CONSTRAINT on
+		// edge length, so the two sources combine the way constraints do, by keeping the
+		// more restrictive: with `adapt` off this field is the whole grading, and with it
+		// on the curvature field is built first and the two are intersected per vertex --
+		// no face coarser than this field allows, and none so coarse it leaves the
+		// surface by more than `approxError`. Either way the split, collapse and
+		// tangential-smoothing passes grade against the result exactly as they do in
+		// curvature mode. `SetEdgeLength` is still required (the
 		// validation and the passes that never consult the field read
-		// edgeMinLength/edgeMaxLength); the field's own mean is the natural value.
+		// edgeMinLength/edgeMaxLength); the field's own mean is the natural value. One of
+		// those passes is the degenerate-face guard, which collapses a face smaller than
+		// 1 % of edgeMinLength^2 whatever the field says, so targets below about a sixth
+		// of edgeMinLength are not honoured -- with the mean as the base length, that is
+		// a field asking for more than a 6x range below its own mean.
 		// Every entry must be finite and positive: a wrong-sized field, or one holding a
 		// non-positive or non-finite target, is refused whole with a warning and the
 		// remesh runs uniform. Being per vertex is what makes a target stated in image

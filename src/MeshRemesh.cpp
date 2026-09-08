@@ -102,7 +102,7 @@ class RemeshData
 	void TagCreaseEdges(bool forceTag = false);
 	void ClassifyFeatureVertices();
 	void BuildSizingField();
-	void AdoptSizingField(); // validate and take params.vertexSizing as the sizing field
+	void AdoptSizingField(); // validate params.vertexSizing into the sizing field, keeping the finer of it and whatever is already there
 	unsigned SplitLongEdges();
 	unsigned CollapseShortEdges();
 	unsigned ImproveValence();
@@ -367,9 +367,13 @@ void RemeshData::BuildSizingField()
 
 // ---------------------------------------------------------------------------
 // AdoptSizingField
-// Take the caller's per-vertex target edge length in place of a curvature-derived
-// one. Refused as a whole rather than per entry: a partly-valid field would grade
-// one region and not another, far harder to notice than a warning.
+// Fold the caller's per-vertex target edge length into the sizing field. A sizing
+// field is a CONSTRAINT on edge length, so independent sources combine by keeping
+// the most restrictive one: with `adapt` the curvature field is already built here
+// and the two are intersected (no face coarser than the caller allows, none so
+// coarse it leaves the surface); without it the caller's field stands alone.
+// Refused as a whole rather than per entry: a partly-valid field would grade one
+// region and not another, far harder to notice than a warning.
 // ---------------------------------------------------------------------------
 void RemeshData::AdoptSizingField()
 {
@@ -385,6 +389,11 @@ void RemeshData::AdoptSizingField()
 			               "target edge length; ignored");
 			return;
 		}
+	}
+	if (sizing.size() == nv) {
+		for (size_t v = 0; v < nv; ++v)
+			sizing[v] = std::min(sizing[v], params.vertexSizing[v]);
+		return;
 	}
 	sizing.assign(params.vertexSizing.begin(), params.vertexSizing.end());
 }
@@ -1244,10 +1253,10 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 	RemeshData data(*this, params);
 	InvalidateFaces();
 	data.TagCreaseEdges();
+	if (params.adapt)
+		data.BuildSizingField();
 	if (!params.vertexSizing.empty())
 		data.AdoptSizingField();
-	else if (params.adapt)
-		data.BuildSizingField();
 	RemeshStats acc;
 	using RClock = std::chrono::steady_clock;
 	auto secs = [](RClock::time_point t0) {

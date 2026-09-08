@@ -11,9 +11,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **`RemeshParams::vertexSizing`.** An optional per-vertex target edge length for
   `RemeshIsotropic`, taken over any contiguous float buffer (`std::span<const float>`;
-  empty = none). It replaces the curvature-derived field: when non-empty, `adapt`,
-  `approxError` and the adaptive multipliers are ignored and the split, collapse and
-  tangential-smoothing passes grade against the caller's targets instead. A
+  empty = none). A sizing field is a constraint on edge length, so the two sources
+  combine as constraints do, by keeping the more restrictive one: with `adapt` off
+  the caller's field is the whole grading, with it on the curvature field is built
+  first and the two are intersected per vertex, so a caller can ask for no face
+  coarser than it allows and none so coarse it leaves the surface. Either way the
+  split, collapse and tangential-smoothing passes grade against the result. A
   wrong-sized field, or one holding a non-positive or non-finite target, is refused
   whole with a warning and the remesh runs uniform. `SetEdgeLength` is still
   required, since the validation and the passes that never consult the field read
