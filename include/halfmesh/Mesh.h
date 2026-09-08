@@ -575,6 +575,24 @@ class Mesh
 		bool adapt{false};
 		float approxError{0.f};
 
+		// Caller-supplied sizing field: a per-vertex target edge length over any
+		// contiguous float buffer (a std::vector or std::array binds directly, a raw,
+		// Eigen or numpy buffer as {data, size}; empty = none), one entry per vertex as
+		// the half-edge build leaves them (a non-manifold mesh is manifoldized on entry
+		// and can gain vertices: build or repair first). It REPLACES the curvature field
+		// -- when it is non-empty `adapt`, `approxError` and the adaptive multipliers are
+		// ignored, and the split, collapse and tangential-smoothing passes grade against
+		// it exactly as they do in curvature mode. `SetEdgeLength` is still required (the
+		// validation and the passes that never consult the field read
+		// edgeMinLength/edgeMaxLength); the field's own mean is the natural value.
+		// Every entry must be finite and positive: a wrong-sized field, or one holding a
+		// non-positive or non-finite target, is refused whole with a warning and the
+		// remesh runs uniform. Being per vertex is what makes a target stated in image
+		// pixels expressible (targetEdgePx / footprint_v), so a surface a camera sees
+		// from varying distance comes out uniform where it is measured rather than
+		// where it is stored.
+		std::span<const float> vertexSizing{};
+
 		// Smoothing controls. Default is PMP-style tangential smoothing (vertex-
 		// normal tangent-plane projection + area-weighted centroid, ~5 passes),
 		// which markedly improves edge-length uniformity and triangle angles. Set

@@ -1097,5 +1097,96 @@ TEST(MeshRemesh, ClearsAuthoredVertexNormals)
 	EXPECT_TRUE(m.ValidateInvariants());
 }
 
+// ---------------------------------------------------------------------------
+// Test 15: a caller-supplied sizing field grades the mesh where the caller asks,
+// not where curvature does. A flat grid has no curvature signal at all, so the
+// curvature field would leave it uniform; the field below asks for half the base
+// length on one side of the plane and twice it on the other, and the two halves
+// must come out graded in that ratio. Also pins the refusals: a wrong-sized or
+// non-positive field must leave the remesh uniform rather than grade it partly.
+// ---------------------------------------------------------------------------
+TEST(MeshRemesh, CallerSuppliedSizingFieldGrades)
+{
+	const auto meanEdgeIn = [](const Mesh& mesh, float xMid, bool left) {
+		// mean length of the edges whose midpoint lies in the requested half
+		double sum = 0; size_t n = 0;
+		for (const auto& f : mesh.faces)
+			for (int e = 0; e < 3; ++e) {
+				const Mesh::Vertex& a = mesh.vertices[f[e]];
+				const Mesh::Vertex& b = mesh.vertices[f[(e + 1) % 3]];
+				if ((0.5f * (a.x() + b.x()) < xMid) != left)
+					continue;
+				sum += (a - b).norm(); ++n;
+			}
+		return n ? sum / double(n) : 0.0;
+	};
+
+	Mesh m = hmtest::corpus::GridPlane(24); // 24x24 quads
+	m.ListHalfEdges();
+	const float L = static_cast<float>(ComputeEdgeStats(m).meanLen) * 1.5f;
+
+	// split the plane down its own middle, not at an assumed extent
+	float xLo = m.vertices.front().x(), xHi = xLo;
+	for (const auto& v : m.vertices) { xLo = std::min(xLo, v.x()); xHi = std::max(xHi, v.x()); }
+	const float xMid = 0.5f * (xLo + xHi);
+
+	// half the base length on the left of the plane, twice it on the right
+	std::vector<float> sizing(m.vertices.size());
+	for (size_t v = 0; v < sizing.size(); ++v)
+		sizing[v] = m.vertices[v].x() < xMid ? 0.5f * L : 2.f * L;
+
+	Mesh graded = m;
+	{
+		Mesh::RemeshParams p;
+		p.SetEdgeLength(L);
+		p.iterations = 6;
+		p.vertexSizing = std::span<const float>(sizing.data(), sizing.size());
+		graded.RemeshIsotropic(p);
+	}
+	const double left = meanEdgeIn(graded, xMid, true), right = meanEdgeIn(graded, xMid, false);
+	std::cout << "[SizingField] left=" << left << " right=" << right << " base=" << L << std::endl;
+	EXPECT_GT(right, 1.5 * left) << "the field asked for a 4x edge ratio and got " << right / left;
+	EXPECT_TRUE(HasNoZeroAreaFaces(graded));
+	EXPECT_NO_THROW(graded.ListHalfEdges());
+
+	// a uniform run for the refusals to match
+	Mesh uniform = m;
+	{
+		Mesh::RemeshParams p;
+		p.SetEdgeLength(L);
+		p.iterations = 6;
+		uniform.RemeshIsotropic(p);
+	}
+	EXPECT_LT(std::abs(meanEdgeIn(uniform, xMid, true) - meanEdgeIn(uniform, xMid, false)),
+	          0.35 * meanEdgeIn(uniform, xMid, true))
+	    << "the uniform run is the control and must not be graded itself";
+
+	// wrong size: refused whole, so the result is the uniform one
+	{
+		Mesh wrong = m;
+		std::vector<float> shortField(sizing.begin(), sizing.end() - 1);
+		Mesh::RemeshParams p;
+		p.SetEdgeLength(L);
+		p.iterations = 6;
+		p.vertexSizing = std::span<const float>(shortField.data(), shortField.size());
+		wrong.RemeshIsotropic(p);
+		EXPECT_EQ(wrong.vertices.size(), uniform.vertices.size());
+		EXPECT_EQ(wrong.faces.size(), uniform.faces.size());
+	}
+	// a non-positive target: refused whole as well
+	{
+		Mesh bad = m;
+		std::vector<float> badField(sizing);
+		badField[badField.size() / 2] = 0.f;
+		Mesh::RemeshParams p;
+		p.SetEdgeLength(L);
+		p.iterations = 6;
+		p.vertexSizing = std::span<const float>(badField.data(), badField.size());
+		bad.RemeshIsotropic(p);
+		EXPECT_EQ(bad.vertices.size(), uniform.vertices.size());
+		EXPECT_EQ(bad.faces.size(), uniform.faces.size());
+	}
+}
+
 } // namespace
 } // namespace halfmesh

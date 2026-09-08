@@ -7,6 +7,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Caller-supplied remesh sizing field
+
+- **`RemeshParams::vertexSizing`.** An optional per-vertex target edge length for
+  `RemeshIsotropic`, taken over any contiguous float buffer (`std::span<const float>`;
+  empty = none). It replaces the curvature-derived field: when non-empty, `adapt`,
+  `approxError` and the adaptive multipliers are ignored and the split, collapse and
+  tangential-smoothing passes grade against the caller's targets instead. A
+  wrong-sized field, or one holding a non-positive or non-finite target, is refused
+  whole with a warning and the remesh runs uniform. `SetEdgeLength` is still
+  required, since the validation and the passes that never consult the field read
+  the scalar bounds. This makes a target stated in image pixels expressible
+  (`targetEdgePx / footprint_v`), so a surface a camera sees from varying distance
+  is remeshed uniformly where it is measured rather than where it is stored.
+
 ### Per-vertex decimation error bound
 
 - **`Simplify(..., vertexMaxError)`.** An optional per-vertex collapse-error
