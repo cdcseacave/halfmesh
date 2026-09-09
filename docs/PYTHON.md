@@ -173,7 +173,7 @@ Drop every connected component with fewer than `min_faces` triangles (and
 the vertices that fall unreferenced as a result). `removed` is the number of
 components dropped.
 
-### `remesh(vertices, faces, edge_length, iterations=3) -> (v, f)`
+### `remesh(vertices, faces, edge_length, iterations=3, vertex_sizing=None) -> (v, f)`
 
 Isotropic remeshing (flip/collapse/relocate/refine) toward a uniform target
 `edge_length`, in the same world units as the input vertices — not a ratio.
@@ -181,6 +181,41 @@ Isotropic remeshing (flip/collapse/relocate/refine) toward a uniform target
 to uniform edge length; 3 is a reasonable default for moderately
 non-uniform input). Both `edge_length <= 0` and `iterations <= 0` raise
 `ValueError`.
+
+#### Per-vertex sizing field
+
+`vertex_sizing` is an optional `[N]` float32 array — one **target edge
+length** per input vertex, in world units — that replaces the single uniform
+target, so the split, collapse and tangential-smoothing passes grade the mesh
+where *you* ask rather than where curvature does.
+
+```python
+# twice as fine over a region of interest as everywhere else
+sizing = np.full(len(v), 0.01, dtype=np.float32)
+sizing[roi] = 0.005
+v, f = hm.remesh(v, f, edge_length=0.01, vertex_sizing=sizing)
+```
+
+Because the field is per vertex, a target stated in *image pixels* is
+expressible as `target_edge_px / footprint_v`, so a surface a camera sees from
+varying distance comes out uniform where it is *measured* rather than where it
+is stored.
+
+Notes:
+
+- Unlike `simplify`'s `vertex_max_error`, the field is **read-only** — nothing
+  is compacted onto the survivors, so the return stays the usual `(v, f)` pair
+  and the input array is never mutated.
+- `edge_length` is still required: the passes that never consult the field read
+  it, and the field's own mean is the natural value to pass. One such pass is
+  the degenerate-face guard, so targets below about a sixth of `edge_length`
+  are not honoured.
+- Every entry must be finite and `> 0`; a length other than `len(vertices)`, a
+  non-1-D array, or a bad entry raises `ValueError` (the C++ API only warns and
+  remeshes uniform — the binding refuses so a silently ungraded result is never
+  what you get back). Input that requires topology repair is rejected for the
+  same reason as in `simplify`: repair may remap or add vertices, so call
+  `repair()` first and state the field over *its* output.
 
 ### `class Mesh`
 

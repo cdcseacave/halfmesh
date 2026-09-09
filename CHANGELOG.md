@@ -28,6 +28,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Being per vertex is what makes a target stated in image pixels expressible
   (`targetEdgePx / footprint_v`), so a surface a camera sees from varying distance
   is remeshed uniformly where it is measured rather than where it is stored.
+- **Python**: `hm.remesh(..., vertex_sizing=None)` takes the field as an `[N]`
+  float32 array. It is read-only, so the return stays the usual `(v, f)` and the
+  input is never mutated. A wrong shape, a non-positive or non-finite entry, or
+  input that requires topology repair (which may invalidate per-input-vertex
+  indexing) raises `ValueError` rather than warning and remeshing uniform.
 
 ### Per-vertex decimation error bound
 

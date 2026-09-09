@@ -1109,14 +1109,16 @@ TEST(MeshRemesh, CallerSuppliedSizingFieldGrades)
 {
 	const auto meanEdgeIn = [](const Mesh& mesh, float xMid, bool left) {
 		// mean length of the edges whose midpoint lies in the requested half
-		double sum = 0; size_t n = 0;
+		double sum = 0;
+		size_t n = 0;
 		for (const auto& f : mesh.faces)
 			for (int e = 0; e < 3; ++e) {
 				const Mesh::Vertex& a = mesh.vertices[f[e]];
 				const Mesh::Vertex& b = mesh.vertices[f[(e + 1) % 3]];
 				if ((0.5f * (a.x() + b.x()) < xMid) != left)
 					continue;
-				sum += (a - b).norm(); ++n;
+				sum += (a - b).norm();
+				++n;
 			}
 		return n ? sum / double(n) : 0.0;
 	};
@@ -1127,7 +1129,10 @@ TEST(MeshRemesh, CallerSuppliedSizingFieldGrades)
 
 	// split the plane down its own middle, not at an assumed extent
 	float xLo = m.vertices.front().x(), xHi = xLo;
-	for (const auto& v : m.vertices) { xLo = std::min(xLo, v.x()); xHi = std::max(xHi, v.x()); }
+	for (const auto& v : m.vertices) {
+		xLo = std::min(xLo, v.x());
+		xHi = std::max(xHi, v.x());
+	}
 	const float xMid = 0.5f * (xLo + xHi);
 
 	// half the base length on the left of the plane, twice it on the right

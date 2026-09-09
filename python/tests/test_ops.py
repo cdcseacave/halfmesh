@@ -212,3 +212,54 @@ def test_remesh_rejects_nonpositive_edge_length():
     v, f = _cube_mesh()
     with pytest.raises(ValueError):
         hm.remesh(v, f, 0.0)
+
+
+def _mean_edge_len(v, f, left):
+    """Mean length of the edges whose midpoint falls in the requested half of x."""
+    tri = v[f]
+    a = tri[:, [0, 1, 2]].reshape(-1, 3)
+    b = tri[:, [1, 2, 0]].reshape(-1, 3)
+    keep = (0.5 * (a[:, 0] + b[:, 0]) < 0.5) == left
+    return float(np.linalg.norm(a[keep] - b[keep], axis=1).mean())
+
+
+def test_remesh_vertex_sizing_grades_the_result():
+    v, f = _grid_mesh(noise=0.0)  # flat, so curvature would leave it uniform
+    base = 4.0 / 63.0
+    sizing = np.where(v[:, 0] < 0.5, 0.5 * base, 2.0 * base).astype(np.float32)
+    gv, gf = hm.remesh(v, f, base, 6, vertex_sizing=sizing)
+    uv, uf = hm.remesh(v, f, base, 6)
+    # the field asked for a 4x edge ratio across the midline; the uniform run must not
+    left, right = _mean_edge_len(gv, gf, True), _mean_edge_len(gv, gf, False)
+    assert right > 1.5 * left
+    u_left, u_right = _mean_edge_len(uv, uf, True), _mean_edge_len(uv, uf, False)
+    assert abs(u_right - u_left) < 0.35 * u_left
+    assert len(gf) > len(uf)  # the fine half dominates the face count
+    assert sizing.dtype == np.float32  # read-only: the input is never mutated
+
+
+def test_remesh_vertex_sizing_returns_a_pair():
+    v, f = _cube_mesh()
+    sizing = np.full(len(v), 0.5, dtype=np.float32)
+    assert len(hm.remesh(v, f, 0.5, 3, vertex_sizing=sizing)) == 2
+
+
+def test_remesh_rejects_bad_vertex_sizing():
+    v, f = _grid_mesh(noise=0.0, n=8)
+    base = np.full(len(v), 0.25, dtype=np.float32)
+    with pytest.raises(ValueError):  # wrong length
+        hm.remesh(v, f, 0.25, 3, vertex_sizing=base[:-1].copy())
+    with pytest.raises(ValueError):  # wrong rank
+        hm.remesh(v, f, 0.25, 3, vertex_sizing=base.reshape(-1, 1))
+    for bad in (0.0, -1.0, np.inf, np.nan):
+        field = base.copy()
+        field[len(field) // 2] = bad
+        with pytest.raises(ValueError):  # non-positive or non-finite target
+            hm.remesh(v, f, 0.25, 3, vertex_sizing=field)
+
+
+def test_remesh_vertex_sizing_rejects_input_requiring_repair():
+    v, f = _cube_mesh()
+    duplicate_face = np.concatenate([f, f[:1]])
+    with pytest.raises(ValueError, match="requires topology repair"):
+        hm.remesh(v, duplicate_face, 0.5, 3, vertex_sizing=np.full(len(v), 0.5, dtype=np.float32))
