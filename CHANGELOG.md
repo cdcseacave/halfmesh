@@ -10,17 +10,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Caller-supplied remesh sizing field
 
 - **`RemeshParams::vertexSizing`.** An optional per-vertex target edge length for
-  `RemeshIsotropic`, taken over any contiguous float buffer (`std::span<const float>`;
-  empty = none). A sizing field is a constraint on edge length, so the two sources
-  combine as constraints do, by keeping the more restrictive one: with `adapt` off
-  the caller's field is the whole grading, with it on the curvature field is built
-  first and the two are intersected per vertex, so a caller can ask for no face
-  coarser than it allows and none so coarse it leaves the surface. Either way the
-  split, collapse and tangential-smoothing passes grade against the result. A
-  wrong-sized field, or one holding a non-positive or non-finite target, is refused
-  whole with a warning and the remesh runs uniform. `SetEdgeLength` is still
-  required, since the validation and the passes that never consult the field read
-  the scalar bounds. This makes a target stated in image pixels expressible
+  `RemeshIsotropic`, taken over any contiguous float buffer (`std::span<const
+  float>`; empty = none), one entry per vertex as the half-edge build leaves them.
+  The split, collapse and tangential-smoothing passes grade against it exactly as
+  they do against the curvature field.
+- A sizing field constrains edge length, so the two sources combine as constraints
+  do — by keeping the more restrictive. With `adapt` off the caller's field is the
+  whole grading; with it on the curvature field is built first and the two are
+  intersected per vertex, so a caller can ask for no face coarser than it allows
+  and none so coarse it leaves the surface by more than `approxError`.
+- `SetEdgeLength` is still required: the validation and the passes that never
+  consult the field read the scalar bounds, and the field's own mean is the natural
+  value. One such pass is the degenerate-face guard, so targets below
+  ~`edgeMinLength/6` are not honoured. A wrong-sized field, or one holding a
+  non-positive or non-finite target, is refused whole with a warning and the remesh
+  runs uniform.
+- Being per vertex is what makes a target stated in image pixels expressible
   (`targetEdgePx / footprint_v`), so a surface a camera sees from varying distance
   is remeshed uniformly where it is measured rather than where it is stored.
 

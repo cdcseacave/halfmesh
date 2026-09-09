@@ -102,7 +102,7 @@ class RemeshData
 	void TagCreaseEdges(bool forceTag = false);
 	void ClassifyFeatureVertices();
 	void BuildSizingField();
-	void AdoptSizingField(); // validate params.vertexSizing into the sizing field, keeping the finer of it and whatever is already there
+	void AdoptSizingField(); // fold params.vertexSizing into the sizing field, keeping the finer target
 	unsigned SplitLongEdges();
 	unsigned CollapseShortEdges();
 	unsigned ImproveValence();
@@ -125,8 +125,8 @@ class RemeshData
 	                      bool relaxed = false);
 	Mesh::VIndex IdealValence(Mesh::VIndex iV);
 	bool TestEdgeFlip(const HalfMesh::HIndex iHe, float cosAngleNormals);
-	// Per-edge length thresholds: uniform unless adaptive sizing is active, in
-	// which case they follow the per-vertex sizing field (PMP is_too_long/short).
+	// Per-edge length thresholds: the scalar bounds unless a sizing field is
+	// active, in which case they follow it (PMP is_too_long/short).
 	Mesh::Type SplitThreshold(Mesh::VIndex a, Mesh::VIndex b) const;
 	Mesh::Type CollapseThreshold(Mesh::VIndex a, Mesh::VIndex b) const;
 
@@ -169,7 +169,7 @@ class RemeshData
 	std::vector<uint8_t> fvSelection; // selection per face-vertex (faces*3)
 	std::vector<uint8_t> vFeatureDegree; // # incident feature edges per vertex (ClassifyFeatureVertices)
 	std::vector<std::vector<Mesh::VIndex>> vFeatureNbrs; // feature-edge neighbours per vertex
-	std::vector<float> sizing; // per-vertex target edge length (adaptive sizing; empty unless adapt)
+	std::vector<float> sizing; // per-vertex target edge length (curvature and/or params.vertexSizing; empty if neither)
 	uint8_t vMarkDirty; // current "dirty" sentinel
 	uint8_t fvMark; // current face-vertex "marked" sentinel
 };
@@ -368,12 +368,11 @@ void RemeshData::BuildSizingField()
 // ---------------------------------------------------------------------------
 // AdoptSizingField
 // Fold the caller's per-vertex target edge length into the sizing field. A sizing
-// field is a CONSTRAINT on edge length, so independent sources combine by keeping
-// the most restrictive one: with `adapt` the curvature field is already built here
-// and the two are intersected (no face coarser than the caller allows, none so
-// coarse it leaves the surface); without it the caller's field stands alone.
-// Refused as a whole rather than per entry: a partly-valid field would grade one
-// region and not another, far harder to notice than a warning.
+// field CONSTRAINS edge length, so independent sources combine by keeping the most
+// restrictive: with `adapt` the curvature field is already built and the two are
+// intersected, without it the caller's field stands alone. Refused whole rather
+// than per entry — a partly-valid field grades one region and not another, far
+// harder to notice than a warning.
 // ---------------------------------------------------------------------------
 void RemeshData::AdoptSizingField()
 {
@@ -384,18 +383,20 @@ void RemeshData::AdoptSizingField()
 		return;
 	}
 	for (const float len : params.vertexSizing) {
+		// !(len > 0) rejects NaN and non-positive targets, isfinite the infinite one
 		if (!(len > 0) || !std::isfinite(len)) {
 			REPORT_WARNING("RemeshIsotropic: vertexSizing holds a non-positive or non-finite "
 			               "target edge length; ignored");
 			return;
 		}
 	}
-	if (sizing.size() == nv) {
-		for (size_t v = 0; v < nv; ++v)
-			sizing[v] = std::min(sizing[v], params.vertexSizing[v]);
+	ASSERT(sizing.empty() || sizing.size() == nv); // BuildSizingField sizes it whole or not at all
+	if (sizing.empty()) {
+		sizing.assign(params.vertexSizing.begin(), params.vertexSizing.end());
 		return;
 	}
-	sizing.assign(params.vertexSizing.begin(), params.vertexSizing.end());
+	for (size_t v = 0; v < nv; ++v)
+		sizing[v] = std::min(sizing[v], params.vertexSizing[v]);
 }
 
 // ---------------------------------------------------------------------------

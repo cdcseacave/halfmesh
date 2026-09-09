@@ -293,7 +293,7 @@ Implementation: `src/MeshSimplify.cpp` · example: `examples/Decimate.cpp`.
 ## Isotropic remeshing
 
 ```cpp
-struct Mesh::RemeshParams { /* 18 fields, see Mesh.h */ };
+struct Mesh::RemeshParams { /* see Mesh.h */ };
 void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats = nullptr);
 ```
 
@@ -302,6 +302,10 @@ regularizes edge lengths and triangle aspect ratios. Key knobs:
 
 - `SetEdgeLength(L)` — sets the min/max band to `L·4/5 … L·4/3`.
 - `SetAdaptive(error, minMult, maxMult)` — curvature-adaptive target sizing.
+- `vertexSizing` — an optional caller-supplied per-vertex target edge length
+  (`std::span<const float>`, empty = none). Intersected with the curvature
+  field when `adapt` is on (the finer target wins), used alone when it is off;
+  refused whole with a warning if wrong-sized or non-finite.
 - `SetCreaseAngle(degrees)` — dihedral threshold for feature/crease tagging;
   `featureCorners` pins corner vertices.
 - `SetMaxSurfaceDistance(...)` / `checkSurfDist` — bounds drift from the input

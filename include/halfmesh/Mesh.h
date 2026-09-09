@@ -576,29 +576,27 @@ class Mesh
 		float approxError{0.f};
 
 		// Caller-supplied sizing field: a per-vertex target edge length over any
-		// contiguous float buffer (a std::vector or std::array binds directly, a raw,
-		// Eigen or numpy buffer as {data, size}; empty = none), one entry per vertex as
-		// the half-edge build leaves them (a non-manifold mesh is manifoldized on entry
-		// and can gain vertices: build or repair first). A sizing field is a CONSTRAINT on
-		// edge length, so the two sources combine the way constraints do, by keeping the
-		// more restrictive: with `adapt` off this field is the whole grading, and with it
-		// on the curvature field is built first and the two are intersected per vertex --
-		// no face coarser than this field allows, and none so coarse it leaves the
-		// surface by more than `approxError`. Either way the split, collapse and
-		// tangential-smoothing passes grade against the result exactly as they do in
-		// curvature mode. `SetEdgeLength` is still required (the
-		// validation and the passes that never consult the field read
-		// edgeMinLength/edgeMaxLength); the field's own mean is the natural value. One of
-		// those passes is the degenerate-face guard, which collapses a face smaller than
-		// 1 % of edgeMinLength^2 whatever the field says, so targets below about a sixth
-		// of edgeMinLength are not honoured -- with the mean as the base length, that is
-		// a field asking for more than a 6x range below its own mean.
-		// Every entry must be finite and positive: a wrong-sized field, or one holding a
-		// non-positive or non-finite target, is refused whole with a warning and the
-		// remesh runs uniform. Being per vertex is what makes a target stated in image
-		// pixels expressible (targetEdgePx / footprint_v), so a surface a camera sees
-		// from varying distance comes out uniform where it is measured rather than
-		// where it is stored.
+		// contiguous float buffer (a std::vector/std::array binds directly, a raw, Eigen
+		// or numpy buffer as {data, size}; empty = none). One entry per vertex as the
+		// half-edge build leaves them — a non-manifold mesh is manifoldized on entry and
+		// can gain vertices, so build or repair first.
+		// A sizing field CONSTRAINS edge length, so the two sources combine as
+		// constraints do, by keeping the more restrictive: with adapt=false this field is
+		// the whole grading; with adapt=true it is intersected per vertex with the
+		// curvature field, giving no face coarser than this field allows and none so
+		// coarse it leaves the surface by more than approxError. Either way the split,
+		// collapse and tangential-smoothing passes grade against the result.
+		// SetEdgeLength is still required — the validation and the passes that never
+		// consult the field read edgeMinLength/edgeMaxLength; the field's own mean is the
+		// natural value. One such pass is the degenerate-face guard, which collapses any
+		// face under 1 % of edgeMinLength^2 whatever the field asks, so targets below
+		// ~edgeMinLength/6 are not honoured (with the mean as base length, that is a
+		// field spanning more than 6x below its own mean).
+		// A wrong-sized field, or one holding a non-positive or non-finite target, is
+		// refused whole with a warning and the remesh runs uniform.
+		// Being per vertex is what makes a target stated in image pixels expressible
+		// (targetEdgePx / footprint_v), so a surface a camera sees from varying distance
+		// comes out uniform where it is measured rather than where it is stored.
 		std::span<const float> vertexSizing{};
 
 		// Smoothing controls. Default is PMP-style tangential smoothing (vertex-

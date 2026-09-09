@@ -1098,7 +1098,7 @@ TEST(MeshRemesh, ClearsAuthoredVertexNormals)
 }
 
 // ---------------------------------------------------------------------------
-// Test 15: a caller-supplied sizing field grades the mesh where the caller asks,
+// Test 17: a caller-supplied sizing field grades the mesh where the caller asks,
 // not where curvature does. A flat grid has no curvature signal at all, so the
 // curvature field would leave it uniform; the field below asks for half the base
 // length on one side of the plane and twice it on the other, and the two halves
@@ -1140,7 +1140,7 @@ TEST(MeshRemesh, CallerSuppliedSizingFieldGrades)
 		Mesh::RemeshParams p;
 		p.SetEdgeLength(L);
 		p.iterations = 6;
-		p.vertexSizing = std::span<const float>(sizing.data(), sizing.size());
+		p.vertexSizing = sizing;
 		graded.RemeshIsotropic(p);
 	}
 	const double left = meanEdgeIn(graded, xMid, true), right = meanEdgeIn(graded, xMid, false);
@@ -1168,7 +1168,7 @@ TEST(MeshRemesh, CallerSuppliedSizingFieldGrades)
 		Mesh::RemeshParams p;
 		p.SetEdgeLength(L);
 		p.iterations = 6;
-		p.vertexSizing = std::span<const float>(shortField.data(), shortField.size());
+		p.vertexSizing = shortField;
 		wrong.RemeshIsotropic(p);
 		EXPECT_EQ(wrong.vertices.size(), uniform.vertices.size());
 		EXPECT_EQ(wrong.faces.size(), uniform.faces.size());
@@ -1181,7 +1181,7 @@ TEST(MeshRemesh, CallerSuppliedSizingFieldGrades)
 		Mesh::RemeshParams p;
 		p.SetEdgeLength(L);
 		p.iterations = 6;
-		p.vertexSizing = std::span<const float>(badField.data(), badField.size());
+		p.vertexSizing = badField;
 		bad.RemeshIsotropic(p);
 		EXPECT_EQ(bad.vertices.size(), uniform.vertices.size());
 		EXPECT_EQ(bad.faces.size(), uniform.faces.size());
@@ -1189,7 +1189,7 @@ TEST(MeshRemesh, CallerSuppliedSizingFieldGrades)
 }
 
 // ---------------------------------------------------------------------------
-// Test 16: with `adapt` on as well, the caller's field and the curvature field are
+// Test 18: with `adapt` on as well, the caller's field and the curvature field are
 // two constraints on the same quantity and must intersect, not override. On a
 // sphere the curvature field asks for a fine edge everywhere; a caller field that
 // is coarser than that must therefore change nothing, while one that is finer must
@@ -1208,7 +1208,7 @@ TEST(MeshRemesh, SizingFieldIntersectsCurvature)
 		if (adapt)
 			p.SetAdaptive(0.f, 0.25f, 4.f);
 		if (callerTarget > 0)
-			p.vertexSizing = std::span<const float>(sizing.data(), sizing.size());
+			p.vertexSizing = sizing;
 		m.RemeshIsotropic(p);
 		return m.faces.size();
 	};
