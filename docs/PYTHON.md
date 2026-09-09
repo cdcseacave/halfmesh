@@ -173,7 +173,7 @@ Drop every connected component with fewer than `min_faces` triangles (and
 the vertices that fall unreferenced as a result). `removed` is the number of
 components dropped.
 
-### `remesh(vertices, faces, edge_length, iterations=3) -> (v, f)`
+### `remesh(vertices, faces, edge_length, iterations=3, vertex_sizing=None, adapt=False, approx_error=0.0, min_adaptive_mult=0.25, max_adaptive_mult=4.0) -> (v, f)`
 
 Isotropic remeshing (flip/collapse/relocate/refine) toward a uniform target
 `edge_length`, in the same world units as the input vertices — not a ratio.
@@ -181,6 +181,70 @@ Isotropic remeshing (flip/collapse/relocate/refine) toward a uniform target
 to uniform edge length; 3 is a reasonable default for moderately
 non-uniform input). Both `edge_length <= 0` and `iterations <= 0` raise
 `ValueError`.
+
+#### Per-vertex sizing field
+
+`vertex_sizing` is an optional `[N]` float32 array — one **target edge
+length** per input vertex, in world units — that replaces the single uniform
+target, so the split, collapse and tangential-smoothing passes grade the mesh
+where *you* ask rather than where curvature does.
+
+```python
+# twice as fine over a region of interest as everywhere else
+sizing = np.full(len(v), 0.01, dtype=np.float32)
+sizing[roi] = 0.005
+v, f = hm.remesh(v, f, edge_length=0.01, vertex_sizing=sizing)
+```
+
+Because the field is per vertex, a target stated in *image pixels* is
+expressible as `target_edge_px / footprint_v`, so a surface a camera sees from
+varying distance comes out uniform where it is *measured* rather than where it
+is stored.
+
+Notes:
+
+- Unlike `simplify`'s `vertex_max_error`, the field is **read-only** — nothing
+  is compacted onto the survivors, so the return stays the usual `(v, f)` pair
+  and the input array is never mutated.
+- `edge_length` is still required: the passes that never consult the field read
+  it, and the field's own mean is the natural value to pass. One such pass is
+  the degenerate-face guard, so targets below about a sixth of `edge_length`
+  are not honoured.
+- Every entry must be finite and `> 0`; a length other than `len(vertices)`, a
+  non-1-D array, or a bad entry raises `ValueError` (the C++ API only warns and
+  carries on as if the field had not been supplied — the binding refuses so a
+  silently ungraded result is never what you get back). Input that requires topology repair is rejected for the
+  same reason as in `simplify`: repair may remap or add vertices, so call
+  `repair()` first and state the field over *its* output.
+
+#### Curvature-adaptive sizing
+
+`adapt=True` derives a per-vertex target from local curvature instead of using
+one length everywhere: curved regions get shorter edges, flat ones longer, so
+the same fidelity costs fewer triangles. `approx_error` is the target geometric
+deviation (`0.0` derives one from `edge_length`); tightening it buys fidelity
+with triangles.
+
+`min_adaptive_mult` / `max_adaptive_mult` clamp the per-vertex target to that
+multiple of the base length. **They matter**: the underlying struct defaults
+both to `1.0`, which pins the field flat and makes `adapt` a no-op, so the
+binding defaults them to the usable `0.25` / `4.0` range instead. Setting
+`min_adaptive_mult=1.0` reproduces the uniform result exactly.
+
+```python
+# stay within 1 mm of the input surface, at whatever density that costs
+v, f = hm.remesh(v, f, edge_length=0.01, adapt=True, approx_error=1e-3)
+```
+
+Passing `approx_error` **without** `adapt=True` raises `ValueError` rather than
+silently remeshing uniform — a tolerance that was quietly ignored is not
+something you could spot in the result. `adapt=True` also requires
+`approx_error >= 0` and `0 < min_adaptive_mult <= max_adaptive_mult`.
+
+Given both, `adapt` and `vertex_sizing` **intersect** per vertex — the finer
+target wins — so you can ask for no face coarser than your own field allows and
+none so coarse it leaves the surface. A caller field coarser than the curvature
+one is simply not the binding constraint and changes nothing.
 
 ### `class Mesh`
 

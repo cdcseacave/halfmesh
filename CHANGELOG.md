@@ -7,6 +7,41 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Caller-supplied remesh sizing field
+
+- **`RemeshParams::vertexSizing`.** An optional per-vertex target edge length for
+  `RemeshIsotropic`, taken over any contiguous float buffer (`std::span<const
+  float>`; empty = none), one entry per vertex as the half-edge build leaves them.
+  The split, collapse and tangential-smoothing passes grade against it exactly as
+  they do against the curvature field.
+- A sizing field constrains edge length, so the two sources combine as constraints
+  do — by keeping the more restrictive. With `adapt` off the caller's field is the
+  whole grading; with it on the curvature field is built first and the two are
+  intersected per vertex, so a caller can ask for no face coarser than it allows
+  and none so coarse it leaves the surface by more than `approxError`.
+- `SetEdgeLength` is still required: the validation and the passes that never
+  consult the field read the scalar bounds, and the field's own mean is the natural
+  value. One such pass is the degenerate-face guard, so targets below
+  ~`edgeMinLength/6` are not honoured. A wrong-sized field, or one holding a
+  non-positive or non-finite target, is refused whole with a warning; the remesh
+  then runs as if it had not been supplied — uniform, or still curvature-graded
+  under `adapt`, since refusing one field says nothing about the other.
+- Being per vertex is what makes a target stated in image pixels expressible
+  (`targetEdgePx / footprint_v`), so a surface a camera sees from varying distance
+  is remeshed uniformly where it is measured rather than where it is stored.
+- **Python**: `hm.remesh(..., vertex_sizing=None)` takes the field as an `[N]`
+  float32 array. It is read-only, so the return stays the usual `(v, f)` and the
+  input is never mutated. A wrong shape, a non-positive or non-finite entry, or
+  input that requires topology repair (which may invalidate per-input-vertex
+  indexing) raises `ValueError` rather than warning and remeshing uniform.
+- **Python**: `hm.remesh(..., adapt=False, approx_error=0.0,
+  min_adaptive_mult=0.25, max_adaptive_mult=4.0)` exposes curvature-adaptive
+  sizing, so the intersection of the two fields is reachable from Python. The
+  multipliers default to `SetAdaptive`'s usable range rather than the struct's
+  `1.0`/`1.0`, which would pin the field flat and make `adapt` a no-op. Passing
+  `approx_error` without `adapt=True` raises `ValueError` instead of silently
+  remeshing uniform.
+
 ### Per-vertex decimation error bound
 
 - **`Simplify(..., vertexMaxError)`.** An optional per-vertex collapse-error

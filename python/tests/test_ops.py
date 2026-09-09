@@ -212,3 +212,119 @@ def test_remesh_rejects_nonpositive_edge_length():
     v, f = _cube_mesh()
     with pytest.raises(ValueError):
         hm.remesh(v, f, 0.0)
+
+
+def _mean_edge_len(v, f, left):
+    """Mean length of the edges whose midpoint falls in the requested half of x."""
+    tri = v[f]
+    a = tri[:, [0, 1, 2]].reshape(-1, 3)
+    b = tri[:, [1, 2, 0]].reshape(-1, 3)
+    keep = (0.5 * (a[:, 0] + b[:, 0]) < 0.5) == left
+    return float(np.linalg.norm(a[keep] - b[keep], axis=1).mean())
+
+
+def test_remesh_vertex_sizing_grades_the_result():
+    v, f = _grid_mesh(noise=0.0)  # flat, so curvature would leave it uniform
+    base = 4.0 / 63.0
+    sizing = np.where(v[:, 0] < 0.5, 0.5 * base, 2.0 * base).astype(np.float32)
+    gv, gf = hm.remesh(v, f, base, 6, vertex_sizing=sizing)
+    uv, uf = hm.remesh(v, f, base, 6)
+    # the field asked for a 4x edge ratio across the midline; the uniform run must not
+    left, right = _mean_edge_len(gv, gf, True), _mean_edge_len(gv, gf, False)
+    assert right > 1.5 * left
+    u_left, u_right = _mean_edge_len(uv, uf, True), _mean_edge_len(uv, uf, False)
+    assert abs(u_right - u_left) < 0.35 * u_left
+    assert len(gf) > len(uf)  # the fine half dominates the face count
+    assert sizing.dtype == np.float32  # read-only: the input is never mutated
+
+
+def test_remesh_vertex_sizing_returns_a_pair():
+    v, f = _cube_mesh()
+    sizing = np.full(len(v), 0.5, dtype=np.float32)
+    assert len(hm.remesh(v, f, 0.5, 3, vertex_sizing=sizing)) == 2
+
+
+def test_remesh_rejects_bad_vertex_sizing():
+    v, f = _grid_mesh(noise=0.0, n=8)
+    base = np.full(len(v), 0.25, dtype=np.float32)
+    with pytest.raises(ValueError):  # wrong length
+        hm.remesh(v, f, 0.25, 3, vertex_sizing=base[:-1].copy())
+    with pytest.raises(ValueError):  # wrong rank
+        hm.remesh(v, f, 0.25, 3, vertex_sizing=base.reshape(-1, 1))
+    for bad in (0.0, -1.0, np.inf, np.nan):
+        field = base.copy()
+        field[len(field) // 2] = bad
+        with pytest.raises(ValueError):  # non-positive or non-finite target
+            hm.remesh(v, f, 0.25, 3, vertex_sizing=field)
+
+
+def test_remesh_vertex_sizing_rejects_input_requiring_repair():
+    v, f = _cube_mesh()
+    duplicate_face = np.concatenate([f, f[:1]])
+    with pytest.raises(ValueError, match="requires topology repair"):
+        hm.remesh(v, duplicate_face, 0.5, 3, vertex_sizing=np.full(len(v), 0.5, dtype=np.float32))
+
+
+def _uv_sphere(rings=24, sectors=48):
+    """Closed UV sphere: curvature is uniform, so an adaptive field is fine everywhere."""
+    phi = np.linspace(0, np.pi, rings)
+    theta = np.linspace(0, 2 * np.pi, sectors, endpoint=False)
+    p, t = np.meshgrid(phi, theta, indexing="ij")
+    v = np.stack([np.sin(p) * np.cos(t), np.sin(p) * np.sin(t), np.cos(p)], -1)
+    v = v.reshape(-1, 3).astype(np.float32)
+    f = []
+    for r in range(rings - 1):
+        for c in range(sectors):
+            a, b = r * sectors + c, r * sectors + (c + 1) % sectors
+            f.append((a, b, a + sectors))
+            f.append((b, b + sectors, a + sectors))
+    return v, np.asarray(f, dtype=np.uint32)
+
+
+def test_remesh_approx_error_controls_density():
+    v, f = _uv_sphere()
+    loose = len(hm.remesh(v, f, 0.25, 5, adapt=True, approx_error=1e-2)[1])
+    tight = len(hm.remesh(v, f, 0.25, 5, adapt=True, approx_error=1e-3)[1])
+    # a tighter deviation tolerance buys fidelity with triangles
+    assert tight > 2 * loose
+
+
+def test_remesh_adaptive_mult_clamps_the_field():
+    v, f = _uv_sphere()
+    uniform = len(hm.remesh(v, f, 0.25, 5)[1])
+    kw = dict(adapt=True, approx_error=1e-5)  # tight enough to saturate the lower clamp
+    floored = len(hm.remesh(v, f, 0.25, 5, min_adaptive_mult=1.0, **kw)[1])
+    half = len(hm.remesh(v, f, 0.25, 5, min_adaptive_mult=0.5, **kw)[1])
+    quarter = len(hm.remesh(v, f, 0.25, 5, min_adaptive_mult=0.25, **kw)[1])
+    # the clamp is what makes adapt usable: the struct defaults it to 1, which pins the
+    # field at the base length, so a binding that set adapt without it would be a no-op
+    assert floored == uniform
+    assert quarter > half > floored
+
+
+def test_remesh_adapt_intersects_vertex_sizing():
+    v, f = _uv_sphere()
+    kw = dict(adapt=True, approx_error=0.0)
+    curvature_only = len(hm.remesh(v, f, 0.25, 5, **kw)[1])
+    coarse = np.full(len(v), 4.0 * 0.25, dtype=np.float32)
+    fine = np.full(len(v), 0.5 * 0.25, dtype=np.float32)
+    with_coarse = len(hm.remesh(v, f, 0.25, 5, vertex_sizing=coarse, **kw)[1])
+    with_fine = len(hm.remesh(v, f, 0.25, 5, vertex_sizing=fine, **kw)[1])
+    # the fields intersect: a coarser caller field is not the binding constraint and
+    # must leave the curvature result alone, a finer one must take over. Both bounds
+    # are needed -- a field that REPLACED the curvature one would collapse the coarse
+    # case to a small fraction of these faces, which an upper bound alone would pass.
+    assert curvature_only * 3 // 4 < with_coarse < curvature_only * 4 // 3
+    assert with_fine > curvature_only * 3 // 2
+
+
+def test_remesh_rejects_bad_adaptive_params():
+    v, f = _cube_mesh()
+    with pytest.raises(ValueError, match="without adapt"):  # a tolerance that would be ignored
+        hm.remesh(v, f, 0.5, 3, approx_error=1e-4)
+    with pytest.raises(ValueError):  # negative tolerance
+        hm.remesh(v, f, 0.5, 3, adapt=True, approx_error=-1.0)
+    with pytest.raises(ValueError):  # non-positive lower clamp
+        hm.remesh(v, f, 0.5, 3, adapt=True, min_adaptive_mult=0.0)
+    with pytest.raises(ValueError):  # inverted range
+        hm.remesh(v, f, 0.5, 3, adapt=True, min_adaptive_mult=4.0, max_adaptive_mult=0.25)
