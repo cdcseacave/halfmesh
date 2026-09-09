@@ -102,6 +102,7 @@ class RemeshData
 	void TagCreaseEdges(bool forceTag = false);
 	void ClassifyFeatureVertices();
 	void BuildSizingField();
+	void AdoptSizingField(); // fold params.vertexSizing into the sizing field, keeping the finer target
 	unsigned SplitLongEdges();
 	unsigned CollapseShortEdges();
 	unsigned ImproveValence();
@@ -124,8 +125,8 @@ class RemeshData
 	                      bool relaxed = false);
 	Mesh::VIndex IdealValence(Mesh::VIndex iV);
 	bool TestEdgeFlip(const HalfMesh::HIndex iHe, float cosAngleNormals);
-	// Per-edge length thresholds: uniform unless adaptive sizing is active, in
-	// which case they follow the per-vertex sizing field (PMP is_too_long/short).
+	// Per-edge length thresholds: the scalar bounds unless a sizing field is
+	// active, in which case they follow it (PMP is_too_long/short).
 	Mesh::Type SplitThreshold(Mesh::VIndex a, Mesh::VIndex b) const;
 	Mesh::Type CollapseThreshold(Mesh::VIndex a, Mesh::VIndex b) const;
 
@@ -168,7 +169,7 @@ class RemeshData
 	std::vector<uint8_t> fvSelection; // selection per face-vertex (faces*3)
 	std::vector<uint8_t> vFeatureDegree; // # incident feature edges per vertex (ClassifyFeatureVertices)
 	std::vector<std::vector<Mesh::VIndex>> vFeatureNbrs; // feature-edge neighbours per vertex
-	std::vector<float> sizing; // per-vertex target edge length (adaptive sizing; empty unless adapt)
+	std::vector<float> sizing; // per-vertex target edge length (curvature and/or params.vertexSizing; empty if neither)
 	uint8_t vMarkDirty; // current "dirty" sentinel
 	uint8_t fvMark; // current face-vertex "marked" sentinel
 };
@@ -365,18 +366,52 @@ void RemeshData::BuildSizingField()
 }
 
 // ---------------------------------------------------------------------------
+// AdoptSizingField
+// Fold the caller's per-vertex target edge length into the sizing field. A sizing
+// field CONSTRAINS edge length, so independent sources combine by keeping the most
+// restrictive: with `adapt` the curvature field is already built and the two are
+// intersected, without it the caller's field stands alone. Refused whole rather
+// than per entry — a partly-valid field grades one region and not another, far
+// harder to notice than a warning.
+// ---------------------------------------------------------------------------
+void RemeshData::AdoptSizingField()
+{
+	const size_t nv = mesh.vertices.size();
+	if (params.vertexSizing.size() != nv) {
+		REPORT_WARNING("RemeshIsotropic: vertexSizing has {} entries for {} vertices; ignored",
+		               params.vertexSizing.size(), nv);
+		return;
+	}
+	for (const float len : params.vertexSizing) {
+		// !(len > 0) rejects NaN and non-positive targets, isfinite the infinite one
+		if (!(len > 0) || !std::isfinite(len)) {
+			REPORT_WARNING("RemeshIsotropic: vertexSizing holds a non-positive or non-finite "
+			               "target edge length; ignored");
+			return;
+		}
+	}
+	ASSERT(sizing.empty() || sizing.size() == nv); // BuildSizingField sizes it whole or not at all
+	if (sizing.empty()) {
+		sizing.assign(params.vertexSizing.begin(), params.vertexSizing.end());
+		return;
+	}
+	for (size_t v = 0; v < nv; ++v)
+		sizing[v] = std::min(sizing[v], params.vertexSizing[v]);
+}
+
+// ---------------------------------------------------------------------------
 // SplitThreshold / CollapseThreshold
 // ---------------------------------------------------------------------------
 Mesh::Type RemeshData::SplitThreshold(Mesh::VIndex a, Mesh::VIndex b) const
 {
-	if (!params.adapt || sizing.empty())
+	if (sizing.empty())
 		return params.edgeMaxLength;
 	return Mesh::Type(4) / Mesh::Type(3) * std::min(sizing[a], sizing[b]);
 }
 
 Mesh::Type RemeshData::CollapseThreshold(Mesh::VIndex a, Mesh::VIndex b) const
 {
-	if (!params.adapt || sizing.empty())
+	if (sizing.empty())
 		return params.edgeMinLength;
 	return Mesh::Type(4) / Mesh::Type(5) * std::min(sizing[a], sizing[b]);
 }
@@ -394,7 +429,7 @@ unsigned RemeshData::SplitLongEdges()
 	// differs slightly). An edge longer than 2x the threshold yields halves that
 	// are still over-long, so sweep until no split fires — each sweep halves the
 	// worst-case length, giving O(log(len/th)) sweeps.
-	const bool maintainSizing = params.adapt && !sizing.empty();
+	const bool maintainSizing = !sizing.empty();
 	const bool maintainHint = !projectHint.empty();
 	unsigned numSplits = 0;
 	for (unsigned sweepSplits = 1; sweepSplits != 0;) {
@@ -1004,7 +1039,7 @@ void RemeshData::TangentialSmoothing(int iterations, Mesh::Type delta)
 	// 1/L (NOT L: weighting by L drifts toward coarse regions, the wrong way — a
 	// graded configuration is a smoothing fixed point only for w proportional to
 	// 1/L). Uniform mode keeps weight 1 (bit-identical to before).
-	const bool weightBySizing = params.adapt && !sizing.empty();
+	const bool weightBySizing = !sizing.empty();
 
 	typedef WeightedAccumulator<Mesh::Vertex> LaplacianInfo;
 	std::vector<LaplacianInfo> lpis(nv);
@@ -1221,6 +1256,8 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 	data.TagCreaseEdges();
 	if (params.adapt)
 		data.BuildSizingField();
+	if (!params.vertexSizing.empty())
+		data.AdoptSizingField();
 	RemeshStats acc;
 	using RClock = std::chrono::steady_clock;
 	auto secs = [](RClock::time_point t0) {

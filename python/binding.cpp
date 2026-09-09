@@ -20,6 +20,7 @@
 #include <halfmesh/AtlasCharting.h>
 #include <halfmesh/AtlasPacking.h>
 
+#include <cmath>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
@@ -197,20 +198,66 @@ PYBIND11_MODULE(_halfmesh, m)
 		py::tuple vf = ArraysFromMesh(mesh);
 		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("min_faces"), "Remove connected components with fewer than min_faces faces.");
 
-	m.def("remesh", [](const VertArray& v, const FaceArray& f, float edge_length, int iterations) {
+	m.def("remesh", [](const VertArray& v, const FaceArray& f, float edge_length, int iterations, std::optional<BoundArray> vertexSizing, bool adapt, float approx_error, float min_adaptive_mult, float max_adaptive_mult) {
 		if (edge_length <= 0.f)
 			throw py::value_error("remesh edge_length must be > 0");
 		if (iterations <= 0)
 			throw py::value_error("remesh iterations must be > 0");
+		// The struct defaults the multipliers to 1/1, which clamps the curvature field
+		// flat; SetAdaptive is what supplies the usable 0.25/4 range, so route through it.
+		if (adapt) {
+			if (approx_error < 0.f || !std::isfinite(approx_error))
+				throw py::value_error("approx_error must be finite and >= 0 (0 derives it from edge_length)");
+			if (!(min_adaptive_mult > 0.f) || !(max_adaptive_mult >= min_adaptive_mult))
+				throw py::value_error("need 0 < min_adaptive_mult <= max_adaptive_mult");
+		} else if (approx_error != 0.f) {
+			// silently remeshing uniform is the one outcome a caller who asked for a
+			// tolerance cannot detect from the result
+			throw py::value_error("approx_error has no effect without adapt=True");
+		}
 		Mesh mesh = MeshFromArrays(v, f);
+		Mesh::RemeshParams params;
+		params.SetEdgeLength(edge_length);
+		params.iterations = iterations;
+		if (adapt)
+			params.SetAdaptive(approx_error, min_adaptive_mult, max_adaptive_mult);
+		if (!vertexSizing) {
+			{
+				py::gil_scoped_release release;
+				mesh.RemeshIsotropic(params);
+			}
+			return ArraysFromMesh(mesh);
+		}
+		const BoundArray& s = *vertexSizing;
+		if (s.ndim() != 1 || s.shape(0) != v.shape(0))
+			throw py::value_error("vertex_sizing must have shape [N] matching the N vertices");
+		// Copied, not aliased: the remesh runs without the GIL, so it must not read a
+		// buffer Python could resize or free underneath it.
+		std::vector<float> sizing(static_cast<size_t>(s.shape(0)));
+		if (!sizing.empty())
+			std::memcpy(sizing.data(), s.data(), sizeof(float) * sizing.size());
+		// RemeshIsotropic only warns and carries on without the field; raise instead, so a
+		// silently ungraded result is never what a Python caller gets back.
+		for (const float len : sizing)
+			if (!(len > 0.f) || !std::isfinite(len))
+				throw py::value_error("vertex_sizing entries must be finite and > 0");
+		if (!mesh.faces.empty()) {
+			bool built = false;
+			{
+				py::gil_scoped_release release;
+				built = mesh.halfMesh.Build(mesh);
+			}
+			// RemeshIsotropic would repair and potentially remap vertices. The field is
+			// stated over INPUT indices, so require callers to repair first instead.
+			if (!built)
+				throw py::value_error("input requires topology repair, so vertex_sizing may no longer address its vertices; call repair() first and state the field over its output");
+		}
+		params.vertexSizing = sizing;
 		{
 			py::gil_scoped_release release;
-			Mesh::RemeshParams params;
-			params.SetEdgeLength(edge_length);
-			params.iterations = iterations;
 			mesh.RemeshIsotropic(params);
 		}
-		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("edge_length"), py::arg("iterations") = 3, "Isotropic remeshing toward a uniform target edge length (world units).");
+		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("edge_length"), py::arg("iterations") = 3, py::arg("vertex_sizing") = py::none(), py::arg("adapt") = false, py::arg("approx_error") = 0.f, py::arg("min_adaptive_mult") = 0.25f, py::arg("max_adaptive_mult") = 4.f, "Isotropic remeshing toward a uniform target edge length (world units).\n\nvertex_sizing: optional [N] float32 per-vertex TARGET edge length (world units, one entry per input vertex) replacing the uniform target, so the split, collapse and smoothing passes grade the mesh where the caller asks. Every entry must be finite and > 0. Unlike simplify's vertex_max_error it is read-only, so the return stays (vertices, faces). Being per vertex is what makes a target stated in image pixels expressible (target_edge_px / footprint_v). edge_length is still required (the passes that never consult the field read it); the field's own mean is the natural value.\n\nadapt: curvature-adaptive sizing -- high-curvature regions get shorter edges, flat ones longer, for the same fidelity at fewer triangles. approx_error is the target geometric deviation (0 derives it from edge_length) and min/max_adaptive_mult clamp the per-vertex target to that multiple of the base length. Combined with vertex_sizing the two fields INTERSECT per vertex (the finer target wins), so a caller can ask for no face coarser than its own field allows and none so coarse it leaves the surface.");
 
 	py::class_<Mesh>(m, "Mesh",
 	                 "Triangle mesh facade over halfmesh::Mesh (PLY / glTF / GLB I/O).")
