@@ -395,7 +395,7 @@ Both scenes the source study used are measured, from the same recipe:
 
 | arm | Truck charts | ch/face | coverage | Ignatius charts | ch/face | coverage |
 |---|--:|--:|--:|--:|--:|--:|
-| baseline (`develop@8382722`, 0.3.0) | 102 033 | 0.1952 | 0.2325 | 106 722 | 0.1991 | 0.2334 |
+| baseline (0.3.0, `develop@b8a491c`) | 102 033 | 0.1952 | 0.2325 | 106 722 | 0.1991 | 0.2334 |
 | defaults (blacklist on, knobs off) | 99 681 | 0.1907 | 0.2343 | 104 583 | 0.1951 | 0.2347 |
 | `cut_to_disk` | 88 727 | 0.1697 | 0.2458 | 93 495 | 0.1744 | 0.2017 |
 | … + `fold_rescue_slits=2` | 86 986 | 0.1664 | 0.2476 | 92 434 | 0.1724 | 0.2494 |
