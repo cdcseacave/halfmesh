@@ -33,6 +33,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   input is never mutated. A wrong shape, a non-positive or non-finite entry, or
   input that requires topology repair (which may invalidate per-input-vertex
   indexing) raises `ValueError` rather than warning and remeshing uniform.
+- **Python**: `hm.remesh(..., adapt=False, approx_error=0.0,
+  min_adaptive_mult=0.25, max_adaptive_mult=4.0)` exposes curvature-adaptive
+  sizing, so the intersection of the two fields is reachable from Python. The
+  multipliers default to `SetAdaptive`'s usable range rather than the struct's
+  `1.0`/`1.0`, which would pin the field flat and make `adapt` a no-op. Passing
+  `approx_error` without `adapt=True` raises `ValueError` instead of silently
+  remeshing uniform.
 
 ### Per-vertex decimation error bound
 

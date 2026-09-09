@@ -173,7 +173,7 @@ Drop every connected component with fewer than `min_faces` triangles (and
 the vertices that fall unreferenced as a result). `removed` is the number of
 components dropped.
 
-### `remesh(vertices, faces, edge_length, iterations=3, vertex_sizing=None) -> (v, f)`
+### `remesh(vertices, faces, edge_length, iterations=3, vertex_sizing=None, adapt=False, approx_error=0.0, min_adaptive_mult=0.25, max_adaptive_mult=4.0) -> (v, f)`
 
 Isotropic remeshing (flip/collapse/relocate/refine) toward a uniform target
 `edge_length`, in the same world units as the input vertices — not a ratio.
@@ -216,6 +216,35 @@ Notes:
   what you get back). Input that requires topology repair is rejected for the
   same reason as in `simplify`: repair may remap or add vertices, so call
   `repair()` first and state the field over *its* output.
+
+#### Curvature-adaptive sizing
+
+`adapt=True` derives a per-vertex target from local curvature instead of using
+one length everywhere: curved regions get shorter edges, flat ones longer, so
+the same fidelity costs fewer triangles. `approx_error` is the target geometric
+deviation (`0.0` derives one from `edge_length`); tightening it buys fidelity
+with triangles.
+
+`min_adaptive_mult` / `max_adaptive_mult` clamp the per-vertex target to that
+multiple of the base length. **They matter**: the underlying struct defaults
+both to `1.0`, which pins the field flat and makes `adapt` a no-op, so the
+binding defaults them to the usable `0.25` / `4.0` range instead. Setting
+`min_adaptive_mult=1.0` reproduces the uniform result exactly.
+
+```python
+# stay within 1 mm of the input surface, at whatever density that costs
+v, f = hm.remesh(v, f, edge_length=0.01, adapt=True, approx_error=1e-3)
+```
+
+Passing `approx_error` **without** `adapt=True` raises `ValueError` rather than
+silently remeshing uniform — a tolerance that was quietly ignored is not
+something you could spot in the result. `adapt=True` also requires
+`approx_error >= 0` and `0 < min_adaptive_mult <= max_adaptive_mult`.
+
+Given both, `adapt` and `vertex_sizing` **intersect** per vertex — the finer
+target wins — so you can ask for no face coarser than your own field allows and
+none so coarse it leaves the surface. A caller field coarser than the curvature
+one is simply not the binding constraint and changes nothing.
 
 ### `class Mesh`
 
