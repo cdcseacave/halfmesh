@@ -212,8 +212,8 @@ Notes:
   are not honoured.
 - Every entry must be finite and `> 0`; a length other than `len(vertices)`, a
   non-1-D array, or a bad entry raises `ValueError` (the C++ API only warns and
-  remeshes uniform — the binding refuses so a silently ungraded result is never
-  what you get back). Input that requires topology repair is rejected for the
+  carries on as if the field had not been supplied — the binding refuses so a
+  silently ungraded result is never what you get back). Input that requires topology repair is rejected for the
   same reason as in `simplify`: repair may remap or add vertices, so call
   `repair()` first and state the field over *its* output.
 

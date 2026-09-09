@@ -236,8 +236,8 @@ PYBIND11_MODULE(_halfmesh, m)
 		std::vector<float> sizing(static_cast<size_t>(s.shape(0)));
 		if (!sizing.empty())
 			std::memcpy(sizing.data(), s.data(), sizeof(float) * sizing.size());
-		// RemeshIsotropic only warns and remeshes uniform on a bad field; raise instead,
-		// so a silently ungraded result is never what a Python caller gets back.
+		// RemeshIsotropic only warns and carries on without the field; raise instead, so a
+		// silently ungraded result is never what a Python caller gets back.
 		for (const float len : sizing)
 			if (!(len > 0.f) || !std::isfinite(len))
 				throw py::value_error("vertex_sizing entries must be finite and > 0");

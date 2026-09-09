@@ -593,7 +593,11 @@ class Mesh
 		// ~edgeMinLength/6 are not honoured (with the mean as base length, that is a
 		// field spanning more than 6x below its own mean).
 		// A wrong-sized field, or one holding a non-positive or non-finite target, is
-		// refused whole with a warning and the remesh runs uniform.
+		// refused whole with a warning, and the remesh then runs exactly as if the field
+		// had not been supplied: uniform, or still curvature-graded under adapt. Refusing
+		// this field says nothing about the validity of that one, and dropping it too
+		// would let one bad input void a separate valid request AND leave the surface by
+		// more than approxError while doing it.
 		// Being per vertex is what makes a target stated in image pixels expressible
 		// (targetEdgePx / footprint_v), so a surface a camera sees from varying distance
 		// comes out uniform where it is measured rather than where it is stored.

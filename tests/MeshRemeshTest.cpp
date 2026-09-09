@@ -1233,6 +1233,24 @@ TEST(MeshRemesh, SizingFieldIntersectsCurvature)
 	EXPECT_LT(withCoarseCaller, curvatureOnly * 4 / 3);
 	// a finer one is binding, and must refine past what curvature alone produced
 	EXPECT_GT(withFineCaller, curvatureOnly * 3 / 2);
+
+	// A refused field is refused on its own. The curvature field the caller separately
+	// (and validly) asked for survives it, so the result here is the curvature one and
+	// NOT the uniform one: clearing the sizing field on refusal would let one bad input
+	// silently void a second, unrelated, valid request -- and the mesh would then leave
+	// the surface by more than approxError, which is exactly the failure the
+	// refuse-the-field-whole policy exists to avoid.
+	Mesh refused = hmtest::corpus::UVSphere(24, 48);
+	refused.ListHalfEdges();
+	const float L = static_cast<float>(ComputeEdgeStats(refused).meanLen);
+	const std::vector<float> shortField(refused.vertices.size() - 1, L);
+	Mesh::RemeshParams p;
+	p.SetEdgeLength(L);
+	p.iterations = 5;
+	p.SetAdaptive(0.f, 0.25f, 4.f);
+	p.vertexSizing = shortField;
+	refused.RemeshIsotropic(p);
+	EXPECT_EQ(refused.faces.size(), curvatureOnly);
 }
 
 } // namespace

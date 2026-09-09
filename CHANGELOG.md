@@ -23,8 +23,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   consult the field read the scalar bounds, and the field's own mean is the natural
   value. One such pass is the degenerate-face guard, so targets below
   ~`edgeMinLength/6` are not honoured. A wrong-sized field, or one holding a
-  non-positive or non-finite target, is refused whole with a warning and the remesh
-  runs uniform.
+  non-positive or non-finite target, is refused whole with a warning; the remesh
+  then runs as if it had not been supplied — uniform, or still curvature-graded
+  under `adapt`, since refusing one field says nothing about the other.
 - Being per vertex is what makes a target stated in image pixels expressible
   (`targetEdgePx / footprint_v`), so a surface a camera sees from varying distance
   is remeshed uniformly where it is measured rather than where it is stored.
