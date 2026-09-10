@@ -1006,7 +1006,7 @@ static AtlasResult PackRibbonFixture(float uvHeight, Mesh& mesh)
 // leave NormalizeChartDensity unnormalized, and PackAtlas's degenerate rescue
 // only catches a ZERO-width or ZERO-height rect — so it entered fitToResolution's
 // global solve, whose binding term is MAX DIMENSION, and set the page scale for
-// every sibling (a 12x coverage loss on a real mesh; CHANGELOG 0.3.1). Assert
+// every sibling (a 12x coverage loss on a real mesh; CHANGELOG 0.4.0). Assert
 // the invariant that actually broke — adding one degenerate chart must not
 // destroy the atlas — rather than the >=1-texel rect floor, which the packer
 // clamps and which therefore holds even under total collapse.
@@ -1517,7 +1517,7 @@ static Mesh DisjointQuads(int k)
 // same 4-texel-square local UVs -- the shared fixture for both per-size
 // padding trigger tests below (tinyChartSide via chart side, debrisChartFaces
 // via chart face count).
-static void BuildTinyChartFixture(int k, Mesh& mesh, std::vector<unsigned>& faceChart)
+static void BuildTinyChartFixture(int k, Mesh& mesh, std::vector<unsigned>& faceChart, float side = 4.f)
 {
 	mesh = DisjointQuads(k);
 	faceChart.resize(mesh.faces.size());
@@ -1525,7 +1525,7 @@ static void BuildTinyChartFixture(int k, Mesh& mesh, std::vector<unsigned>& face
 		faceChart[f] = static_cast<unsigned>(f / 2);
 	mesh.faceTexcoords.assign(mesh.faces.size() * 3, Mesh::TexCoord(0.f, 0.f));
 	for (size_t f = 0; f < mesh.faces.size(); f += 2) {
-		const Mesh::TexCoord q[4] = {{0.f, 0.f}, {4.f, 0.f}, {4.f, 4.f}, {0.f, 4.f}};
+		const Mesh::TexCoord q[4] = {{0.f, 0.f}, {side, 0.f}, {side, side}, {0.f, side}};
 		mesh.faceTexcoords[f * 3 + 0] = q[0];
 		mesh.faceTexcoords[f * 3 + 1] = q[1];
 		mesh.faceTexcoords[f * 3 + 2] = q[2];
@@ -1614,6 +1614,59 @@ TEST(AtlasTest, ReportsNarrowestAppliedPadding)
 		EXPECT_EQ(rR.chartsPaddingReduced, static_cast<unsigned>(K))
 		    << "debrisTrigger=" << debrisTrigger;
 	}
+}
+
+// The shipped path (GenerateAtlas, hm.unwrap) always runs with fitToResolution
+// ON, and the two trigger tests above deliberately run it OFF. That gap hid a
+// real defect: the fit solve priced every gutter at the tier the chart occupied
+// UNSCALED, while the probe and final packs tier against the SCALED size. Where
+// the global scale lands well below 1 the two disagree -- the solve charges the
+// wide gutter, the pack applies the narrow one -- and the shrink loop only ever
+// shrinks, so the atlas shipped under-scaled with nothing warning.
+//
+// Pinned without naming an implementation: make the charts big enough that they
+// enter the tiny tier only AFTER the fit scales them down, then compare against
+// a uniform 1-texel gutter. Once every chart is in the reduced tier the two are
+// the same packing problem, so they must solve for the same scale.
+TEST(AtlasTest, PerSizePaddingPricesTheFitSolveAtTheScaledTier)
+{
+	constexpr int K = 256;
+	constexpr float kSide = 64.f; // unscaled: far above the trigger
+	constexpr float kTrigger = 20.f; // above the SCALED side, below the unscaled one
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	BuildTinyChartFixture(K, mesh, faceChart, kSide);
+
+	halfmesh::AtlasParams base;
+	base.resolution = 256u;
+	base.fitToResolution = true;
+
+	// Reference: a uniform 1-texel gutter, where solve and pack cannot disagree.
+	halfmesh::AtlasParams uniform1 = base;
+	uniform1.padding = 1;
+	Mesh meshU = mesh;
+	const auto rU = halfmesh::PackAtlas(meshU, faceChart, K, uniform1);
+	ASSERT_GT(rU.fitScale, 0.f);
+	ASSERT_LT(rU.fitScale, 1.f) << "fixture must force the fit to shrink, or no tier ever moves";
+	ASSERT_LE(kSide * rU.fitScale, kTrigger) << "scaled side must land inside the trigger";
+
+	// The same atlas reached through the trigger: nominal gutter 4, but every
+	// chart falls into the 1-texel tier once scaled, so the solve must price it
+	// there too. Before the fix this shipped at roughly half the scale.
+	halfmesh::AtlasParams tiny = base;
+	tiny.padding = 4;
+	tiny.tinyChartSide = kTrigger;
+	Mesh meshT = mesh;
+	const auto rT = halfmesh::PackAtlas(meshT, faceChart, K, tiny);
+	EXPECT_EQ(rT.minPadding, 1u);
+	EXPECT_EQ(rT.chartsPaddingReduced, static_cast<unsigned>(K));
+	EXPECT_NEAR(rT.fitScale, rU.fitScale, rU.fitScale * 0.01f)
+	    << "the solve priced gutters the pack never applied: " << rT.fitScale
+	    << " vs uniform-1 " << rU.fitScale;
+	EXPECT_NEAR(rT.coverage, rU.coverage, 0.02f);
+	// The narrowed gutter still has to keep charts apart.
+	const auto rects = ChartBBoxes(meshT, faceChart, K, rT.chartPage, rT.width, rT.height);
+	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "per-size padding let charts overlap under the fit";
 }
 
 // fitScale + maxChartExtent exist to make ONE failure mode legible from the

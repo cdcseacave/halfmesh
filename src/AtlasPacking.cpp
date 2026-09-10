@@ -817,40 +817,45 @@ AtlasResult PackAtlas(Mesh& mesh,
 	// 1.5. Fit-to-resolution: globally rescale so the total PADDED chart area
 	//      is ≈ one page, so the atlas fills a single `resolution`² page at high
 	//      occupancy instead of spilling many small (padded) charts across
-	//      several pages. Solve for the scale k that makes
-	//        Σ (k·w + 2·pad_c)(k·h + 2·pad_c) = targetFill · resolution²
-	//      (a quadratic in k, coefficients accumulated per chart so per-size
-	//      per-chart pad_c is honored -- uniform pad reproduces the old
-	//      single-pad quadratic exactly), then scale UVs + chart rects by k.
+	//      several pages, then scale UVs + chart rects by the solved k.
 	// ------------------------------------------------------------------
 	if (params.fitToResolution && numCharts > 0) {
-		double a = 0.0, b = 0.0, cc = 0.0;
-		for (unsigned c = 0; c < numCharts; ++c) {
-			if (crects[c].degenerate)
-				continue; // degenerate charts stay a fixed 1-texel slot, unscaled
-			const float padC = ChartPad(params, crects[c].w, crects[c].h, chartFaces[c], pad);
-			a += static_cast<double>(crects[c].w) * crects[c].h;
-			b += 2.0 * static_cast<double>(padC) * (static_cast<double>(crects[c].w) + crects[c].h);
-			cc += 4.0 * static_cast<double>(padC) * padC;
-		}
 		const double R = static_cast<double>(params.resolution);
 		const double targetFill = 0.82; // leave slack for packing gaps → ~1 page
-		cc -= targetFill * R * R;
-		double k = 0.0;
-		if (a > 1e-12) {
-			const double disc = b * b - 4.0 * a * cc;
-			if (disc >= 0.0)
-				k = (-b + std::sqrt(disc)) / (2.0 * a);
-		} else if (b > 1e-12) {
-			k = -cc / b; // all-zero-area edge case (charts collapse to points)
-		}
-		if (k > 0.0 && std::isfinite(k)) {
-			// Clamp k so the LONGEST chart side (plus padding) fits one page:
-			// PackRects grows a page to swallow any oversized rect, so without
-			// this a single extreme-aspect chart made the "one page" far larger
-			// than params.resolution — silently violating the documented one
-			// resolution² page contract (the shrink loop below only tested the
-			// page COUNT). Rotation cannot help: the long side must fit either way.
+
+		// Solve Σ (k·w + 2·pad_c)(k·h + 2·pad_c) = targetFill·R² for k, pricing each
+		// chart's gutter at the tier it lands in once scaled by `tierScale`. Per-size
+		// padding makes pad_c a step function OF THE VERY SCALE being solved for, so
+		// the solve is iterated to a fixed point below; the packer tiers on the scaled
+		// size, and pricing the solve on the unscaled one let it charge a gutter the
+		// pack never applies. With both knobs off ChartPad ignores w/h, every
+		// tierScale yields the same k, and this is the old single-pad quadratic.
+		const auto solveK = [&](double tierScale) {
+			double a = 0.0, b = 0.0, cc = 0.0;
+			for (unsigned c = 0; c < numCharts; ++c) {
+				if (crects[c].degenerate)
+					continue; // degenerate charts stay a fixed 1-texel slot, unscaled
+				const double w = crects[c].w, h = crects[c].h;
+				const double padC = ChartPad(params, static_cast<float>(w * tierScale),
+				                             static_cast<float>(h * tierScale), chartFaces[c], pad);
+				a += w * h;
+				b += 2.0 * padC * (w + h);
+				cc += 4.0 * padC * padC;
+			}
+			cc -= targetFill * R * R;
+			if (a > 1e-12) {
+				const double disc = b * b - 4.0 * a * cc;
+				return disc >= 0.0 ? (-b + std::sqrt(disc)) / (2.0 * a) : 0.0;
+			}
+			return b > 1e-12 ? -cc / b : 0.0; // all-zero-area edge case (charts collapse to points)
+		};
+		// Clamp k so the LONGEST chart side, plus the gutter that chart earns AT k,
+		// fits one page: PackRects grows a page to swallow any oversized rect, so
+		// without this a single extreme-aspect chart made the "one page" far larger
+		// than params.resolution — silently violating the documented one resolution²
+		// page contract (the shrink loop below only tested the page COUNT). Rotation
+		// cannot help: the long side must fit either way.
+		const auto clampToPage = [&](double k) {
 			double maxDim = 0.0, maxDimPad = pad; // the widest chart's own gutter
 			for (unsigned c = 0; c < numCharts; ++c) {
 				if (crects[c].degenerate)
@@ -858,11 +863,35 @@ AtlasResult PackAtlas(Mesh& mesh,
 				const double side = std::max(crects[c].w, crects[c].h);
 				if (side > maxDim) {
 					maxDim = side;
-					maxDimPad = ChartPad(params, crects[c].w, crects[c].h, chartFaces[c], pad);
+					maxDimPad = ChartPad(params, static_cast<float>(crects[c].w * k),
+					                     static_cast<float>(crects[c].h * k), chartFaces[c], pad);
 				}
 			}
-			if (maxDim > 0.0 && R > 2.0 * maxDimPad)
-				k = std::min(k, (R - 2.0 * maxDimPad) / maxDim);
+			return (maxDim > 0.0 && R > 2.0 * maxDimPad) ? std::min(k, (R - 2.0 * maxDimPad) / maxDim) : k;
+		};
+
+		double k = solveK(1.0);
+		if (k > 0.0 && std::isfinite(k)) {
+			// Fixed point on the tier assignment: re-price at the k just solved until
+			// the tiers stop moving. Tiers are a step function, so this settles in one
+			// pass unless a chart sits on a boundary; with the knobs off it settles on
+			// the first compare. A boundary chart can 2-cycle (each k puts it in the
+			// tier that implies the other), so on a non-converged sweep take the
+			// smallest k seen — the branch whose gutters the pack can actually afford.
+			k = clampToPage(k);
+			double kSafe = k;
+			bool converged = false;
+			for (int it = 0; it < 4 && !converged; ++it) {
+				double kNext = solveK(k);
+				if (!(kNext > 0.0 && std::isfinite(kNext)))
+					break; // degenerate re-solve: keep the last good k
+				kNext = clampToPage(kNext);
+				converged = (kNext == k);
+				k = kNext;
+				kSafe = std::min(kSafe, k);
+			}
+			if (!converged)
+				k = kSafe;
 			// The single 0.82-fill solve is open-loop: if actual skyline waste exceeds
 			// ~18% (elongated / high-aspect charts) the pack overflows to a nearly-empty
 			// SECOND page at the same density, doubling texture memory instead of fitting
@@ -896,6 +925,14 @@ AtlasResult PackAtlas(Mesh& mesh,
 				// waste-driven overflows (area under budget, layout still >1
 				// page) converging at least as fast as the old ladder; lower
 				// clamp 0.80 stops one noisy probe from collapsing the scale.
+				//
+				// One-way by construction: the loop stops at the FIRST k that
+				// fits and never asks whether a larger one would have, so a
+				// marginal overflow costs the whole 0.95 step (~10% of page
+				// area) for good. Recovering it means making "fit" mean the
+				// LARGEST k that packs, which would also grow every atlas that
+				// fits on probe 1 and so re-opens the measured targetFill and
+				// the fitScale contract; see docs/BENCHMARKS.md §7.
 				const double budgetArea = targetFill * R * R;
 				double shrink = std::sqrt(budgetArea / std::max(static_cast<double>(probeArea), 1.0));
 				shrink = std::clamp(shrink, 0.80, 0.95);

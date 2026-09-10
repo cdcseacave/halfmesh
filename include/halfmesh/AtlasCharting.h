@@ -138,8 +138,12 @@ struct AtlasParams
 	// very many tiny charts the uniform gutter is a multiplicative tax on exactly
 	// the charts that matter least, and the bleed it guards against scales with
 	// chart area. Under fitToResolution the tiny-side trigger is evaluated
-	// against each probe's SCALED trial size, so a chart's tier can change as
-	// the global scale converges.
+	// against SCALED sizes everywhere — the fit solve prices each gutter at the
+	// tier the chart lands in at the scale being solved for (a fixed point, since
+	// the tier is a step function of that scale), and the probe and final packs
+	// re-tier against their own trial size. Pricing the solve on unscaled sizes
+	// instead let it charge a gutter the pack never applied, and the shrink loop
+	// only ever shrinks, so an over-priced solve had no way back.
 	float tinyChartSide = 0.f; // trigger: max UNPADDED rect side ≤ this many texels
 	unsigned debrisChartFaces = 0; // trigger: chart has ≤ this many faces
 
@@ -228,6 +232,11 @@ struct AtlasResult
 	// `occupancy` is PADDED-RECT fill (bbox waste + padding tax included), so with
 	// many small charts it reads high while coverage is several times lower;
 	// size an atlas for a target texel density from THIS number.
+	// Two things to know before treating it as ground truth: triangle areas are
+	// summed ABSOLUTE, so where a map is not injective (a folded or
+	// self-overlapping chart) the doubled-back area counts twice and coverage is
+	// an upper bound; and it is a MEAN over pages, so a nearly-empty second page
+	// roughly halves it even though the first page is packed as tightly as ever.
 	float coverage = 0.f;
 	// fit-to-resolution probe packs performed (0 = fitToResolution off). A
 	// converging fit takes 1-2; values near the internal cap (8) mean the
@@ -239,6 +248,10 @@ struct AtlasResult
 	// its area-driven value together with a `maxChartExtent` near `width` means
 	// ONE chart's long side set the scale for all of them, rather than there
 	// simply being many charts.
+	// 1.0 is ambiguous: it is the value when fitToResolution is off AND when the
+	// solve could not produce a usable scale (non-positive or non-finite k, e.g.
+	// every chart degenerate), in which case the UVs ship unscaled. `fitAttempts`
+	// does not separate the two either — it is also 0 on that path.
 	float fitScale = 1.f;
 	// Largest UNPADDED chart side in texels in the packed atlas. Compare with
 	// `width`: a chart at or near the page side is the shape that drags
