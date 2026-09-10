@@ -286,7 +286,7 @@ resolution.)
 
 ### Repair carve rings / fold-rescue slits / per-size padding (defaults OFF)
 
-Three more opt-in knobs landed in 0.3.1, all **OFF by default**:
+Three more opt-in knobs landed in 0.4.0, all **OFF by default**:
 `repair_carve_rings` (`--repair-carve-rings`, failure-localized
 repair split — carve off the faces within N `TopoNeighbor` rings of a folding
 chart's diagnosed failure instead of a blind PCA bisection), `fold_rescue_slits`
@@ -396,27 +396,41 @@ Both scenes the source study used are measured, from the same recipe:
 | arm | Truck charts | ch/face | coverage | Ignatius charts | ch/face | coverage |
 |---|--:|--:|--:|--:|--:|--:|
 | baseline (0.3.0, `develop@b8a491c`) | 102 033 | 0.1952 | 0.2325 | 106 722 | 0.1991 | 0.2334 |
-| defaults (blacklist on, knobs off) | 99 681 | 0.1907 | 0.2343 | 104 583 | 0.1951 | 0.2347 |
-| `cut_to_disk` | 88 727 | 0.1697 | 0.2458 | 93 495 | 0.1744 | 0.2017 |
-| … + `fold_rescue_slits=2` | 86 986 | 0.1664 | 0.2476 | 92 434 | 0.1724 | 0.2494 |
-| … + `repair_carve_rings=2` | 88 523 | 0.1693 | 0.2459 | 93 181 | 0.1738 | 0.2489 |
-| … + `carve=2, slits=2` | 86 605 | 0.1657 | 0.2474 | 91 818 | 0.1713 | 0.2519 |
-| … + `slits=2, tiny=8, debris=16` | 86 986 | 0.1664 | **0.3200** | 92 434 | 0.1724 | **0.3229** |
-| … + `slits=2`, global `padding=1` | 86 986 | 0.1664 | **0.3334** | 92 434 | 0.1724 | **0.3376** |
+| defaults (blacklist on, knobs off) | 99 741 | 0.1908 | 0.2606 | 104 614 | 0.1951 | 0.2334 |
+| `cut_to_disk` | 89 004 | 0.1703 | 0.3053 | 94 025 | 0.1754 | 0.2216 |
+| … + `fold_rescue_slits=2` | 87 200 | 0.1668 | 0.3072 | 91 699 | 0.1710 | 0.2977 |
+| … + `repair_carve_rings=2` | 88 916 | 0.1701 | 0.2895 | 93 360 | 0.1741 | 0.3056 |
+| … + `carve=2, slits=2` | 86 921 | 0.1663 | 0.3083 | 92 446 | 0.1724 | 0.2975 |
+| … + `slits=2, tiny=8, debris=16` | 87 200 | 0.1668 | **0.3808** | 91 699 | 0.1710 | 0.3374 |
+| … + `slits=2`, global `padding=1` | 87 200 | 0.1668 | 0.3472 | 91 699 | 0.1710 | **0.3910** |
 
-**The two scenes agree on every axis** — baseline fragmentation within 2 %
-(0.1952 vs 0.1991 charts/face), baseline coverage within 0.4 %, and each knob's
-effect within a percentage point. Chart count is invariant across tessellation
+Every row above was re-measured together at 0.4.0 (2026-09-10). The previous
+table dated from 2026-08-30 and had since been overtaken four times over — by
+the chart-extent gate recalibration, the always-on distortion bar, and the two
+packing fixes in this release — so its arms are not comparable with these.
+The baseline row is the control: rebuilt from the `v0.3.0` tag into a clean
+environment, it reproduces its 2026-08-30 chart counts and coverage to every
+printed digit on both scenes, so what moved below is the library and not the
+measurement. (0.3.0's `unwrap()` predates `AtlasResult::coverage`, so its two
+coverage figures are recomputed from the written PLY — the same recomputation
+agrees to four digits with the reported metric on the 0.4.0 arms.)
+
+**The two scenes agree on fragmentation** — baseline within 2 %
+(0.1952 vs 0.1991 charts/face), defaults within 2 % (0.1908 vs 0.1951), and
+each segmentation knob's effect within a percentage point. Chart count is invariant across tessellation
 (the source study: 300 k, 520 k and 659 k-face variants all land at 90–106 k
 charts) *and* across scene, which makes ~0.195 charts/face a property of
 marching-tets extraction from a splat SDF rather than of any capture. The
 criterion's implied target of ~0.104 charts/face (≤ 55 k charts on ~525 k
 faces) asks for a 47 % cut against that constant.
 
-Ignatius `cut_to_disk` alone reads 0.2017 against its own siblings' ~0.249
-because a slit ribbon lands at exactly page width and bisects the skyline
-(occupancy 0.707, three fit probes). Before the `NormalizeChartDensity` extent
-clamp that same arm read **0.0189** — see the note below.
+**Coverage no longer agrees between them, and that is the interesting part.**
+The two scenes now disagree on which padding strategy wins — see the criterion
+section below — and Ignatius `cut_to_disk` alone reads 0.2216 against its own
+siblings' ~0.30, because a slit ribbon lands at page width and bisects the
+skyline (occupancy 0.757, and the only arm in the sweep that needs 8 fit
+probes rather than 7). Before the `NormalizeChartDensity` extent clamp that
+same arm read **0.0189** — see the note below.
 
 **A latent packing defect this sweep found.** On Ignatius with `cut_to_disk`,
 one triangle spanned 4 092 of the 4 096 texels and dragged triangle coverage to
@@ -471,12 +485,14 @@ On the two 471–477 k-face consumer meshes, coverage went 0.1891 → **0.2484**
 (Ignatius defaults) and 0.0200 → **0.2292** (`fold_rescue_slits=2`), with the
 four arms that had no over-page chart bit-identical.
 
-**Every sweep table in this section predates two 0.3.1 changes** — this extent
-recalibration and the always-on distortion bar (`kShipMaxSymDir`, see the
-CHANGELOG) — and was measured on different (522–536 k-face) meshes. Both
+**The `mesh.ply` sweep tables in this section predate two 0.4.0 changes** —
+this extent recalibration and the always-on distortion bar (`kShipMaxSymDir`,
+see the CHANGELOG) — and were measured on different (522–536 k-face) meshes.
+The Truck-class table above is the exception: it was re-measured in full at
+0.4.0 and needs no such adjustment. Both
 changes move arms that had an over-page or over-stretched chart; the distortion
 bar in particular splits them, so chart counts read low and per-chart
-sym-Dirichlet reads high in these tables relative to what 0.3.1 now produces.
+sym-Dirichlet reads high in these tables relative to what 0.4.0 now produces.
 On the Ignatius default arm the two together take the worst per-chart
 sym-Dirichlet from 3.3e8 to 22 390 and the widest chart from 2 071 to 640
 texels of a 4 096 page, at +0.25 % charts.
@@ -484,39 +500,47 @@ texels of a 4 096 page, at +0.25 % charts.
 **Criterion: ≤ 55 k charts and coverage ≥ 0.30. Coverage passes, chart count
 does not.**
 
-- **Coverage: met.** 0.2325 → 0.3200 (+37.6 %). But the last two rows are the
-  finding: a **global `padding=1` beats the per-size padding knobs** (0.3334 vs
-  0.3200) at an identical partition. At a ~7.6-texel mean unpadded chart side,
-  "1-texel gutter for tiny charts" is nearly "1-texel gutter for everything",
-  minus the large charts that still pay 2. The per-size knobs need a *mix* of
-  chart sizes to earn their complexity; this mesh class has none. Coverage is
-  texels, not quality — padding 4→2 was worth +1.26 dB in the consumer's bake,
-  2→1 is **unbaked** and is where seam bleed starts.
-- **Chart count: missed by 1.57× (Truck) / 1.67× (Ignatius).** Best arms
-  86 605 and 91 818 against a 55 000 target.
-  Nearly all of the −15.1 % is `cut_to_disk`, which predates this work:
-  `repair_carve_rings=2` is **−0.2 %** (Ignatius −0.3 %) and
-  `fold_rescue_slits=2` is **−2.0 %** (Ignatius −1.1 %)
-  here, against −3.7 % and −9.9 % on `mesh.ply`. **Both knobs are
+- **Coverage: met, with room to spare.** Best arm 0.2325 → 0.3808 (Truck,
+  +63.8 %) and 0.2334 → 0.3910 (Ignatius, +67.5 %). `cut_to_disk` alone now clears 0.30 on
+  Truck (0.3053) without any padding knob at all — it did not before the
+  packing fixes in this release, and most of the headroom above the previous
+  table comes from them rather than from segmentation.
+- **Which padding strategy wins is mesh-dependent — the previous table's
+  conclusion was half an artifact.** It reported a global `padding=1` beating
+  the per-size knobs on both scenes (0.3334 vs 0.3200). Re-measured, the two
+  scenes disagree: on Truck `tiny=8, debris=16` wins by 9.7 % (0.3808 vs
+  0.3472), on Ignatius it loses by 13.7 % (0.3374 vs 0.3910) — at partitions
+  identical to the digit in both cases. Part of the old gap was the fit solve
+  pricing per-size gutters at the unscaled tier and under-scaling exactly that
+  arm; correcting it moved the per-size arm and not its `padding=1` sibling.
+  What is left is genuinely scene-dependent, so **measure the pair rather than
+  reasoning from mean chart size**. Coverage is texels, not quality — padding
+  4→2 was worth +1.26 dB in the consumer's bake, 2→1 is **unbaked** and is
+  where seam bleed starts.
+- **Chart count: missed by 1.58× (Truck) / 1.67× (Ignatius).** Best arms
+  86 921 and 91 699 against a 55 000 target.
+  Nearly all of the −10.8 % (Ignatius −10.1 %) from defaults is `cut_to_disk`,
+  which predates this work: against that arm, `repair_carve_rings=2` is
+  **−0.1 %** (Ignatius −0.7 %) and `fold_rescue_slits=2` is **−2.0 %**
+  (Ignatius −2.5 %), against −3.7 % and −9.9 % on `mesh.ply`. **Both knobs are
   near-no-ops on the mesh class they were designed for, on both scenes.**
   A plausible cause
   for the slit rescue: it cuts from the worst *interior* vertex to the
   boundary, and at 5.9 faces per chart most charts have no interior vertex
   left to cut from — the bisection cascade has already shattered them below
   the size where the rescue can act.
-- **Carve is a cost win, not a count win**: the fastest arm in the sweep
-  (−23 % against `cut_to_disk` alone) — the localized carve converges the
-  repair in fewer rounds without changing where it converges to.
-- **The `mesh.ply` combined-knob regression does not reproduce.**
-  `carve=2, slits=2` here gives 98 flips / 37 non-sliver against
-  `cut_to_disk` alone's 98 / **45** — fewer non-sliver flips than the
-  single-knob arm — and coverage sits normally between the two. Every arm
-  including the untouched baseline sits in an 83–110 flip band (Ignatius:
-  119–181), so flips on these meshes are a property of their 12.9 % slivers,
-  not of the knobs. On Ignatius the combined arm is the *best* chart count of
-  any arm (91 818) at the *highest* coverage (0.2519). The do-not-combine
-  caution elsewhere in this repo generalizes single-mesh `mesh.ply` evidence
-  that **both** real scenes contradict.
+- **Carve's cost win did not reproduce and is withdrawn.** The previous table
+  called it the fastest arm at −23 % against `cut_to_disk` alone. Here the two
+  scenes disagree in sign (Truck +33 %, Ignatius −8 %) on a contended machine
+  where, as noted above, wall clock is indicative only. Neither number is
+  evidence; a controlled timing run is what would settle it.
+- **Combining the two knobs is scene-dependent too.** On Truck `carve=2,
+  slits=2` is the best non-padding arm on both axes (86 921 charts, 0.3083).
+  On Ignatius it is *worse* than `slits=2` alone on chart count (92 446 vs
+  91 699) at indistinguishable coverage (0.2975 vs 0.2977) — reversing what
+  the previous table found there. The `mesh.ply` do-not-combine caution is
+  still not reproduced as a *regression* on either scene, but "combining is
+  free" is not supported either: measure the pair on your own mesh.
 
 **What to try next:**
 
@@ -547,7 +571,9 @@ does not.**
   costs stop being conflated.
 - **Close the last 20 % of the ribbon fix**: a clamped ribbon lands at exactly
   page width, which is the worst case for a skyline packer — Ignatius
-  `cut_to_disk` reads 0.2017 where its siblings read ~0.249. Capping at
+  `cut_to_disk` reads 0.2216 where its siblings read ~0.30, and it is the only
+  arm across both scenes whose scale search needs 8 probes instead of 7.
+  Capping at
   `max(page/4, C·D·sqrt(worldArea))` instead of the page would let it pack
   neatly while the area term still protects low-chart-count meshes, whose
   legitimate charts *do* span a large fraction of the page. Measure both

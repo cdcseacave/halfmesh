@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0]
 
 ### Caller-supplied remesh sizing field
 
@@ -71,8 +71,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   existing calls and binary compatibility; bounded calls use the new
   four-argument overload.
 
-## [0.3.1]
-
 ### Fixed: one degenerate chart could collapse the whole atlas
 
 `NormalizeChartDensity` bounded a chart's UV *area* but not its *extent*. A
@@ -122,6 +120,51 @@ This removes a chart's ability to tax its siblings. It does not by itself
 remove the ribbon, which still occupies a page-wide slot — the distortion bar
 below is what dissolves it. Present in 0.3.0 as well; this release's
 segmentation change is what first made a real mesh reach it.
+
+### Fixed: per-size padding priced the fit solve at the wrong tier
+
+`tinyChartSide` / `debrisChartFaces` pick a chart's gutter from its size, and
+`fitToResolution` rescales every chart before packing — so the tier depends on
+the very scale the fit is solving for. The solve read the tier off the
+**unscaled** size while the probe and final packs read it off the **scaled**
+one, and the shrink loop only ever shrinks: an over-priced solve had no way
+back, and the atlas shipped under-scaled with nothing warning. The solve now
+iterates to a fixed point on the tier assignment (a step function of the scale,
+so it settles in one pass; a chart on a tier boundary can 2-cycle, and the
+smaller scale — the one whose gutters the pack can afford — wins).
+
+Only reachable with a per-size knob on: with both off `ChartPad` ignores chart
+size, the solve is scale-invariant, and the result is byte-identical to before.
+On the regression fixture the old path solved 0.1014 where the consistent one
+solves 0.1951 — **52 % of the scale, and 3.7x less coverage** (0.164 against
+0.609).
+The knob tests previously ran only with `fitToResolution` OFF, which is the one
+setting the shipped `GenerateAtlas` / `unwrap()` path never uses; a test now
+covers the combination.
+
+### Fixed: the fit stopped at the first scale that packed, not the largest
+
+`fitToResolution` solves for a global UV scale analytically, targeting 82 % of
+one page to leave slack for skyline waste. That is an *estimate* of the largest
+scale that fits, and real chart shapes land on either side of it. The loop that
+followed only ever shrank: it stepped down until the pack fit and stopped
+there. An atlas whose estimate came in high therefore forfeited its entire
+shrink step — clamped to at most ×0.95, so ~10 % of the page area — while one
+whose estimate came in low kept the full 18 % slack, and neither was
+recoverable. `fitScale` was correspondingly not comparable between two
+atlases: it recorded which side of the estimate the answer fell on as much as
+any property of the charts.
+
+The fit now brackets from the estimate in whichever direction it was wrong and
+bisects, returning the largest scale that packs one page to under 1 %. Bounded
+at 11 rect-only probes, against 8 before. `AtlasResult::fitAttempts` counts
+them and its documented meaning changes accordingly.
+
+**This is a default-output change** — the first in this release to move the
+atlas on meshes with no knob set at all. Any atlas whose analytic estimate was
+not already within one bracketing step of the maximum now packs at a larger
+scale and higher coverage. See the Truck-class sweep in docs/BENCHMARKS.md §4
+for the two-scene numbers.
 
 ### Fixed: a flip-free but unusably stretched chart shipped unchecked
 
@@ -183,6 +226,17 @@ releasing any page-hogging extent, so the fit scale — and with it coverage —
 drops. Meshes with no chart above the bar are unaffected: every
 `tests/data/golden/` fixture is byte-identical.
 
+### Changed: an unsatisfiable distortion budget is refused, not obeyed
+
+`ParametrizeParams::developableMaxUvDistortion` is an area-weighted
+symmetric-Dirichlet budget whose floor is 4.0 — a perfectly isometric map. A
+value in **(0, 4]** can therefore be met by no chart at all, so it used to
+bisect every chart in the mesh toward one chart per triangle. It is now
+reported once and ignored, and the run continues on the internal
+ship-ability bar, the same way a mis-sized remesh sizing field is refused
+whole. 0 still means "use that bar" rather than "off"; there is no way to
+disable the check.
+
 ### Added: atlas layout diagnostics
 
 `AtlasResult` gains four fields, exposed to Python from `unwrap()`. Each
@@ -190,10 +244,13 @@ answers a question the return value previously could not, and each was a real
 integration cost — all three had to be reverse-engineered from a written PLY.
 
 - **`fitScale`** (`fit_scale`) — the single global scale fit-to-resolution
-  applied. Because the solve is `k = min(k_area, (resolution − 2·padding)/maxDim)`,
-  a `fitScale` far below its area-driven value separates *"charts are small
-  because there are many"* from *"charts are small because ONE chart forced a
-  shrink"* — the failure mode fixed above.
+  applied: the largest scale whose charts pack one page, with
+  `k = min(k_area, (resolution − 2·padding)/maxDim)` seeding the search. Read
+  together with `maxChartExtent`, a `fitScale` far below its area-driven value
+  separates *"charts are small because there are many"* from *"charts are
+  small because ONE chart forced a shrink"* — the failure mode fixed above.
+  Compare it against `maxChartExtent`, not against another atlas's `fitScale`:
+  two atlases are optima of different packing problems.
 - **`maxChartExtent`** (`max_chart_extent`) — widest unpadded chart side in
   texels. Read against `width`, it names the offending chart directly.
 - **`minPadding` / `chartsPaddingReduced`** (`padding_applied{nominal, min,
@@ -245,11 +302,12 @@ None of these changes default output. All four measured on both mesh classes
   under an unpadded-bbox-side or face-count trigger get a 1-texel gutter
   instead of the uniform `padding`, so a uniform gutter stops being a
   multiplicative tax on exactly the charts that matter least. Packing-only —
-  never changes the chart partition. On a Truck-class mesh these lift coverage
-  0.2325 → 0.3200, but a global `padding=1` reaches 0.3334 at an identical
-  partition: this mesh class has no mix of chart sizes for a size-triggered
-  gutter to exploit. Coverage is texels, not bake quality — `padding` 2→1 is
-  unmeasured against a bake.
+  never changes the chart partition. Whether they beat a simple global
+  `padding=1` is mesh-dependent and not predictable from chart statistics: on
+  two same-class Truck/Ignatius scenes at identical partitions, `tiny=8,
+  debris=16` won on one (0.3808 against 0.3472) and lost on the other (0.3374
+  against 0.3910). Measure the pair. Coverage is texels, not bake quality —
+  `padding` 2→1 is unmeasured against a bake.
 
 ### Changed: post-repair merge remembers pairs that re-fold
 
@@ -260,6 +318,12 @@ accepted-then-resplit churn from the merge↔repair rounds. **This is a
 default-segmentation-output change**: chart counts on meshes with fold/re-merge
 churn may differ slightly (`tests/data/mesh.ply`: 2816 → 2779). `tests/data/golden/`
 fixtures are unaffected — no re-freeze.
+
+Known limitation, now measurable: the repair reports *that* a merged chart
+split, not *which* merge folded it, so a chart built by a chain of merges
+blacklists one pair per merge and the surplus blocks pairs that never folded.
+That can only raise the chart count. `AtlasSegmentStats::MergeRound::
+refoldedPairsCollateral` counts the surplus per round.
 
 ### Python and CLI
 
@@ -275,6 +339,30 @@ fixtures are unaffected — no re-freeze.
   tuning change).
 - `atlasbench` gains `--repair-carve-rings`, `--fold-rescue-slits`,
   `--tiny-chart-side`, `--debris-chart-faces`.
+- `unwrap()` validates its knobs and raises `ValueError`, as `simplify()` and
+  `remesh()` already did — it previously validated nothing but the file paths,
+  while newly exposing seven knobs to Python. Rejected: a `resolution` of 0 or
+  a `padding` that leaves no page (`2*padding >= resolution`); a non-finite or
+  non-positive `max_cone_error`; a `max_uv_distortion` in (0, 4], which no
+  chart can satisfy (see above); `fold_rescue_slits` or `repair_carve_rings`
+  above 16, each iteration of which re-flattens or re-splits a chart (2 is the
+  sane on-value for both); a negative or non-finite `tiny_chart_side`.
+
+### Packaging
+
+- The library sets `SOVERSION` (`major.minor`) and `VERSION` on the target. A
+  `-DBUILD_SHARED_LIBS=ON` build previously produced an unversioned
+  `libhalfmesh.so`, so a new release silently overwrote the one a consumer had
+  linked. Pre-1.0 the minor is the breaking axis under semver — this release
+  reorders public struct fields — so it belongs in the soname. No effect on the
+  default static build.
+- `find_package(halfmesh)` compatibility is `SameMinorVersion`, not
+  `AnyNewerVersion`: 0.4.0 must not silently satisfy a request for 0.3.x
+  across that field reordering.
+- **This release is 0.4.0, not 0.3.1.** New public API on `Mesh`,
+  `RemeshParams`, `ParametrizeParams`, `AtlasParams` and `AtlasResult` (several
+  fields inserted mid-struct, so offsets move), two default-output changes, and
+  a changed Python default. 0.3.1 was never tagged.
 
 ## [0.3.0]
 
@@ -625,7 +713,7 @@ Initial release.
   UV-atlas and remeshing benchmarks (`HALFMESH_BUILD_BENCH`), ASan+UBSan
   (`HALFMESH_SANITIZE`), and verbose atlas diagnostics (`HALFMESH_ATLAS_DEBUG`).
 
-[0.3.1]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.3.1
+[0.4.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.4.0
 [0.3.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.1.0

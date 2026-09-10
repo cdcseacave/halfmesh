@@ -84,7 +84,7 @@ endif()
 # so an absolute path works on all CMake versions >= 3.21.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
-project(halfmesh VERSION 0.3.1 LANGUAGES CXX)
+project(halfmesh VERSION 0.4.0 LANGUAGES CXX)
 
 # vcpkg.json cannot read the version above, so it carries a manual copy —
 # fail the configure the moment the two drift apart (a version bump must
@@ -205,6 +205,15 @@ add_library(halfmesh
 	src/GltfImageCodec.cpp
 )
 add_library(halfmesh::halfmesh ALIAS halfmesh)
+
+# Shared builds (-DBUILD_SHARED_LIBS=ON) need a versioned soname or every
+# release overwrites the last for a consumer that linked the previous one.
+# Pre-1.0 the MINOR is the breaking axis under semver -- 0.3 -> 0.4 reorders
+# public struct fields -- so the soname carries major.minor, not just major.
+# No-op for the default static build.
+set_target_properties(halfmesh PROPERTIES
+	VERSION ${PROJECT_VERSION}
+	SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
 
 target_compile_features(halfmesh PUBLIC cxx_std_20)
 
@@ -392,10 +401,12 @@ configure_package_config_file(
 	INSTALL_DESTINATION "${INSTALL_CMAKE_DIR}"
 )
 
+# SameMinorVersion, not AnyNewerVersion: pre-1.0 each minor may reorder public
+# struct fields, so find_package(halfmesh 0.3) must NOT be satisfied by 0.4.
 write_basic_package_version_file(
 	"${PROJECT_BINARY_DIR}/halfmeshConfigVersion.cmake"
 	VERSION ${PROJECT_VERSION}
-	COMPATIBILITY AnyNewerVersion
+	COMPATIBILITY SameMinorVersion
 )
 
 install(FILES

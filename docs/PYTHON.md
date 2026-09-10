@@ -318,11 +318,13 @@ re-deriving it at the Python boundary.
 - `tiny_chart_side` — per-size padding trigger, max unpadded chart bounding
   side in texels (`AtlasParams::tinyChartSide`): charts at or under this size
   get a 1-texel gutter instead of `padding`. `0` disables (the default).
-  Packing-only — never changes the chart partition. Worth a control run: this
-  pays off only when chart sizes are *mixed*. On a Truck-class mesh, where
-  the mean unpadded chart is ~7.6 texels across, a global `padding=1` reached
-  a higher coverage (0.3334) than `tiny_chart_side=8` did (0.3200) at the
-  identical partition (`docs/BENCHMARKS.md` §4).
+  Packing-only — never changes the chart partition. Worth a control run
+  against a simple global `padding=1`, because which of the two wins is
+  mesh-dependent and not predictable from chart statistics: at an identical
+  partition on two same-class Truck/Ignatius scenes, `tiny_chart_side=8` won
+  on one (0.3808 against 0.3472) and lost on the other (0.3374 against
+  0.3910) (`docs/BENCHMARKS.md` §4). Coverage is texels, not quality —
+  `padding=1` is where seam bleed starts, and is unbaked.
 - `debris_chart_faces` — per-size padding trigger, chart face-count
   (`AtlasParams::debrisChartFaces`): charts with this many faces or fewer get
   a 1-texel gutter instead of `padding`. `0` disables (the default).
