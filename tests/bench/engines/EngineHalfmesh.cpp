@@ -14,6 +14,8 @@
 #include <halfmesh/AtlasCharting.h>
 #include <halfmesh/AtlasPacking.h>
 
+#include "ChartFlattenCache.h" // detail:: cache-aware overloads, as GenerateAtlas uses
+
 #include <chrono>
 
 namespace hmbench {
@@ -48,6 +50,19 @@ inline void ApplyParamOverrides(halfmesh::ParametrizeParams& pp, const BenchConf
 		pp.developableMaxUvDistortion = cfg.maxDistortion;
 	if (cfg.cutToDisk)
 		pp.cutToDisk = true;
+	if (cfg.repairCarveRings >= 0)
+		pp.repairCarveRings = static_cast<unsigned>(cfg.repairCarveRings);
+	if (cfg.foldRescueSlits >= 0)
+		pp.foldRescueSlits = static_cast<unsigned>(cfg.foldRescueSlits);
+}
+
+// Apply the bench config's per-size padding overrides (AtlasParams).
+inline void ApplyAtlasOverrides(halfmesh::AtlasParams& ap, const BenchConfig& cfg)
+{
+	if (cfg.tinyChartSide >= 0.f)
+		ap.tinyChartSide = cfg.tinyChartSide;
+	if (cfg.debrisChartFaces >= 0)
+		ap.debrisChartFaces = static_cast<unsigned>(cfg.debrisChartFaces);
 }
 } // namespace
 
@@ -65,14 +80,24 @@ EngineResult RunHalfmesh(halfmesh::Mesh mesh, const BenchConfig& cfg)
 		ap.orientCharts = true;
 	else if (cfg.orient == "off")
 		ap.orientCharts = false;
+	ApplyAtlasOverrides(ap, cfg);
 
 	std::vector<unsigned> faceChart;
 	unsigned numCharts = 0;
 
+	// Segmentation and flattening share one cache, exactly as GenerateAtlas
+	// does: the flip-repair's accepting verdict already flattened every
+	// shipping chart, so Module B resumes from those artifacts instead of
+	// redoing the work. Without this the harness flattens every chart twice
+	// and reports a cost no caller of GenerateAtlas ever pays — measured ~14x
+	// slower end-to-end on a 100k-chart mesh. Output is unaffected: the
+	// cache-aware overloads are byte-identical for any cache state.
+	halfmesh::detail::ChartFlattenCache flattenCache;
+
 	// --- Module A: segmentation ---------------------------------------------
 	{
 		const double t0 = Now();
-		numCharts = halfmesh::SegmentCharts(mesh, pp, faceChart);
+		numCharts = halfmesh::detail::SegmentCharts(mesh, pp, faceChart, &flattenCache);
 		r.segmentation.wallSeconds = Now() - t0;
 		r.segmentation.completed = true;
 	}
@@ -81,7 +106,7 @@ EngineResult RunHalfmesh(halfmesh::Mesh mesh, const BenchConfig& cfg)
 	// --- Module B: per-chart flattening -------------------------------------
 	{
 		const double t0 = Now();
-		halfmesh::ParametrizeCharts(mesh, faceChart, numCharts, pp);
+		halfmesh::detail::ParametrizeCharts(mesh, faceChart, numCharts, pp, &flattenCache);
 		r.parametrization.wallSeconds = Now() - t0;
 		r.parametrization.completed = true;
 	}

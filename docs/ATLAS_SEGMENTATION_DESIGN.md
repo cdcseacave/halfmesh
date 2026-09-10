@@ -47,12 +47,13 @@ The two highest-leverage decisions, relative to a planar-VSA segmenter:
   charts cannot fold ⇒ it converges). Without such a disk-topology invariant, segmentation
   alone produces tens of thousands of flips.
 
-Two **opt-in** extensions (both OFF by default — the headline fewest-charts/flip-free result
-is unchanged until a knob is set; see `docs/BENCHMARKS.md` §4):
+Two extensions ride the same flatten/repair machinery (see `docs/BENCHMARKS.md` §4):
 
 - **Distortion-bounded split** (`developable_max_uv_distortion`): the flip-repair *also* splits
   a flip-free-but-over-stretched chart, gated on the **measured shipped** symmetric-Dirichlet,
-  sliver-guarded.
+  sliver-guarded. Always on — the parameter *tightens* the internal ship-ability bar toward
+  isometry rather than switching the check on, so `0` (the default) still splits charts
+  stretched past all use.
 - **Seamster cut-to-disk** (`cut_to_disk`): a closed / multiply-connected chart is *slit* into
   one disk at flatten time instead of being bisected into many — fewer charts on hole-riddled
   MVS, with the flip-repair still bisecting anything that folds after the cut.
@@ -200,7 +201,7 @@ settled charts are never re-flattened — so cost is ~O(F·log) rather than roun
 fold test is `detail::ChartFacesFold` → `ChartFolds` (`src/Parametrize.cpp`), the single bridge
 between Modules A and B.
 
-### Opt-in extensions (both default OFF — ride the Phase-3 predicate)
+### Extensions riding the Phase-3 predicate
 
 - **`developable_max_uv_distortion` (τ).** The repair predicate *also* flags a flip-FREE chart
   whose **shipped** (full SLIM) area-weighted symmetric-Dirichlet exceeds τ, so it is bisected
@@ -210,6 +211,12 @@ between Modules A and B.
   τ = 4.0 is perfect isometry (the floor of the `s₀²+s₁²+s₀⁻²+s₁⁻²` energy); ~4.4 is the sane
   on-value. This is the iso-charts/OptCuts/PartUV principle done cheaply — a flat or developable
   chart is never split, only genuinely high-curvature regions earn more charts.
+
+  **This check is always on.** τ = 0 (the default) does not disable it — it selects an internal
+  ship-ability bar of 200, the same one the injectivity fallback in `ParametrizeCharts` refuses
+  to ship above. Without that floor a flip-free chart shipped at any stretch: measured on a
+  471 814-face Ignatius at defaults, 31 of 78 123 charts above 200 and the worst at 3.3e8.
+  Setting τ tightens the bar toward isometry; it does not switch a check on.
 - **`cut_to_disk` (Seamster, Sheffer & Hart 2002).** A closed (no boundary) or multiply-connected
   / pinched chart is **slit** into a single-boundary disk at flatten time (and stays ONE chart)
   instead of being bisected into many by the disk guarantee — far fewer charts on hole-riddled MVS.
@@ -219,6 +226,19 @@ between Modules A and B.
   so the chart-id labelling and the texcoord writeback are untouched. Best on moderately-noisy MVS;
   on very-noisy sliver meshes it opens sliver-dominated charts the split cannot rescue (off by
   default for that reason). See `docs/BENCHMARKS.md` §4.
+- **`repair_carve_rings`** (default 0 = off). When a chart folds, the repair first tries to carve
+  off the faces within N `TopoNeighbor` rings of the offending triangles (`FoldDiagnosis` — the
+  faces `CountRealFlips` / `ChartUVSelfOverlaps` flagged), so one localized failure costs ONE
+  small extra chart instead of a PCA-bisection cascade. Falls back to the bisection when the
+  failure is not localized (region ≥ half the chart, or either side not a single topo-connected
+  blob), so the termination argument is unchanged. `2` is the sane on-value.
+- **`fold_rescue_slits`** (default 0 = off). Inside `FlattenChart`, a chart that folds is cut
+  from its worst interior vertex (largest quantized angle defect, restricted to fold-incident
+  vertices when the failure is localized) to the boundary and re-flattened, up to N times, so it
+  ships as ONE chart with one extra seam instead of ≥ 2 padded rects. Lives in the shipper, so the
+  repair verdict and the shipped map agree on every path (the `cut_to_disk` contract); a chart
+  still folding after the last slit falls through to the carve/bisect safety net. Non-monotone
+  and can cost charts — see `docs/BENCHMARKS.md` §4.
 
 ### Module B — per-chart flattening (`src/Parametrize.cpp`)
 
@@ -264,8 +284,10 @@ primitives.
 | `max_iterations` | 8 | cone-Lloyd relaxation iterations. |
 | `seed_extra_mult` | 1.0 | farthest-point extra seeds as a multiple of the region count. |
 | `developable_flip_repair_rounds` | 16 | flip/topology repair (0 = off). |
-| `developable_max_uv_distortion` | 0.0 (**opt-in**) | symmetric-Dirichlet split cap τ (floor 4.0; ~4.4 on-value). 0 = flip-only repair. |
+| `developable_max_uv_distortion` | 0.0 | symmetric-Dirichlet split cap τ (floor 4.0; ~4.4 on-value). 0 selects the internal ship-ability bar (200), **not** off. |
 | `cut_to_disk` | false (**opt-in**) | Seamster cut-to-disk instead of bisecting non-disk charts. |
+| `repair_carve_rings` | 0 (**opt-in**) | failure-localized carve before PCA bisection in the flip repair; `2` on-value. |
+| `fold_rescue_slits` | 0 (**opt-in**) | curvature-slit fold rescue inside `FlattenChart`, up to N slits; `2` on-value. |
 | `face_weight` | area | per-face importance hook (signal-aware weighting). |
 
 ### Module B — flattening

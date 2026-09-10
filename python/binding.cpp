@@ -285,7 +285,30 @@ PYBIND11_MODULE(_halfmesh, m)
 	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)
 	    .def("__repr__", [](Mesh& self) { self.SyncFaces(); return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
 
-	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation) {
+	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion, unsigned repair_carve_rings, unsigned fold_rescue_slits, float tiny_chart_side, unsigned debris_chart_faces) {
+		if (resolution == 0u)
+			throw py::value_error("unwrap resolution must be > 0");
+		if (2u * padding >= resolution)
+			throw py::value_error("unwrap needs 2*padding < resolution, or no chart fits the page");
+		if (!(max_cone_error > 0.f) || !std::isfinite(max_cone_error))
+			throw py::value_error("max_cone_error must be finite and > 0 (default 0.05; larger = fewer, larger charts)");
+		// tau = 4 is a perfectly isometric map, the FLOOR of the measure, so a budget
+		// in (0,4] is unsatisfiable: every chart reads over-distorted and bisects until
+		// the mesh is one chart per triangle. 0 is "use the internal ship-ability bar",
+		// not "off" -- there is no way to disable the check.
+		if (!std::isfinite(max_uv_distortion) || max_uv_distortion < 0.f
+		    || (max_uv_distortion > 0.f && max_uv_distortion <= 4.f))
+			throw py::value_error("max_uv_distortion must be 0 (internal ship-ability bar) or > 4.0; "
+			                      "4.0 is perfect isometry and ~4.4 is a quality-first budget. A value in "
+			                      "(0, 4] cannot be met by any chart and splits the mesh toward one chart per triangle");
+		// Each slit re-flattens the whole chart and each carve ring widens a re-split;
+		// past a handful the chart is shredded and the repair's own split is cheaper.
+		if (fold_rescue_slits > 16u)
+			throw py::value_error("fold_rescue_slits must be <= 16 (2 is the sane on-value; each attempt re-flattens the chart)");
+		if (repair_carve_rings > 16u)
+			throw py::value_error("repair_carve_rings must be <= 16 (2 is the sane on-value)");
+		if (!std::isfinite(tiny_chart_side) || tiny_chart_side < 0.f)
+			throw py::value_error("tiny_chart_side must be finite and >= 0 (0 = off)");
 		Mesh mesh;
 		unsigned charts = 0;
 		halfmesh::AtlasResult result;
@@ -301,10 +324,17 @@ PYBIND11_MODULE(_halfmesh, m)
 			mesh.RemoveUnreferencedVertices();
 
 			halfmesh::ParametrizeParams pparams; // defaults tuned for MVS-like meshes
+			pparams.developableMaxConeError = max_cone_error;
+			pparams.cutToDisk = cut_to_disk;
+			pparams.developableMaxUvDistortion = max_uv_distortion;
+			pparams.repairCarveRings = repair_carve_rings;
+			pparams.foldRescueSlits = fold_rescue_slits;
 			halfmesh::AtlasParams aparams;
 			aparams.resolution = resolution;
 			aparams.padding = padding;
 			aparams.allowRotation = allow_rotation;
+			aparams.tinyChartSide = tiny_chart_side;
+			aparams.debrisChartFaces = debris_chart_faces;
 			result = halfmesh::GenerateAtlas(mesh, pparams, aparams);
 			charts = static_cast<unsigned>(result.chartPage.size());
 
@@ -317,9 +347,16 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["width"] = result.width;
 		meta["height"] = result.height;
 		meta["occupancy"] = result.occupancy;
+		meta["coverage"] = result.coverage;
 		meta["fit_attempts"] = result.fitAttempts;
+		meta["fit_scale"] = result.fitScale;
+		meta["max_chart_extent"] = result.maxChartExtent;
+		py::dict padding_applied;
+		padding_applied["nominal"] = padding;
+		padding_applied["min"] = result.minPadding;
+		padding_applied["n_charts_reduced"] = result.chartsPaddingReduced;
+		meta["padding_applied"] = padding_applied;
 		meta["vertices"] = mesh.vertices.size();
 		meta["faces"] = mesh.faces.size();
-		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 4u, py::arg("allow_rotation") = true, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. "
-	                                                                                                                                                                                                                                                                                            "Returns {charts, pages, width, height, occupancy, fit_attempts, vertices, faces}.");
+		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("max_cone_error") = 0.05f, py::arg("cut_to_disk") = false, py::arg("max_uv_distortion") = 0.f, py::arg("repair_carve_rings") = 0u, py::arg("fold_rescue_slits") = 0u, py::arg("tiny_chart_side") = 0.f, py::arg("debris_chart_faces") = 0u, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. Returns {charts, pages, width, height, occupancy, coverage, fit_attempts, fit_scale, max_chart_extent, padding_applied{nominal,min,n_charts_reduced}, vertices, faces}.");
 }

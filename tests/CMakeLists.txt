@@ -214,8 +214,10 @@ target_link_libraries(mesh_holes_test PRIVATE
 )
 halfmesh_discover_tests(mesh_holes_test)
 
-# parametrize_test: D-Charts chart segmentation
+# parametrize_test: D-Charts chart segmentation (src/ include: the cache-aware
+# detail::SegmentCharts / ParametrizeCharts overloads in ChartFlattenCache.h)
 add_executable(parametrize_test ParametrizeTest.cpp)
+target_include_directories(parametrize_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(parametrize_test PRIVATE
     GTest::gtest
     GTest::gtest_main
@@ -224,27 +226,35 @@ target_link_libraries(parametrize_test PRIVATE
 )
 halfmesh_discover_tests(parametrize_test)
 
-# flatten_test: per-chart UV flattening — Tutte + ARAP/SLIM
+# flatten_test: per-chart UV flattening — Tutte + ARAP/SLIM (src/ include:
+# detail::FoldDiagnosis / ChartFacesFold in ChartFlattenCache.h; corpus: SaddleFan)
 add_executable(flatten_test FlattenTest.cpp)
+target_include_directories(flatten_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(flatten_test PRIVATE
     GTest::gtest
     GTest::gtest_main
+    halfmesh_corpus
     halfmesh::halfmesh
 )
 halfmesh_discover_tests(flatten_test)
 
-# atlas_test: uniform texel-density normalisation
+# atlas_test: uniform texel-density normalisation (src/ include: AtlasSegmentStats
+# in ChartFlattenCache.h; corpus: GridPlane for the carve-seam test)
 add_executable(atlas_test AtlasTest.cpp)
+target_include_directories(atlas_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(atlas_test PRIVATE
     GTest::gtest
     GTest::gtest_main
+    halfmesh_corpus
     halfmesh::halfmesh
 )
 halfmesh_discover_tests(atlas_test)
 
 # segment_quality_test: segmentation-quality harness — seam length, chart
 # compactness, packed occupancy over the corpus (D-Charts distance-term plan).
+# src/ include: AtlasSegmentStats in ChartFlattenCache.h (carve-vs-bisect test).
 add_executable(segment_quality_test SegmentQualityTest.cpp)
+target_include_directories(segment_quality_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(segment_quality_test PRIVATE
     GTest::gtest
     GTest::gtest_main

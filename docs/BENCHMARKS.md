@@ -284,6 +284,306 @@ production, decimate first: million-chart atlases are rarely the goal, and
 distortion/seam totals favour a chart budget matched to the texture
 resolution.)
 
+### Repair carve rings / fold-rescue slits / per-size padding (defaults OFF)
+
+Three more opt-in knobs landed in 0.4.0, all **OFF by default**:
+`repair_carve_rings` (`--repair-carve-rings`, failure-localized
+repair split — carve off the faces within N `TopoNeighbor` rings of a folding
+chart's diagnosed failure instead of a blind PCA bisection), `fold_rescue_slits`
+(`--fold-rescue-slits`, cut a slit from the worst interior vertex to the
+boundary and re-flatten a folding chart in place, up to N times, instead of
+splitting it), and `AtlasParams::tinyChartSide` / `debrisChartFaces`
+(`--tiny-chart-side` / `--debris-chart-faces`, a 1-texel gutter instead of the
+uniform `padding` for charts under a size/face-count trigger — packing only,
+does not change the partition).
+
+**Setup.** Measured on `tests/data/mesh.ply` (63 049 vertices / 120 943 faces
+once repaired — 459 non-manifold issues fixed on load); the `roi100k` /
+`ours128k` cross-checks were not run. This is the small-mesh sweep — the
+Truck-class sweep below is where the chart-count / coverage target is
+actually decided. All arms: `--engines halfmesh
+--resolution 4096 --cut-to-disk` (padding stays at the `AtlasParams` default
+of 2, unchanged by any arm). Wall-clock is indicative only — the machine was
+under concurrent load during the sweep.
+
+| arm | charts | coverage (tri) | seg. time (s) | flips | sym-Dirichlet |
+|---|--:|--:|--:|--:|--:|
+| baseline (all off) | 2 390 | 38.8 % | 43.9 | 0 | 45.8 |
+| `carve=1` | 2 256 | 39.6 % | 46.4 | 0 | 51.4 |
+| `carve=2` | 2 302 | 40.2 % | 54.3 | 0 | 485.8 |
+| `carve=3` | 2 375 | 36.0 % | 57.5 | 0 | 27.6 |
+| `slits=2` | 2 153 | 40.5 % | 72.5 | 0 | 52.4 |
+| `carve=2, slits=2` | 2 022 | 41.6 % | 56.8 | **4** | **9 533 546** |
+| `carve=2, slits=2, tiny=8` | 2 022 | 41.6 % | 54.9 | 4 | 9 533 546 |
+| `carve=2, slits=2, tiny=8, debris=100` | 2 022 | 42.3 % | 54.0 | 4 | 9 533 546 |
+
+(`tiny=8`/`debris=100` only touch Module D packing, so the partition and
+parametrization above them are byte-identical to `carve=2, slits=2` — the
+extra knobs just shrink the gutter on the smallest charts, nudging coverage
+from 41.6 % to 42.3 %.)
+
+**Reading the table:**
+
+- **Carve alone** is a small, *non-monotonic* win: ring=1 drops charts
+  2390→2256 (−5.6 %) cleanly, but ring=2 and ring=3 climb back toward baseline
+  (2302, 2375) while ring=2's sym-Dirichlet (485.8) is a wild outlier next to
+  ring=1 (51.4) and ring=3 (27.6) — no ring count is a clear standardization
+  target yet.
+- **Slits alone** is a clean win: 2390→2153 (−9.9 %) with flips still 0 and
+  sym-Dirichlet in line with baseline (52.4).
+- **Carve+slits combined is worse than either alone**, not just on chart
+  count relative to slits-alone (2022 vs 2153 is actually fewer — the
+  regression is on *quality*): flips go from 0 to **4**, and sym-Dirichlet
+  balloons **~200 000×** (45.8 → 9 533 546). Re-run twice — byte-identical
+  both times. This is the fold rescue's known failure mode materializing:
+  slits opening a sliver-dominated chart, here compounded by carve fragments
+  feeding it. A blind flip of both defaults would ship this regression to
+  every caller.
+
+**Defaults decision: stay OFF** (`repairCarveRings = 0`, `foldRescueSlits = 0`;
+the padding knobs remain opt-in). Rationale:
+
+1. On the Truck-class mesh the criterion targets, both knobs are near-no-ops
+   (carve −0.2 %, slits −2.0 %; see the Truck-class sweep below) — defaulting
+   them on would cost time for no measurable count benefit on the mesh class
+   that motivated them.
+2. On `mesh.ply` the combined configuration measured **worse than either knob
+   alone** — real flipped triangles and a catastrophic distortion outlier.
+   This does **not** reproduce on the Truck-class mesh, so it is a
+   single-mesh artifact rather than a general property; it still argues
+   against defaulting the pair on, since one measured mesh does break.
+3. Carve-ring sensitivity is non-monotonic with no obviously-better fixed
+   value.
+
+No golden re-freeze: defaults are unchanged, so `tests/data/golden/` fixtures
+still reflect the shipped behavior.
+
+### Truck-class sweep — the chart-count / coverage target, measured (2026-08-30)
+
+The sweep above runs on `mesh.ply` (120 943 faces, 0.020 charts/face), which
+is **not** the mesh class the chart-count / coverage criterion (below) is
+about: a Truck-class mesh fragments ten times harder (~0.20 charts/face).
+Measured on one.
+
+**Mesh.** A Tanks-and-Temples
+Truck PGSR marching-tets extraction, 7 824 634 faces — put through
+`radiance.mesh.postprocess` (repair → Taubin ×20 → QEM aggressiveness 7 →
+close holes) at `--decimate-target 500000`, giving **522 738 faces /
+253 635 verts** after halfmesh's load-time repair. 8-core workstation, under
+concurrent load: **wall-clock below is indicative only**; chart counts and
+coverage are deterministic.
+
+**Harness.** `hm.unwrap()` at `resolution=4096, padding=2`, i.e. the
+`GenerateAtlas` path consumers call — **not** `atlasbench`, which took over an
+hour on this mesh against `hm.unwrap`'s 278 s. Two separate causes, since the
+distinction matters for reading any timing in this file: the engine used to
+drive the public no-cache `SegmentCharts`/`ParametrizeCharts` pair and so
+flattened every chart twice (fixed — it now shares one `ChartFlattenCache`
+like `GenerateAtlas`, worth ~20 % of pipeline time on `mesh.ply`), but the
+**dominant** cost is the quality-metric computation, which is ~84 % of the
+harness's wall clock (`mesh.ply`: 35.3 s of pipeline inside a 227 s process).
+Metric cost is the price of the table below and is not paid by consumers.
+`coverage` below is
+`AtlasResult::coverage`; it was recomputed independently from every written
+PLY and agreed to all printed digits. Flip counts are minority-signed-area
+triangles (an atlas has no global winding convention), with the sliver
+exemption noted.
+
+Both scenes the source study used are measured, from the same recipe:
+`Truck_g16_ppisp` (7 824 634 faces raw → **522 738**) and `Ignatius_g16_base`
+(10 023 130 → **536 131**).
+
+| arm | Truck charts | ch/face | coverage | Ignatius charts | ch/face | coverage |
+|---|--:|--:|--:|--:|--:|--:|
+| baseline (0.3.0, `develop@b8a491c`) | 102 033 | 0.1952 | 0.2325 | 106 722 | 0.1991 | 0.2334 |
+| defaults (blacklist on, knobs off) | 99 741 | 0.1908 | 0.2606 | 104 614 | 0.1951 | 0.2334 |
+| `cut_to_disk` | 89 004 | 0.1703 | 0.3053 | 94 025 | 0.1754 | 0.2216 |
+| … + `fold_rescue_slits=2` | 87 200 | 0.1668 | 0.3072 | 91 699 | 0.1710 | 0.2977 |
+| … + `repair_carve_rings=2` | 88 916 | 0.1701 | 0.2895 | 93 360 | 0.1741 | 0.3056 |
+| … + `carve=2, slits=2` | 86 921 | 0.1663 | 0.3083 | 92 446 | 0.1724 | 0.2975 |
+| … + `slits=2, tiny=8, debris=16` | 87 200 | 0.1668 | **0.3808** | 91 699 | 0.1710 | 0.3374 |
+| … + `slits=2`, global `padding=1` | 87 200 | 0.1668 | 0.3472 | 91 699 | 0.1710 | **0.3910** |
+
+Every row above was re-measured together at 0.4.0 (2026-09-10). The previous
+table dated from 2026-08-30 and had since been overtaken four times over — by
+the chart-extent gate recalibration, the always-on distortion bar, and the two
+packing fixes in this release — so its arms are not comparable with these.
+The baseline row is the control: rebuilt from the `v0.3.0` tag into a clean
+environment, it reproduces its 2026-08-30 chart counts and coverage to every
+printed digit on both scenes, so what moved below is the library and not the
+measurement. (0.3.0's `unwrap()` predates `AtlasResult::coverage`, so its two
+coverage figures are recomputed from the written PLY — the same recomputation
+agrees to four digits with the reported metric on the 0.4.0 arms.)
+
+**The two scenes agree on fragmentation** — baseline within 2 %
+(0.1952 vs 0.1991 charts/face), defaults within 2 % (0.1908 vs 0.1951), and
+each segmentation knob's effect within a percentage point. Chart count is invariant across tessellation
+(the source study: 300 k, 520 k and 659 k-face variants all land at 90–106 k
+charts) *and* across scene, which makes ~0.195 charts/face a property of
+marching-tets extraction from a splat SDF rather than of any capture. The
+criterion's implied target of ~0.104 charts/face (≤ 55 k charts on ~525 k
+faces) asks for a 47 % cut against that constant.
+
+**Coverage no longer agrees between them, and that is the interesting part.**
+The two scenes now disagree on which padding strategy wins — see the criterion
+section below — and Ignatius `cut_to_disk` alone reads 0.2216 against its own
+siblings' ~0.30, because a slit ribbon lands at page width and bisects the
+skyline (occupancy 0.757, and the only arm in the sweep that needs 8 fit
+probes rather than 7). Before the `NormalizeChartDensity` extent clamp that
+same arm read **0.0189** — see the note below.
+
+**A latent packing defect this sweep found.** On Ignatius with `cut_to_disk`,
+one triangle spanned 4 092 of the 4 096 texels and dragged triangle coverage to
+**0.0189** — a 12× loss — while `occupancy` still reported a plausible-looking
+0.196 and nothing errored. `cutToDisk` slits a tube into a ribbon: negligible UV
+area over an enormous extent. `NormalizeChartDensity`'s guard tested *area*
+compression (`sqrt(worldArea/uvArea) > 1e4`) and, when it fired, skipped the
+chart entirely — leaving raw UVs of arbitrary magnitude. `PackAtlas`'s degenerate
+rescue did not catch it either: that tests only for a zero-width or zero-height
+rect, and a ribbon has a large `w` with a small-but-positive `h`. The chart then
+entered `fitToResolution`, whose **max-dimension** constraint (not the Σ w·h
+term — a ribbon's bbox area is near zero) forces every other chart to shrink
+until the widest one fits.
+
+Fixed by bounding the chart's scaled **extent** instead: to the page when the
+atlas must fit one (nothing wider is representable at any scale), and to
+`D·sqrt(worldArea)` for a chart whose flatten is degenerate. The page bound is
+gated on a scale-invariant predicate — `rawExtent > R·sqrt(uvArea)`, i.e. the
+chart is not *earning* its extent with area — so it reaches ribbons and leaves
+alone the charts that legitimately span a page. That gate is load-bearing:
+clamping every chart unconditionally cost the `Cone` corpus mesh 3.2 % of
+occupancy (0.669 against a 0.691 ratchet floor), because at low chart counts a
+chart spanning the page is the correct answer. Both Truck arms and
+both chart counts are bit-identical after the fix; Ignatius defaults moves
++0.04 %. The pre-existing behaviour is present in 0.3.0 too — this branch's
+segmentation change is what made a mesh reach it.
+
+**The gate's threshold, recalibrated (2026-08-31) — and what the table above
+does not include.** `R` shipped at `1e3`. The ratio is `sqrt(aspect)`, so that
+admits every chart up to a **10⁶ : 1** aspect, and real ribbons are nowhere near
+it. A consumer integration on a 471 814-face Ignatius from the same PGSR class
+hit one at ratio 55.4 spanning 8 816 texels — 2.15× a 4096 page — with every
+knob off, and one at ratio 605.9 spanning 28 912 texels (7.06× the page) with
+`fold_rescue_slits=2`, which cost that arm a **9.5× coverage collapse**
+(0.1891 → 0.0200). Measuring every chart of six arms across two scenes plus the
+5-mesh corpus, split by whether a chart actually exceeds the page:
+
+| population | ratio |
+|---|---|
+| legitimately over-page (corpus `Cone`, `OpenCylinder`, `GridPlane`) | 1.4 – 1.9 |
+| healthy, all arms | p50 2.1, p99.9 12 – 15 |
+| pathological over-page (the ribbons that set global `k`) | 55 – 606 |
+
+`R = 16` now. Note the gate only ever judges charts *already* wider than the
+page — scaled extent is `D·sqrt(worldArea)·ratio` — so `cutToDisk`'s thousands
+of legitimate small high-ratio ribbons (max ratio 1 700 on Truck, 1 244 on
+Ignatius, **zero** charts over the page) never reach the clamp. That is the
+difference between this and a universal aspect bound, which clamps on ratio
+alone and cost Truck 9.7 % at aspect 8.
+
+On the two 471–477 k-face consumer meshes, coverage went 0.1891 → **0.2484**
+(Ignatius defaults) and 0.0200 → **0.2292** (`fold_rescue_slits=2`), with the
+four arms that had no over-page chart bit-identical.
+
+**The `mesh.ply` sweep tables in this section predate two 0.4.0 changes** —
+this extent recalibration and the always-on distortion bar (`kShipMaxSymDir`,
+see the CHANGELOG) — and were measured on different (522–536 k-face) meshes.
+The Truck-class table above is the exception: it was re-measured in full at
+0.4.0 and needs no such adjustment. Both
+changes move arms that had an over-page or over-stretched chart; the distortion
+bar in particular splits them, so chart counts read low and per-chart
+sym-Dirichlet reads high in these tables relative to what 0.4.0 now produces.
+On the Ignatius default arm the two together take the worst per-chart
+sym-Dirichlet from 3.3e8 to 22 390 and the widest chart from 2 071 to 640
+texels of a 4 096 page, at +0.25 % charts.
+
+**Criterion: ≤ 55 k charts and coverage ≥ 0.30. Coverage passes, chart count
+does not.**
+
+- **Coverage: met, with room to spare.** Best arm 0.2325 → 0.3808 (Truck,
+  +63.8 %) and 0.2334 → 0.3910 (Ignatius, +67.5 %). `cut_to_disk` alone now clears 0.30 on
+  Truck (0.3053) without any padding knob at all — it did not before the
+  packing fixes in this release, and most of the headroom above the previous
+  table comes from them rather than from segmentation.
+- **Which padding strategy wins is mesh-dependent — the previous table's
+  conclusion was half an artifact.** It reported a global `padding=1` beating
+  the per-size knobs on both scenes (0.3334 vs 0.3200). Re-measured, the two
+  scenes disagree: on Truck `tiny=8, debris=16` wins by 9.7 % (0.3808 vs
+  0.3472), on Ignatius it loses by 13.7 % (0.3374 vs 0.3910) — at partitions
+  identical to the digit in both cases. Part of the old gap was the fit solve
+  pricing per-size gutters at the unscaled tier and under-scaling exactly that
+  arm; correcting it moved the per-size arm and not its `padding=1` sibling.
+  What is left is genuinely scene-dependent, so **measure the pair rather than
+  reasoning from mean chart size**. Coverage is texels, not quality — padding
+  4→2 was worth +1.26 dB in the consumer's bake, 2→1 is **unbaked** and is
+  where seam bleed starts.
+- **Chart count: missed by 1.58× (Truck) / 1.67× (Ignatius).** Best arms
+  86 921 and 91 699 against a 55 000 target.
+  Nearly all of the −10.8 % (Ignatius −10.1 %) from defaults is `cut_to_disk`,
+  which predates this work: against that arm, `repair_carve_rings=2` is
+  **−0.1 %** (Ignatius −0.7 %) and `fold_rescue_slits=2` is **−2.0 %**
+  (Ignatius −2.5 %), against −3.7 % and −9.9 % on `mesh.ply`. **Both knobs are
+  near-no-ops on the mesh class they were designed for, on both scenes.**
+  A plausible cause
+  for the slit rescue: it cuts from the worst *interior* vertex to the
+  boundary, and at 5.9 faces per chart most charts have no interior vertex
+  left to cut from — the bisection cascade has already shattered them below
+  the size where the rescue can act.
+- **Carve's cost win did not reproduce and is withdrawn.** The previous table
+  called it the fastest arm at −23 % against `cut_to_disk` alone. Here the two
+  scenes disagree in sign (Truck +33 %, Ignatius −8 %) on a contended machine
+  where, as noted above, wall clock is indicative only. Neither number is
+  evidence; a controlled timing run is what would settle it.
+- **Combining the two knobs is scene-dependent too.** On Truck `carve=2,
+  slits=2` is the best non-padding arm on both axes (86 921 charts, 0.3083).
+  On Ignatius it is *worse* than `slits=2` alone on chart count (92 446 vs
+  91 699) at indistinguishable coverage (0.2975 vs 0.2977) — reversing what
+  the previous table found there. The `mesh.ply` do-not-combine caution is
+  still not reproduced as a *regression* on either scene, but "combining is
+  free" is not supported either: measure the pair on your own mesh.
+
+**What to try next:**
+
+- **Ridge-snapped carve boundaries**: route the carve-ring cut along a nearby
+  ridge/curvature feature instead of a blind N-ring band, to avoid slicing
+  through the sliver-thin geometry implicated in the sym-Dirichlet blowup
+  above.
+- **Enclose-test revision**: the post-repair
+  merge's `wouldEnclose` rejects outnumber budget rejects ~3.3–3.7× on
+  `mesh.ply`, yet folding pairs still pass both gates and ship as extra
+  fragments — a geometry-aware (rather than blanket) enclose test might let
+  more carve-created fragments re-merge instead of shipping as extra tiny
+  charts.
+- **Attack the chart count where it is made** (the Truck-class table above
+  says nothing else will do): the repair inflates the post-merge count 4–8×,
+  and neither shipped knob dents it. The slit rescue needs to run *before*
+  the bisection cascade shatters charts below the size where an interior
+  vertex still exists — measure the interior-vertex count distribution over
+  charts at repair entry to confirm, then move the rescue earlier rather than
+  tuning it.
+- **Separate the harness's metric cost from the pipeline's**: `EngineHalfmesh`
+  now shares the flatten cache (so `--stage all` measures what a
+  `GenerateAtlas` caller pays), but the metric passes still dominate the
+  harness's wall clock ~5:1. The per-stage `time` fields in `report.json` are
+  the pipeline-truthful numbers; the process wall clock is not, and the
+  "seg. time" column in the tables above predates the cache fix. Worth timing
+  `FillSegmentation`/`FillParametrization` separately in the report so the two
+  costs stop being conflated.
+- **Close the last 20 % of the ribbon fix**: a clamped ribbon lands at exactly
+  page width, which is the worst case for a skyline packer — Ignatius
+  `cut_to_disk` reads 0.2216 where its siblings read ~0.30, and it is the only
+  arm across both scenes whose scale search needs 8 probes instead of 7.
+  Capping at
+  `max(page/4, C·D·sqrt(worldArea))` instead of the page would let it pack
+  neatly while the area term still protects low-chart-count meshes, whose
+  legitimate charts *do* span a large fraction of the page. Measure both
+  scenes: an aspect-anchored bound tight enough to matter (64:1) cost real
+  Truck charts 9.7 % of coverage when tried.
+- **An atlas op in the golden corpus**: `tests/data/golden/` covers repair,
+  simplify, smooth and remesh, so no frozen fixture exercises segmentation,
+  parametrization or packing at all. The ribbon defect above shipped partly
+  because nothing froze this pipeline's output.
+
 ## 5. Assessment
 
 | Stage | Verdict |

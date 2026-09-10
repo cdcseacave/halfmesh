@@ -22,14 +22,23 @@
 #include <gtest/gtest.h>
 
 #include <halfmesh/AtlasCharting.h>
+#include <halfmesh/HalfMesh.h>
 #include <halfmesh/Mesh.h>
 #include <halfmesh/Parametrize.h>
 
 #include "Corpus.h"
 #include "Metrics.h"
+#include "PartitionChecks.h"
+
+// Internal Module A<->B bridge header (src/ on this target's include path —
+// see tests/CMakeLists.txt): brings in detail::AtlasSegmentStats + the
+// cache-aware detail::SegmentCharts overload the carve-vs-bisect test below
+// uses to confirm the repair wave actually engaged on the carve run.
+#include "ChartFlattenCache.h"
 
 #include <cstdio>
 #include <filesystem>
+#include <queue>
 #include <string>
 #include <vector>
 
@@ -140,6 +149,9 @@ QualityRow Measure(const char* name, const Mesh& input,
 	return row;
 }
 
+using hmtest::checks::AllChartsConnectedTopo;
+using hmtest::checks::ExpectValidPartition;
+
 } // namespace
 
 // Floor = 0.5 x the min occupancy measured across the corpus on the reference
@@ -242,4 +254,54 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 	const Mesh sphere = hmtest::corpus::UVSphere(16, 24);
 	Measure("UVSphere-off", sphere, off);
 	Measure("UVSphere-on", sphere, on);
+}
+
+// Failure-localized carve and slit rescue on a real mesh: a property, not exact
+// counts (build-flag sensitive — see file header). Carving a folding chart into
+// {small local region, the rest} instead of blindly PCA-bisecting it can only
+// match or reduce the final chart count, so the carve arm asserts a decrease and
+// that the repair wave actually engaged (repairSplits > 0). The synthetic fixture
+// in Parametrize.SplitKnobsKeepPartitionContracts never folds, so this is where
+// a partition CarveFailureRegion actually shaped is checked. The slit arms assert
+// only a bound: the repair and the post-repair merge iterate to a fixed point
+// that a changed split predicate perturbs either way, and foldRescueSlits
+// measured non-monotone on this mesh (CHANGELOG 0.4.0, docs/BENCHMARKS.md §4).
+// What IS real is that a rescue either ships a folding chart as ONE chart or
+// falls through to the same split safety net the baseline used, so the count
+// stays in the baseline's neighbourhood.
+TEST(SegmentQuality, CarveNeverIncreasesChartCountOnChallengeMesh)
+{
+	Mesh mesh;
+	if (!mesh.Load(TestMeshPath())) {
+		GTEST_SKIP() << "tests/data/mesh.ply not found";
+	}
+	const halfmesh::ParametrizeParams base; // bisect (default)
+	Mesh meshB = mesh;
+	std::vector<unsigned> fcBase;
+	const unsigned nBase = halfmesh::SegmentCharts(meshB, base, fcBase);
+
+	struct Arm
+	{
+		const char* name;
+		unsigned carveRings, slits;
+	};
+	for (const Arm& arm : {Arm{"carve", 2, 0}, Arm{"slits", 0, 2}, Arm{"carve+slits", 2, 2}}) {
+		SCOPED_TRACE(arm.name);
+		halfmesh::ParametrizeParams params;
+		params.repairCarveRings = arm.carveRings;
+		params.foldRescueSlits = arm.slits;
+		Mesh m = mesh;
+		std::vector<unsigned> fc;
+		halfmesh::detail::AtlasSegmentStats stats;
+		const unsigned n = halfmesh::detail::SegmentCharts(m, params, fc, nullptr, &stats);
+		std::printf("[segment-quality] %s: nBase=%u n=%u repairSplits=%u\n", arm.name, nBase, n, stats.repairSplits);
+		if (arm.slits == 0) {
+			EXPECT_LE(n, nBase); // the namesake claim; equality allowed (no folds → no carves)
+			EXPECT_GT(stats.repairSplits, 0u) << "fixture must actually engage the repair wave, or this comparison is vacuous";
+		} else {
+			EXPECT_LE(n, nBase + nBase / 10) << "the slit rescue must not inflate the chart count";
+		}
+		ExpectValidPartition(fc, n, m.faces.size());
+		EXPECT_TRUE(AllChartsConnectedTopo(m, fc, n)) << "the partition must still be topo-connected per chart";
+	}
 }

@@ -13,7 +13,7 @@ re-exports it.
 [GitHub Release](https://github.com/cdcseacave/halfmesh/releases):
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.3.0/halfmesh-0.3.0-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.0/halfmesh-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 Pick the `cpXY-cpXY` tag matching your interpreter (`cp310`, `cp311`, `cp312`,
@@ -69,7 +69,7 @@ any C++ work happens. The GIL is released around all native computation (see
 
 ### `version() -> str`
 
-The halfmesh library version string (`"0.3.0"`), single-sourced from
+The halfmesh library version string (`"0.4.0"`), single-sourced from
 `project(halfmesh VERSION …)` in `CMakeLists.txt`. Also exposed as
 `halfmesh.__version__`.
 
@@ -266,7 +266,7 @@ array ops above.
 - `has_texcoords: bool` — whether the mesh carries per-face-corner UVs
   (read-only).
 
-### `unwrap(input_path, output_path, resolution=4096, padding=4, allow_rotation=True) -> dict`
+### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0, repair_carve_rings=0, fold_rescue_slits=0, tiny_chart_side=0.0, debris_chart_faces=0) -> dict`
 
 File-based UV-atlas generation: load `input_path` → weld/clean prelude
 (`RemoveDuplicateVertices` + `RemoveDegenerateFaces` +
@@ -279,8 +279,65 @@ half-texel offset in glTF) inside halfmesh's own `Save`, instead of
 re-deriving it at the Python boundary.
 
 - `resolution` — target atlas page size in texels (square pages).
-- `padding` — texel padding between packed charts.
+- `padding` — texel padding between packed charts (same default as `AtlasParams::padding`).
 - `allow_rotation` — whether the packer may rotate charts for a tighter fit.
+- `max_cone_error` — segmentation cone-fit budget
+  (`ParametrizeParams::developableMaxConeError`): larger ⇒ fewer, larger
+  charts at slightly more distortion.
+- `cut_to_disk` — Seamster cut-to-disk (`ParametrizeParams::cutToDisk`):
+  slit closed / multiply-connected charts into one disk instead of
+  bisecting them; the chart-count reducer on hole-riddled MVS meshes.
+- `max_uv_distortion` — symmetric-Dirichlet cap
+  (`ParametrizeParams::developableMaxUvDistortion`); values must exceed the 4.0
+  isometry floor (4.4 is the sane setting). `0` (the default) does **not**
+  disable the check — it selects an internal ship-ability bar (sym-Dirichlet
+  200), so only charts stretched past all use are split; a value here tightens
+  that bar. See `docs/BENCHMARKS.md` §4 for the attribution matrix.
+- `repair_carve_rings` — failure-localized repair split
+  (`ParametrizeParams::repairCarveRings`): `0` disables (the default — blind
+  PCA bisection of folding charts); when `> 0`, a folding chart is first split
+  by carving off the faces within this many `TopoNeighbor` rings of the
+  diagnosed failure, falling back to PCA bisection when the failure isn't
+  localized. `2` is the sane on-value. **Default `0` (off)** — see
+  `docs/BENCHMARKS.md` §4 for the measured sweep and why it stayed off.
+  Combined with `fold_rescue_slits` this measured *worse* than either knob
+  alone on `mesh.ply` and fine on a Truck-class mesh, so measure the pair on
+  your own mesh before enabling both. On a Truck-class mesh this knob moves
+  the chart count only −0.2 %, but is the cheapest arm measured (−23 % time).
+- `fold_rescue_slits` — fold-rescue slit count
+  (`ParametrizeParams::foldRescueSlits`): `0` disables (the default); when
+  `> 0`, a folding chart is slit from its worst interior vertex to the
+  boundary and re-flattened, up to this many times, instead of being split
+  into multiple charts. `2` is the sane on-value. **Default `0` (off)** —
+  combined with `repair_carve_rings` this measured *worse* than either knob
+  alone on `mesh.ply` and fine on a Truck-class mesh, so measure the pair on
+  your own mesh before enabling both. The rescue cuts from an *interior*
+  vertex, so it is weakest where charts are already tiny: −9.9 % on
+  `mesh.ply`, −2.0 % on a Truck-class mesh at 5.9 faces/chart
+  (`docs/BENCHMARKS.md` §4).
+- `tiny_chart_side` — per-size padding trigger, max unpadded chart bounding
+  side in texels (`AtlasParams::tinyChartSide`): charts at or under this size
+  get a 1-texel gutter instead of `padding`. `0` disables (the default).
+  Packing-only — never changes the chart partition. Worth a control run
+  against a simple global `padding=1`, because which of the two wins is
+  mesh-dependent and not predictable from chart statistics: at an identical
+  partition on two same-class Truck/Ignatius scenes, `tiny_chart_side=8` won
+  on one (0.3808 against 0.3472) and lost on the other (0.3374 against
+  0.3910) (`docs/BENCHMARKS.md` §4). Coverage is texels, not quality —
+  `padding=1` is where seam bleed starts, and is unbaked.
+- `debris_chart_faces` — per-size padding trigger, chart face-count
+  (`AtlasParams::debrisChartFaces`): charts with this many faces or fewer get
+  a 1-texel gutter instead of `padding`. `0` disables (the default).
+  Packing-only — never changes the chart partition.
+
+Raises `ValueError` for a knob no run could honour, rather than working from it:
+`resolution == 0`, or a `padding` leaving no page (`2*padding >= resolution`); a
+`max_cone_error` that is not finite and positive; a `max_uv_distortion` in
+`(0, 4]`, which is at or below the isometry floor and so splits every chart in
+the mesh; a `fold_rescue_slits` or `repair_carve_rings` above 16, each unit of
+which re-flattens or re-splits a chart; a negative or non-finite
+`tiny_chart_side`. A C++ caller setting `developableMaxUvDistortion` into
+`(0, 4]` gets a warning and the internal ship-ability bar instead.
 
 Returns a `dict`:
 
@@ -290,8 +347,26 @@ Returns a `dict`:
 | `pages` | number of atlas pages the charts were packed into |
 | `width`, `height` | final atlas page dimensions in texels |
 | `occupancy` | fraction of atlas area covered by charts, `[0, 1]` (0 only for a degenerate empty atlas) |
+| `coverage` | fraction of the texel budget under actual UV triangles, `[0, 1]` — the honest density number (`occupancy` is padded-rect fill and reads far higher with many small charts). Triangle areas are summed absolute, so a non-injective chart's doubled-back area counts twice; it is a mean over pages, so a near-empty second page roughly halves it |
 | `fit_attempts` | number of fit-to-resolution packing probes it took to fit the target page size |
+| `fit_scale` | the single global scale fit-to-resolution applied to every chart. 1.0 is ambiguous — it is also the value when the solve could not produce a usable scale, and `fit_attempts` is 0 on that path too |
+| `max_chart_extent` | widest **unpadded** chart side in texels, in the packed atlas |
+| `padding_applied` | `{nominal, min, n_charts_reduced}` — the requested gutter, the narrowest one actually applied, and how many charts got it |
 | `vertices`, `faces` | vertex/face counts of the (welded) output mesh |
+
+`fit_scale` and `max_chart_extent` go together. The packer solves
+`k = min(k_area, (resolution - 2*padding) / widest_chart)`, so a `fit_scale`
+well below what the chart areas alone would justify, together with a
+`max_chart_extent` close to `width`, means **one** oversized chart set the
+scale for every other chart — as opposed to charts simply being small because
+there are many of them. Without these two you would have to read the UVs back
+out of the written mesh to tell those apart.
+
+`padding_applied` matters when `tiny_chart_side` or `debris_chart_faces` is on:
+those give the charts they select a 1-texel gutter while `padding` still reads
+2, and `min` is the only thing that reports it. It decides whether the atlas is
+mipmappable — halving resolution averages 2×2 texel blocks, so a narrowed
+gutter bleeds between charts at a lower mip level than you asked for.
 
 Raises `RuntimeError` if `input_path` fails to load or `output_path` fails
 to save.

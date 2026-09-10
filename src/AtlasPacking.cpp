@@ -321,13 +321,17 @@ struct PackedRect
 // one left behind -- provably never more pages than closing the active bin on the
 // first overflow, usually fewer.
 //  - sizes: each input's UNPADDED (width, height); a non-positive entry is skipped
+//  - pads: per-input gutter (per-size padding); pads[i] replaces the
+//    uniform `pad` for sizes[i] everywhere -- rect inflation, placement offset,
+//    and packedArea accounting. Same size as `sizes`; a uniform-padding caller
+//    just fills it with one value.
 //  - singlePage: never open a second page; rects that do not fit stay unpacked
 // return the number of pages opened, and accumulate the placed area INCLUDING
 // padding (the same basis as pageW*pageH*pages, so occupancy is their ratio)
 unsigned PackTwoTier(const std::vector<Eigen::Vector2f>& sizes,
-                     float pageW, float pageH, float pad, bool allowRotation,
-                     bool singlePage, std::vector<PackedRect>& placements,
-                     double& packedArea)
+                     float pageW, float pageH, const std::vector<float>& pads,
+                     bool allowRotation, bool singlePage,
+                     std::vector<PackedRect>& placements, double& packedArea)
 {
 	const unsigned numRects = static_cast<unsigned>(sizes.size());
 	placements.assign(numRects, PackedRect{});
@@ -353,8 +357,8 @@ unsigned PackTwoTier(const std::vector<Eigen::Vector2f>& sizes,
 	for (unsigned ci : order) {
 		if (sizes[ci].x() <= 0.f || sizes[ci].y() <= 0.f)
 			continue;
-		float rw = sizes[ci].x() + 2.f * pad;
-		float rh = sizes[ci].y() + 2.f * pad;
+		float rw = sizes[ci].x() + 2.f * pads[ci];
+		float rh = sizes[ci].y() + 2.f * pads[ci];
 		if ((rw > pageW || rh > pageH) && !(allowRotation && rh <= pageW && rw <= pageH))
 			continue; // does not fit a page in either orientation
 		if (std::max(rw, rh) >= tierThreshold) {
@@ -372,8 +376,8 @@ unsigned PackTwoTier(const std::vector<Eigen::Vector2f>& sizes,
 	}
 
 	for (unsigned ci : head) {
-		const float rw = sizes[ci].x() + 2.f * pad;
-		const float rh = sizes[ci].y() + 2.f * pad;
+		const float rw = sizes[ci].x() + 2.f * pads[ci];
+		const float rh = sizes[ci].y() + 2.f * pads[ci];
 		Rect placed;
 		unsigned page = 0;
 		bool ok = false;
@@ -396,7 +400,7 @@ unsigned PackTwoTier(const std::vector<Eigen::Vector2f>& sizes,
 				continue;
 			}
 		}
-		placements[ci] = {placed.x + pad, placed.y + pad, placed.rotated, page, true};
+		placements[ci] = {placed.x + pads[ci], placed.y + pads[ci], placed.rotated, page, true};
 		packedArea += static_cast<double>(placed.w) * placed.h;
 	}
 
@@ -440,34 +444,56 @@ unsigned PackTwoTier(const std::vector<Eigen::Vector2f>& sizes,
 		if ((!shelf.open || shelf.cursor + t.rw > shelf.x + shelf.w + 1e-3f || t.rh > shelf.h + 1e-3f)
 		    && !OpenShelf(t.rw, t.rh))
 			continue;
-		placements[t.ci] = {shelf.cursor + pad, shelf.y + pad, t.rot, shelf.page, true};
+		placements[t.ci] = {shelf.cursor + pads[t.ci], shelf.y + pads[t.ci], t.rot, shelf.page, true};
 		shelf.cursor += t.rw;
 		packedArea += static_cast<double>(t.rw) * t.rh;
 	}
 	return static_cast<unsigned>(bins.size());
 }
 
+// Per-size padding: a chart matching either AtlasParams trigger (tiny
+// unpadded side, or debris few-face count) gets a 1-texel gutter instead of
+// the uniform `pad` -- with very many tiny charts the uniform gutter is a
+// multiplicative tax on exactly the charts that matter least. Both knobs
+// default to 0 (off), so with defaults this always returns `pad` unchanged --
+// byte-identical to the uniform-padding math it replaces.
+inline float ChartPad(const AtlasParams& params, float w, float h, unsigned faces, unsigned pad)
+{
+	return ((params.tinyChartSide > 0.f && std::max(w, h) <= params.tinyChartSide)
+	        || (params.debrisChartFaces > 0 && faces <= params.debrisChartFaces))
+	           ? std::min(1.f, static_cast<float>(pad))
+	           : static_cast<float>(pad);
+}
+
 // Pack the chart extents as floats: fit-to-resolution rescales the UVs and repacks
 // on every probe, and rounding to whole texels at each one would accumulate density
 // error. The public rectangle API below is integral, hence the two thin wrappers
 // over the shared packer.
+//
+// `chartFaces` (size == numCharts) feeds the debris trigger. Pads are derived
+// from THIS call's `crects`, so a fit-to-resolution probe passing rescaled trial
+// sizes re-tiers against the SCALED size; `outPads` returns what was applied.
 void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
                const AtlasParams& params, unsigned pad,
+               const std::vector<unsigned>& chartFaces,
                std::vector<Placement>& placements, unsigned& outPages,
-               unsigned& outPw, unsigned& outPh, float& outPackedArea)
+               unsigned& outPw, unsigned& outPh, float& outPackedArea,
+               std::vector<float>* outPads = nullptr)
 {
 	// Page dims: requested resolution grown to fit the largest padded chart, so
 	// every chart is placeable and nothing is dropped.
 	std::vector<Eigen::Vector2f> sizes(numCharts);
+	std::vector<float> pads(numCharts);
 	unsigned pageW = params.resolution;
 	unsigned pageH = params.resolution;
 	for (unsigned ci = 0; ci < numCharts; ++ci) {
 		const ChartRect& cr = crects[ci];
 		sizes[ci] = Eigen::Vector2f(cr.w, cr.h);
+		pads[ci] = ChartPad(params, cr.w, cr.h, chartFaces[ci], pad);
 		if (cr.w <= 0.f || cr.h <= 0.f)
 			continue;
-		pageW = std::max(pageW, static_cast<unsigned>(std::ceil(cr.w + 2.f * pad)));
-		pageH = std::max(pageH, static_cast<unsigned>(std::ceil(cr.h + 2.f * pad)));
+		pageW = std::max(pageW, static_cast<unsigned>(std::ceil(cr.w + 2.f * pads[ci])));
+		pageH = std::max(pageH, static_cast<unsigned>(std::ceil(cr.h + 2.f * pads[ci])));
 	}
 	if (params.powerOfTwo) {
 		pageW = NextPow2(pageW);
@@ -479,7 +505,7 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 	std::vector<PackedRect> packed;
 	double packedArea = 0;
 	outPages = PackTwoTier(sizes, static_cast<float>(pageW), static_cast<float>(pageH),
-	                       static_cast<float>(pad), params.allowRotation,
+	                       pads, params.allowRotation,
 	                       /*singlePage*/ false, packed, packedArea);
 	placements.assign(numCharts, Placement{});
 	for (unsigned ci = 0; ci < numCharts; ++ci) {
@@ -489,6 +515,8 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 	outPw = pageW;
 	outPh = pageH;
 	outPackedArea = static_cast<float>(packedArea);
+	if (outPads != nullptr)
+		*outPads = std::move(pads);
 }
 
 } // namespace
@@ -588,12 +616,15 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 	std::vector<Eigen::Vector2f> sizes(rects.size());
 	for (size_t i = 0; i < rects.size(); ++i)
 		sizes[i] = Eigen::Vector2f(static_cast<float>(rects[i].width), static_cast<float>(rects[i].height));
+	// Generic rectangles carry no chart concept (no tiny/debris triggers
+	// here), so every rect gets the same uniform padding -- unchanged behavior.
+	const std::vector<float> pads(rects.size(), static_cast<float>(params.padding));
 
 	std::vector<PackedRect> packed;
 	double packedArea = 0;
 	const unsigned numPages = PackTwoTier(
 	    sizes, static_cast<float>(pageW), static_cast<float>(pageH),
-	    static_cast<float>(params.padding), params.allowRotation,
+	    pads, params.allowRotation,
 	    params.mode == RectPackMode::FixedSinglePage, packed, packedArea);
 
 	RectPackResult result;
@@ -652,6 +683,7 @@ AtlasResult PackAtlas(Mesh& mesh,
 	mesh.SyncFaces();
 	const size_t nf = mesh.faces.size();
 	AtlasResult result;
+	result.minPadding = params.padding; // nominal until a per-size knob narrows it
 	if (nf == 0 || numCharts == 0)
 		return result;
 
@@ -773,92 +805,175 @@ AtlasResult PackAtlas(Mesh& mesh,
 		cr.h = std::max(cr.h, 1.f);
 	}
 
+	// Per-chart face counts feed the debrisChartFaces trigger (ChartPad); only
+	// counted when that knob is on, so the default path skips the O(F) pass.
+	std::vector<unsigned> chartFaces(numCharts, 0u);
+	if (params.debrisChartFaces > 0)
+		for (size_t fi = 0; fi < nf; ++fi)
+			if (faceChart[fi] < numCharts)
+				++chartFaces[faceChart[fi]];
+
 	// ------------------------------------------------------------------
 	// 1.5. Fit-to-resolution: globally rescale so the total PADDED chart area
 	//      is ≈ one page, so the atlas fills a single `resolution`² page at high
 	//      occupancy instead of spilling many small (padded) charts across
-	//      several pages. Solve for the scale k that makes
-	//        Σ (k·w + 2·pad)(k·h + 2·pad) = targetFill · resolution²
-	//      (a quadratic in k), then scale UVs + chart rects by k.
+	//      several pages, then scale UVs + chart rects by the solved k.
 	// ------------------------------------------------------------------
 	if (params.fitToResolution && numCharts > 0) {
-		double sumWh = 0.0, sumWph = 0.0;
-		unsigned ncnt = 0;
-		for (unsigned c = 0; c < numCharts; ++c) {
-			if (crects[c].degenerate)
-				continue; // degenerate charts stay a fixed 1-texel slot, unscaled
-			sumWh += static_cast<double>(crects[c].w) * crects[c].h;
-			sumWph += static_cast<double>(crects[c].w) + crects[c].h;
-			++ncnt;
-		}
 		const double R = static_cast<double>(params.resolution);
 		const double targetFill = 0.82; // leave slack for packing gaps → ~1 page
-		const double a = sumWh;
-		const double b = 2.0 * static_cast<double>(pad) * sumWph;
-		const double cc = 4.0 * static_cast<double>(pad) * pad * ncnt - targetFill * R * R;
-		double k = 0.0;
-		if (a > 1e-12) {
-			const double disc = b * b - 4.0 * a * cc;
-			if (disc >= 0.0)
-				k = (-b + std::sqrt(disc)) / (2.0 * a);
-		} else if (b > 1e-12) {
-			k = -cc / b; // all-zero-area edge case (charts collapse to points)
-		}
-		if (k > 0.0 && std::isfinite(k)) {
-			// Clamp k so the LONGEST chart side (plus padding) fits one page:
-			// PackRects grows a page to swallow any oversized rect, so without
-			// this a single extreme-aspect chart made the "one page" far larger
-			// than params.resolution — silently violating the documented one
-			// resolution² page contract (the shrink loop below only tested the
-			// page COUNT). Rotation cannot help: the long side must fit either way.
-			double maxDim = 0.0;
+
+		// Solve Σ (k·w + 2·pad_c)(k·h + 2·pad_c) = targetFill·R² for k, pricing each
+		// chart's gutter at the tier it lands in once scaled by `tierScale`. Per-size
+		// padding makes pad_c a step function OF THE VERY SCALE being solved for, so
+		// the solve is iterated to a fixed point below; the packer tiers on the scaled
+		// size, and pricing the solve on the unscaled one let it charge a gutter the
+		// pack never applies. With both knobs off ChartPad ignores w/h, every
+		// tierScale yields the same k, and this is the old single-pad quadratic.
+		const auto solveK = [&](double tierScale) {
+			double a = 0.0, b = 0.0, cc = 0.0;
+			for (unsigned c = 0; c < numCharts; ++c) {
+				if (crects[c].degenerate)
+					continue; // degenerate charts stay a fixed 1-texel slot, unscaled
+				const double w = crects[c].w, h = crects[c].h;
+				const double padC = ChartPad(params, static_cast<float>(w * tierScale),
+				                             static_cast<float>(h * tierScale), chartFaces[c], pad);
+				a += w * h;
+				b += 2.0 * padC * (w + h);
+				cc += 4.0 * padC * padC;
+			}
+			cc -= targetFill * R * R;
+			if (a > 1e-12) {
+				const double disc = b * b - 4.0 * a * cc;
+				return disc >= 0.0 ? (-b + std::sqrt(disc)) / (2.0 * a) : 0.0;
+			}
+			return b > 1e-12 ? -cc / b : 0.0; // all-zero-area edge case (charts collapse to points)
+		};
+		// Clamp k so the LONGEST chart side, plus the gutter that chart earns AT k,
+		// fits one page: PackRects grows a page to swallow any oversized rect, so
+		// without this a single extreme-aspect chart made the "one page" far larger
+		// than params.resolution — silently violating the documented one resolution²
+		// page contract (the shrink loop below only tested the page COUNT). Rotation
+		// cannot help: the long side must fit either way.
+		const auto clampToPage = [&](double k) {
+			double maxDim = 0.0, maxDimPad = pad; // the widest chart's own gutter
 			for (unsigned c = 0; c < numCharts; ++c) {
 				if (crects[c].degenerate)
 					continue;
-				maxDim = std::max({maxDim, static_cast<double>(crects[c].w), static_cast<double>(crects[c].h)});
+				const double side = std::max(crects[c].w, crects[c].h);
+				if (side > maxDim) {
+					maxDim = side;
+					maxDimPad = ChartPad(params, static_cast<float>(crects[c].w * k),
+					                     static_cast<float>(crects[c].h * k), chartFaces[c], pad);
+				}
 			}
-			if (maxDim > 0.0 && R > 2.0 * pad)
-				k = std::min(k, (R - 2.0 * pad) / maxDim);
-			// The single 0.82-fill solve is open-loop: if actual skyline waste exceeds
-			// ~18% (elongated / high-aspect charts) the pack overflows to a nearly-empty
-			// SECOND page at the same density, doubling texture memory instead of fitting
-			// the requested resolution. Iterate — probe a rect-only pack (no UV writes),
-			// and while it needs >1 page OR overflows the page dimensions shrink k
-			// analytically (proportional to overflow, bounded) and repack — then
-			// apply the final k to the UVs and rects once. Repacks touch only numCharts
-			// rects, so cost is negligible.
+			return (maxDim > 0.0 && R > 2.0 * maxDimPad) ? std::min(k, (R - 2.0 * maxDimPad) / maxDim) : k;
+		};
+
+		double k = solveK(1.0);
+		if (k > 0.0 && std::isfinite(k)) {
+			// Fixed point on the tier assignment: re-price at the k just solved until
+			// the tiers stop moving. Tiers are a step function, so this settles in one
+			// pass unless a chart sits on a boundary; with the knobs off it settles on
+			// the first compare. A boundary chart can 2-cycle (each k puts it in the
+			// tier that implies the other), so on a non-converged sweep take the
+			// smallest k seen — the branch whose gutters the pack can actually afford.
+			k = clampToPage(k);
+			double kSafe = k;
+			bool converged = false;
+			for (int it = 0; it < 4 && !converged; ++it) {
+				double kNext = solveK(k);
+				if (!(kNext > 0.0 && std::isfinite(kNext)))
+					break; // degenerate re-solve: keep the last good k
+				kNext = clampToPage(kNext);
+				converged = (kNext == k);
+				k = kNext;
+				kSafe = std::min(kSafe, k);
+			}
+			if (!converged)
+				k = kSafe;
+			// "Fit the resolution" means the LARGEST scale that packs into one
+			// page. The 0.82-fill solve only ESTIMATES it: its slack is a guess at
+			// skyline waste, which real chart shapes beat or miss, so the estimate
+			// lands on either side. Search from it in whichever direction it was
+			// wrong, then bisect what the bracket leaves.
+			//
+			// Searching both ways is what keeps fitScale meaningful. A one-way
+			// loop that stopped at the first scale to fit made the answer depend
+			// on which side the estimate started -- an atlas that overflowed once
+			// forfeited its whole shrink step (up to 0.95², ~10% of the page)
+			// while one that fit immediately kept the 18% slack, and the two were
+			// not comparable. Now it is a property of the charts and the page.
+			//
+			// Probes are rect-only (no UV writes) over numCharts rects, and the
+			// search is bounded at 11 of them.
 			double kf = k;
 			std::vector<ChartRect> trial(crects);
 			std::vector<Placement> probe;
 			unsigned probePages = 0, probePw = 0, probePh = 0;
 			float probeArea = 0.f;
 			unsigned attempts = 0;
-			for (int attempt = 0; attempt < 8; ++attempt) {
-				++attempts;
-				const float kk = static_cast<float>(kf);
+			const auto fits = [&](double t) {
+				const float kk = static_cast<float>(t);
 				for (unsigned c = 0; c < numCharts; ++c) {
 					if (crects[c].degenerate)
 						continue;
 					trial[c].w = crects[c].w * kk;
 					trial[c].h = crects[c].h * kk;
 				}
-				PackRects(trial, numCharts, params, pad, probe, probePages, probePw, probePh, probeArea);
-				if (probePages <= 1 && probePw <= params.resolution && probePh <= params.resolution)
-					break;
-				// Analytic shrink: the probe placed `probeArea` padded texels
-				// against a one-page budget of targetFill·R². Step k by the
-				// square root of the area ratio — proportional to the actual
-				// overflow — instead of a blind ×0.95. Upper clamp 0.95 keeps
-				// waste-driven overflows (area under budget, layout still >1
-				// page) converging at least as fast as the old ladder; lower
-				// clamp 0.80 stops one noisy probe from collapsing the scale.
-				const double budgetArea = targetFill * R * R;
-				double shrink = std::sqrt(budgetArea / std::max(static_cast<double>(probeArea), 1.0));
-				shrink = std::clamp(shrink, 0.80, 0.95);
-				kf *= shrink;
+				++attempts;
+				PackRects(trial, numCharts, params, pad, chartFaces, probe, probePages, probePw, probePh, probeArea);
+				// Page COUNT is not enough: PackRects grows a page to swallow an
+				// oversized rect, so the dimensions have to be checked too.
+				return probePages <= 1 && probePw <= params.resolution && probePh <= params.resolution;
+			};
+			double kFit = 0.0, kOver = 0.0; // kFit packs, kOver does not
+			if (fits(kf)) {
+				kFit = kf;
+				for (int i = 0; i < 5; ++i) { // estimate was conservative — find a ceiling
+					const double t = kFit * 1.25;
+					if (!fits(t)) {
+						kOver = t;
+						break;
+					}
+					kFit = t;
+				}
+			} else {
+				kOver = kf;
+				for (int i = 0; i < 8; ++i) {
+					// Analytic shrink: the probe placed `probeArea` padded texels
+					// against a one-page budget of targetFill·R². Step k by the
+					// square root of the area ratio — proportional to the actual
+					// overflow — instead of a blind ×0.95. Upper clamp 0.95 keeps
+					// waste-driven overflows (area under budget, layout still >1
+					// page) converging at least as fast as the old ladder; lower
+					// clamp 0.80 stops one noisy probe from collapsing the scale.
+					const double budgetArea = targetFill * R * R;
+					double shrink = std::sqrt(budgetArea / std::max(static_cast<double>(probeArea), 1.0));
+					shrink = std::clamp(shrink, 0.80, 0.95);
+					kf *= shrink;
+					if (fits(kf)) {
+						kFit = kf;
+						break;
+					}
+					kOver = kf;
+				}
 			}
+			// Both bracketing steps are coarse (×1.25 up, ×0.80–0.95 down) and the
+			// whole step is texel budget, so close it. 5 halvings leave under 1%.
+			if (kFit > 0.0 && kOver > kFit)
+				for (int i = 0; i < 5; ++i) {
+					const double mid = 0.5 * (kFit + kOver);
+					if (fits(mid))
+						kFit = mid;
+					else
+						kOver = mid;
+				}
+			if (kFit > 0.0)
+				kf = kFit; // nothing packed in 8 shrinks: keep the last scale, as before
 			result.fitAttempts = attempts;
 			const float kfinal = static_cast<float>(kf);
+			result.fitScale = kfinal;
 			for (size_t fi = 0; fi < nf; ++fi) {
 				const unsigned cid = faceChart[fi];
 				if (cid >= numCharts || crects[cid].degenerate)
@@ -890,7 +1005,8 @@ AtlasResult PackAtlas(Mesh& mesh,
 	std::vector<Placement> placements;
 	unsigned numPages = 0, pageW = 0, pageH = 0;
 	float packedAreaTotal = 0.f;
-	PackRects(crects, numCharts, params, pad, placements, numPages, pageW, pageH, packedAreaTotal);
+	std::vector<float> pads;
+	PackRects(crects, numCharts, params, pad, chartFaces, placements, numPages, pageW, pageH, packedAreaTotal, &pads);
 	for (unsigned c = 0; c < numCharts; ++c)
 		result.chartPage[c] = placements[c].page;
 
@@ -898,6 +1014,18 @@ AtlasResult PackAtlas(Mesh& mesh,
 	result.width = pageW;
 	result.height = pageH;
 	result.faceChart = faceChart; // copy so callers can verify per-face layout
+
+	// Layout diagnostics of the layout that ships: `crects` is final (fit-to-
+	// resolution already applied kfinal) and `pads` is what PackRects just used.
+	// Degenerate charts hold a fixed ≥1-texel slot and stay out of the extent.
+	for (unsigned c = 0; c < numCharts; ++c) {
+		if (!crects[c].degenerate)
+			result.maxChartExtent = std::max({result.maxChartExtent, crects[c].w, crects[c].h});
+		if (pads[c] < static_cast<float>(pad))
+			++result.chartsPaddingReduced;
+	}
+	// ChartPad only ever narrows a gutter to 1 texel, so the minimum is implied.
+	result.minPadding = result.chartsPaddingReduced > 0 ? std::min(1u, pad) : pad;
 
 	const float totalAtlasArea =
 	    static_cast<float>(result.numPages) * static_cast<float>(pageW) * static_cast<float>(pageH);
@@ -969,6 +1097,17 @@ AtlasResult PackAtlas(Mesh& mesh,
 			uv.y() = std::clamp(ay, 0.f, 1.f);
 		}
 	}
+
+	// True triangle coverage of the final map (see AtlasResult::coverage).
+	double triArea = 0.0;
+	for (size_t fi = 0; fi < nf; ++fi) {
+		if (faceChart[fi] >= numCharts)
+			continue;
+		triArea += 0.5 * std::abs(static_cast<double>(Mesh::ComputeTriangleDoubleArea2D(mesh.faceTexcoords[fi * 3 + 0], mesh.faceTexcoords[fi * 3 + 1], mesh.faceTexcoords[fi * 3 + 2])));
+	}
+	result.coverage = (numPages > 0)
+	                      ? std::min(1.f, static_cast<float>(triArea / numPages))
+	                      : 0.f;
 
 	return result;
 }

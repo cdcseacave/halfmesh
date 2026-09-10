@@ -120,6 +120,8 @@ add_library(atlasbench_core STATIC
 target_include_directories(atlasbench_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}          # BenchTypes.h, BenchMetrics.h, engines/
     ${CMAKE_CURRENT_SOURCE_DIR}/../metrics
+    ${CMAKE_SOURCE_DIR}/src              # ChartFlattenCache.h: EngineHalfmesh shares
+                                         # the flatten cache like GenerateAtlas does
     ${BENCH_ENGINE_INCLUDES}
 )
 target_link_libraries(atlasbench_core PUBLIC

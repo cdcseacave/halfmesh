@@ -78,7 +78,8 @@ int main(int argc, char* argv[])
 	std::cout << "Atlas:   " << numCharts << " charts, "
 	          << result.numPages << " page(s), "
 	          << result.width << "x" << result.height << " texels, "
-	          << (result.occupancy * 100.f) << "% occupancy\n";
+	          << (result.occupancy * 100.f) << "% occupancy, "
+	          << (result.coverage * 100.f) << "% coverage\n";
 
 	if (!mesh.Save(outPath)) {
 		std::cerr << "Error: failed to save '" << outPath << "'\n";
