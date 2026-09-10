@@ -238,16 +238,21 @@ struct AtlasResult
 	// an upper bound; and it is a MEAN over pages, so a nearly-empty second page
 	// roughly halves it even though the first page is packed as tightly as ever.
 	float coverage = 0.f;
-	// fit-to-resolution probe packs performed (0 = fitToResolution off). A
-	// converging fit takes 1-2; values near the internal cap (8) mean the
-	// shrink loop struggled — a diagnosability hook for huge chart counts.
+	// Rect-only probe packs the scale search performed (0 = fitToResolution
+	// off), bounded at 11: one analytic estimate, up to 5 bracketing steps in
+	// whichever direction that estimate was wrong, then 5 halvings of the
+	// bracket. A well-estimated fit takes 3-4. Values at the bound mean the
+	// bracket never closed — a diagnosability hook for huge chart counts.
 	unsigned fitAttempts = 0;
 	// The single global scale fit-to-resolution applied to every chart's UVs
-	// (1 when fitToResolution is off). The solve is
-	// k = min(k_area, (resolution - 2*padding)/maxDim), so a fitScale well below
-	// its area-driven value together with a `maxChartExtent` near `width` means
-	// ONE chart's long side set the scale for all of them, rather than there
-	// simply being many charts.
+	// (1 when fitToResolution is off): the LARGEST scale whose charts pack into
+	// one page, to under 1%. The analytic solve
+	// k = min(k_area, (resolution - 2*padding)/maxDim) only seeds the search.
+	// A fitScale well below its area-driven value together with a
+	// `maxChartExtent` near `width` means ONE chart's long side set the scale
+	// for all of them, rather than there simply being many charts. Compare the
+	// extent against `width` to tell those apart — not two atlases' fitScales
+	// against each other, which are optima of different packing problems.
 	// 1.0 is ambiguous: it is the value when fitToResolution is off AND when the
 	// solve could not produce a usable scale (non-positive or non-finite k, e.g.
 	// every chart degenerate), in which case the UVs ship unscaled. `fitAttempts`

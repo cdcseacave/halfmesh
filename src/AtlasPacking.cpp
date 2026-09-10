@@ -892,52 +892,85 @@ AtlasResult PackAtlas(Mesh& mesh,
 			}
 			if (!converged)
 				k = kSafe;
-			// The single 0.82-fill solve is open-loop: if actual skyline waste exceeds
-			// ~18% (elongated / high-aspect charts) the pack overflows to a nearly-empty
-			// SECOND page at the same density, doubling texture memory instead of fitting
-			// the requested resolution. Iterate — probe a rect-only pack (no UV writes),
-			// and while it needs >1 page OR overflows the page dimensions shrink k
-			// analytically (proportional to overflow, bounded) and repack — then
-			// apply the final k to the UVs and rects once. Repacks touch only numCharts
-			// rects, so cost is negligible.
+			// "Fit the resolution" means the LARGEST scale that packs into one
+			// page. The 0.82-fill solve only ESTIMATES it: its slack is a guess at
+			// skyline waste, which real chart shapes beat or miss, so the estimate
+			// lands on either side. Search from it in whichever direction it was
+			// wrong, then bisect what the bracket leaves.
+			//
+			// Searching both ways is what keeps fitScale meaningful. A one-way
+			// loop that stopped at the first scale to fit made the answer depend
+			// on which side the estimate started -- an atlas that overflowed once
+			// forfeited its whole shrink step (up to 0.95², ~10% of the page)
+			// while one that fit immediately kept the 18% slack, and the two were
+			// not comparable. Now it is a property of the charts and the page.
+			//
+			// Probes are rect-only (no UV writes) over numCharts rects, and the
+			// search is bounded at 11 of them.
 			double kf = k;
 			std::vector<ChartRect> trial(crects);
 			std::vector<Placement> probe;
 			unsigned probePages = 0, probePw = 0, probePh = 0;
 			float probeArea = 0.f;
 			unsigned attempts = 0;
-			for (int attempt = 0; attempt < 8; ++attempt) {
-				++attempts;
-				const float kk = static_cast<float>(kf);
+			const auto fits = [&](double t) {
+				const float kk = static_cast<float>(t);
 				for (unsigned c = 0; c < numCharts; ++c) {
 					if (crects[c].degenerate)
 						continue;
 					trial[c].w = crects[c].w * kk;
 					trial[c].h = crects[c].h * kk;
 				}
+				++attempts;
 				PackRects(trial, numCharts, params, pad, chartFaces, probe, probePages, probePw, probePh, probeArea);
-				if (probePages <= 1 && probePw <= params.resolution && probePh <= params.resolution)
-					break;
-				// Analytic shrink: the probe placed `probeArea` padded texels
-				// against a one-page budget of targetFill·R². Step k by the
-				// square root of the area ratio — proportional to the actual
-				// overflow — instead of a blind ×0.95. Upper clamp 0.95 keeps
-				// waste-driven overflows (area under budget, layout still >1
-				// page) converging at least as fast as the old ladder; lower
-				// clamp 0.80 stops one noisy probe from collapsing the scale.
-				//
-				// One-way by construction: the loop stops at the FIRST k that
-				// fits and never asks whether a larger one would have, so a
-				// marginal overflow costs the whole 0.95 step (~10% of page
-				// area) for good. Recovering it means making "fit" mean the
-				// LARGEST k that packs, which would also grow every atlas that
-				// fits on probe 1 and so re-opens the measured targetFill and
-				// the fitScale contract; see docs/BENCHMARKS.md §7.
-				const double budgetArea = targetFill * R * R;
-				double shrink = std::sqrt(budgetArea / std::max(static_cast<double>(probeArea), 1.0));
-				shrink = std::clamp(shrink, 0.80, 0.95);
-				kf *= shrink;
+				// Page COUNT is not enough: PackRects grows a page to swallow an
+				// oversized rect, so the dimensions have to be checked too.
+				return probePages <= 1 && probePw <= params.resolution && probePh <= params.resolution;
+			};
+			double kFit = 0.0, kOver = 0.0; // kFit packs, kOver does not
+			if (fits(kf)) {
+				kFit = kf;
+				for (int i = 0; i < 5; ++i) { // estimate was conservative — find a ceiling
+					const double t = kFit * 1.25;
+					if (!fits(t)) {
+						kOver = t;
+						break;
+					}
+					kFit = t;
+				}
+			} else {
+				kOver = kf;
+				for (int i = 0; i < 8; ++i) {
+					// Analytic shrink: the probe placed `probeArea` padded texels
+					// against a one-page budget of targetFill·R². Step k by the
+					// square root of the area ratio — proportional to the actual
+					// overflow — instead of a blind ×0.95. Upper clamp 0.95 keeps
+					// waste-driven overflows (area under budget, layout still >1
+					// page) converging at least as fast as the old ladder; lower
+					// clamp 0.80 stops one noisy probe from collapsing the scale.
+					const double budgetArea = targetFill * R * R;
+					double shrink = std::sqrt(budgetArea / std::max(static_cast<double>(probeArea), 1.0));
+					shrink = std::clamp(shrink, 0.80, 0.95);
+					kf *= shrink;
+					if (fits(kf)) {
+						kFit = kf;
+						break;
+					}
+					kOver = kf;
+				}
 			}
+			// Both bracketing steps are coarse (×1.25 up, ×0.80–0.95 down) and the
+			// whole step is texel budget, so close it. 5 halvings leave under 1%.
+			if (kFit > 0.0 && kOver > kFit)
+				for (int i = 0; i < 5; ++i) {
+					const double mid = 0.5 * (kFit + kOver);
+					if (fits(mid))
+						kFit = mid;
+					else
+						kOver = mid;
+				}
+			if (kFit > 0.0)
+				kf = kFit; // nothing packed in 8 shrinks: keep the last scale, as before
 			result.fitAttempts = attempts;
 			const float kfinal = static_cast<float>(kf);
 			result.fitScale = kfinal;

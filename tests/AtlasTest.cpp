@@ -1167,8 +1167,14 @@ TEST(PackAtlas, FitToResolutionConvergesInFewAttempts)
 	std::printf("[PackAtlas] FitConverges: attempts=%u pages=%u occupancy=%.3f\n",
 	            res.fitAttempts, res.numPages, res.occupancy);
 	EXPECT_EQ(res.numPages, 1u);
-	EXPECT_GE(res.fitAttempts, 2u) << "converged trivially -- the analytic shrink math never ran";
-	EXPECT_LE(res.fitAttempts, 3u) << "fit loop is still ladder-stepping";
+	EXPECT_GE(res.fitAttempts, 2u) << "converged trivially -- the scale search never ran";
+	// Bounded by construction: 1 estimate + at most 5 bracketing steps + 5
+	// halvings. A bound, not a convergence claim -- the bisection is logarithmic,
+	// so "still ladder-stepping" is no longer a failure mode it can have.
+	EXPECT_LE(res.fitAttempts, 11u);
+	// The search returns the LARGEST scale that packs, so the page comes out
+	// genuinely full rather than a shrink-step short of it.
+	EXPECT_GT(res.occupancy, 0.88f) << "fit left a whole bracketing step of the page unused";
 	const auto rects = ChartBBoxes(mesh, faceChart, numCharts, res.chartPage, res.width, res.height);
 	EXPECT_TRUE(BoundingRectsDisjoint(rects, numCharts));
 }
@@ -1669,6 +1675,54 @@ TEST(AtlasTest, PerSizePaddingPricesTheFitSolveAtTheScaledTier)
 	EXPECT_TRUE(BoundingRectsDisjoint(rects, K)) << "per-size padding let charts overlap under the fit";
 }
 
+// The fit contract stated directly: fitScale is the LARGEST global scale whose
+// charts pack into one `resolution`² page. Pin both halves — the scale it
+// reports does fit, and a modestly larger one does not — so the search cannot
+// regress to "the first scale that happened to fit", which forfeited up to a
+// whole bracketing step of the page depending only on which side of the
+// analytic estimate the true answer lay.
+TEST(AtlasTest, FitToResolutionReturnsTheLargestScaleThatPacks)
+{
+	constexpr int K = 64;
+	constexpr unsigned kRes = 256u;
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	BuildTinyChartFixture(K, mesh, faceChart, 64.f);
+
+	halfmesh::AtlasParams fitParams;
+	fitParams.resolution = kRes;
+	fitParams.padding = 2;
+	fitParams.fitToResolution = true;
+	Mesh meshFit = mesh;
+	const auto fit = halfmesh::PackAtlas(meshFit, faceChart, K, fitParams);
+	ASSERT_EQ(fit.numPages, 1u);
+	ASSERT_GT(fit.fitScale, 0.f);
+
+	// Re-pack the same charts at a scale we choose, with the fit OFF, so the
+	// scale under test is exactly the one set here.
+	auto packAtScale = [&](float scale) {
+		Mesh m = mesh;
+		for (Mesh::TexCoord& uv : m.faceTexcoords) {
+			uv.x() *= scale;
+			uv.y() *= scale;
+		}
+		halfmesh::AtlasParams p = fitParams;
+		p.fitToResolution = false;
+		return halfmesh::PackAtlas(m, faceChart, K, p);
+	};
+
+	const auto atFit = packAtScale(fit.fitScale);
+	EXPECT_EQ(atFit.numPages, 1u) << "the reported fitScale does not actually pack one page";
+	EXPECT_LE(atFit.width, kRes);
+	EXPECT_LE(atFit.height, kRes);
+
+	// 5% is well outside the search's own resolution (a 25% bracket halved 5
+	// times leaves under 1%), so this is a real gap, not rounding.
+	const auto above = packAtScale(fit.fitScale * 1.05f);
+	EXPECT_TRUE(above.numPages > 1u || above.width > kRes || above.height > kRes)
+	    << "5% more scale still packed one page: the fit stopped short of it";
+}
+
 // fitScale + maxChartExtent exist to make ONE failure mode legible from the
 // return value alone: an atlas whose charts are all tiny because a single
 // oversized chart set the global scale, rather than because there are many of
@@ -1697,14 +1751,22 @@ TEST(PackAtlas, ReportsFitScaleAndMaxChartExtent)
 	const AtlasResult ribbon = packWith(4.f);
 	EXPECT_TRUE(std::isfinite(ribbon.fitScale));
 	EXPECT_GT(ribbon.fitScale, 0.f);
-	// The signature: the widest chart now dominates the page, and the global
-	// scale is no larger than the one the same charts got without it. Note the
-	// ribbon does NOT land at exactly `width` — NormalizeChartDensity clamps its
-	// raw extent to the page, and then the packer's global k shrinks it along
-	// with everything else, so it arrives at ~0.78 of the page here.
+	// The signature is the EXTENT, not the scale: the widest chart now dominates
+	// the page. Note the ribbon does NOT land at exactly `width` —
+	// NormalizeChartDensity clamps its raw extent to the page, and then the
+	// packer's global k shrinks it along with everything else, so it arrives at
+	// ~0.78 of the page here.
 	EXPECT_GT(ribbon.maxChartExtent, plain.maxChartExtent);
 	EXPECT_GT(ribbon.maxChartExtent, 0.5f * static_cast<float>(ribbon.width));
-	EXPECT_LE(ribbon.fitScale, plain.fitScale);
+	// The one-page contract holds for the ribbon too.
+	EXPECT_LE(ribbon.maxChartExtent + 2.f * 2.f, static_cast<float>(ribbon.width) + 1e-3f);
+	// Deliberately NOT `ribbon.fitScale <= plain.fitScale`. Now that the fit
+	// returns the largest scale that packs, the two are different packing
+	// problems solved to their own optima, and a wide flat chart can let the
+	// skyline nestle the squares around it and admit a hair MORE global scale
+	// (measured: within 0.4%, the bisection's own resolution). The scale alone
+	// never identified this failure mode — comparing extent against `width`
+	// does, which is what the two fields are for.
 }
 
 // Deterministic "staircase terrain": an n×n grid whose vertex heights are
