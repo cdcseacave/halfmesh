@@ -976,7 +976,7 @@ static Mesh MakeSpike(int n, float h, float R = 3.f)
 // distortion budget configured: developableMaxUvDistortion defaults to 0, which
 // selects the internal ship-ability bar (kShipMaxSymDir) rather than no check —
 // before that, the repair accepted charts the injectivity ladder in
-// ParametrizeCharts would have refused to ship (CHANGELOG 0.3.1).
+// ParametrizeCharts would have refused to ship (CHANGELOG 0.4.0).
 //
 // The `1e9` arm is what makes this a distortion test rather than a fold test:
 // the SAME chart ships when the budget is lifted, so its map is flip-free and
@@ -1014,6 +1014,41 @@ TEST(Flatten, OverStretchedChartSplitsWithNoDistortionBudgetSet)
 	EXPECT_FALSE(halfmesh::detail::ChartFacesFold(mild, mildFaces, def))
 	    << "the default bar must not split ordinary curved charts";
 	EXPECT_TRUE(halfmesh::detail::ChartFacesFold(mild, mildFaces, tight));
+}
+
+// ---------------------------------------------------------------------------
+// tau = 4.0 is a perfectly isometric map — the FLOOR of area-weighted
+// symmetric-Dirichlet — so a budget in (0, 4] can be met by no chart at all.
+// Honoured literally it made every chart read over-distorted and the repair
+// bisect the mesh toward one chart per triangle. Such a budget is refused and
+// the internal ship-ability bar used instead, so it behaves like the default
+// rather than shredding the surface (CHANGELOG 0.4.0).
+// ---------------------------------------------------------------------------
+TEST(Flatten, UnsatisfiableDistortionBudgetFallsBackToTheShipBar)
+{
+	// Mildly curved: stretches, but the default bar ships it.
+	Mesh mild = MakeSpike(24, 12.f);
+	mild.ListHalfEdges();
+	std::vector<Mesh::FIndex> faces(mild.faces.size());
+	for (size_t i = 0; i < faces.size(); ++i)
+		faces[i] = static_cast<Mesh::FIndex>(i);
+
+	halfmesh::ParametrizeParams def; // 0 selects the ship-ability bar
+	ASSERT_FALSE(halfmesh::detail::ChartFacesFold(mild, faces, def));
+
+	for (const float tau : {0.5f, 1.f, 4.f}) {
+		halfmesh::ParametrizeParams bogus;
+		bogus.developableMaxUvDistortion = tau;
+		EXPECT_FALSE(halfmesh::detail::ChartFacesFold(mild, faces, bogus))
+		    << "tau=" << tau << " is at or below perfect isometry: unsatisfiable, so it must "
+		                        "not split a chart the default bar ships";
+	}
+
+	// Just above the floor is a real budget again, and still honoured.
+	halfmesh::ParametrizeParams tight;
+	tight.developableMaxUvDistortion = 4.001f;
+	EXPECT_TRUE(halfmesh::detail::ChartFacesFold(mild, faces, tight))
+	    << "a satisfiable-but-tight budget must still be honoured";
 }
 
 } // namespace

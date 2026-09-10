@@ -2047,6 +2047,12 @@ ChartMesh ExtractOneChart(const Mesh& mesh, const std::vector<Mesh::FIndex>& fac
 // how a wildly stretched chart used to reach the atlas.
 constexpr float kShipMaxSymDir = 200.f;
 
+// Area-weighted symmetric-Dirichlet of a perfectly isometric map. It is the
+// FLOOR of the measure, so a budget at or below it is unsatisfiable: every
+// chart reads over-distorted and bisects until nothing is left to split.
+// developableMaxUvDistortion is validated against this, not against 0.
+constexpr float kIsometricSymDir = 4.f;
+
 // Should this (flip-free) chart be split for OVER-DISTORTION? `uv` is the SHIPPED
 // map (full init + SLIM, exactly what ParametrizeCharts writes). Returns true iff
 // the chart's area-weighted symmetric-Dirichlet exceeds the budget τ AND it is not
@@ -2246,10 +2252,10 @@ bool ChartFolds(ChartMesh& cm, const ParametrizeParams& params, FoldAccept* out 
 		// Flip-freedom is necessary but NOT sufficient: an injective map can
 		// still be stretched past any use. developableMaxUvDistortion is the
 		// caller's own budget when set; at the default 0 fall back to
-		// kShipMaxSymDir rather than to no check at all (CHANGELOG 0.3.1).
+		// kShipMaxSymDir rather than to no check at all (CHANGELOG 0.4.0).
 		// ChartOverDistorted's sliver guard still exempts degenerate input,
 		// which splitting cannot fix.
-		const float tau = params.developableMaxUvDistortion > 0.0f
+		const float tau = params.developableMaxUvDistortion > kIsometricSymDir
 		                      ? params.developableMaxUvDistortion
 		                      : kShipMaxSymDir;
 		std::vector<int> over;
@@ -2383,6 +2389,16 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
                        unsigned numCharts, const ParametrizeParams& params,
                        ChartFlattenCache* cache)
 {
+	// Refuse an unsatisfiable distortion budget once, here, rather than per chart:
+	// (0, 4] is below perfect isometry, so it would fail every chart and split the
+	// mesh toward one chart per triangle. Refused whole, as a bad remesh sizing
+	// field is -- the run continues on the internal ship-ability bar.
+	if (params.developableMaxUvDistortion > 0.f && params.developableMaxUvDistortion <= kIsometricSymDir)
+		REPORT_WARNING("ParametrizeCharts: developableMaxUvDistortion {} is at or below perfect "
+		               "isometry ({}) and cannot be met by any chart -- ignored; using the internal "
+		               "ship-ability bar. Set a budget above {} (~4.4 is quality-first) or 0.",
+		               params.developableMaxUvDistortion, kIsometricSymDir, kIsometricSymDir);
+
 	mesh.SyncFaces();
 	const size_t nf = mesh.faces.size();
 	mesh.faceTexcoords.assign(nf * 3, Mesh::TexCoord::Zero());

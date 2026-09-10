@@ -286,6 +286,29 @@ PYBIND11_MODULE(_halfmesh, m)
 	    .def("__repr__", [](Mesh& self) { self.SyncFaces(); return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
 
 	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion, unsigned repair_carve_rings, unsigned fold_rescue_slits, float tiny_chart_side, unsigned debris_chart_faces) {
+		if (resolution == 0u)
+			throw py::value_error("unwrap resolution must be > 0");
+		if (2u * padding >= resolution)
+			throw py::value_error("unwrap needs 2*padding < resolution, or no chart fits the page");
+		if (!(max_cone_error > 0.f) || !std::isfinite(max_cone_error))
+			throw py::value_error("max_cone_error must be finite and > 0 (default 0.05; larger = fewer, larger charts)");
+		// tau = 4 is a perfectly isometric map, the FLOOR of the measure, so a budget
+		// in (0,4] is unsatisfiable: every chart reads over-distorted and bisects until
+		// the mesh is one chart per triangle. 0 is "use the internal ship-ability bar",
+		// not "off" -- there is no way to disable the check.
+		if (!std::isfinite(max_uv_distortion) || max_uv_distortion < 0.f
+		    || (max_uv_distortion > 0.f && max_uv_distortion <= 4.f))
+			throw py::value_error("max_uv_distortion must be 0 (internal ship-ability bar) or > 4.0; "
+			                      "4.0 is perfect isometry and ~4.4 is a quality-first budget. A value in "
+			                      "(0, 4] cannot be met by any chart and splits the mesh toward one chart per triangle");
+		// Each slit re-flattens the whole chart and each carve ring widens a re-split;
+		// past a handful the chart is shredded and the repair's own split is cheaper.
+		if (fold_rescue_slits > 16u)
+			throw py::value_error("fold_rescue_slits must be <= 16 (2 is the sane on-value; each attempt re-flattens the chart)");
+		if (repair_carve_rings > 16u)
+			throw py::value_error("repair_carve_rings must be <= 16 (2 is the sane on-value)");
+		if (!std::isfinite(tiny_chart_side) || tiny_chart_side < 0.f)
+			throw py::value_error("tiny_chart_side must be finite and >= 0 (0 = off)");
 		Mesh mesh;
 		unsigned charts = 0;
 		halfmesh::AtlasResult result;

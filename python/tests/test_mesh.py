@@ -133,6 +133,58 @@ def test_unwrap_accepts_knobs(tmp_path, knobs):
     assert unwrapped.has_texcoords
 
 
+@pytest.mark.parametrize(
+    "knobs, message",
+    [
+        (dict(resolution=0), "resolution must be > 0"),
+        (dict(resolution=64, padding=32), "2\\*padding < resolution"),
+        (dict(max_cone_error=0.0), "max_cone_error"),
+        (dict(max_cone_error=float("nan")), "max_cone_error"),
+        (dict(max_uv_distortion=1.0), "max_uv_distortion"),
+        (dict(max_uv_distortion=4.0), "max_uv_distortion"),
+        (dict(max_uv_distortion=-1.0), "max_uv_distortion"),
+        (dict(fold_rescue_slits=17), "fold_rescue_slits"),
+        (dict(repair_carve_rings=17), "repair_carve_rings"),
+        (dict(tiny_chart_side=-1.0), "tiny_chart_side"),
+    ],
+    ids=[
+        "resolution-zero", "padding-fills-page", "cone-error-zero", "cone-error-nan",
+        "distortion-below-floor", "distortion-at-floor", "distortion-negative",
+        "slits-over-cap", "carve-over-cap", "tiny-side-negative",
+    ],
+)
+def test_unwrap_rejects_unhonourable_knobs(tmp_path, knobs, message):
+    """A knob no run could honour raises instead of being worked from.
+
+    max_uv_distortion is the one that matters: 4.0 is a perfectly isometric
+    map, so a budget at or below it is met by no chart and used to bisect the
+    mesh toward one chart per triangle with nothing reported.
+    """
+    v, f = _cube_arrays()
+    src = str(tmp_path / "cube.ply")
+    hm.Mesh.from_arrays(v, f).save(src)
+    args = dict(resolution=1024, padding=2)
+    args.update(knobs)
+    with pytest.raises(ValueError, match=message):
+        hm.unwrap(src, str(tmp_path / "cube_uv.ply"), **args)
+
+
+def test_unwrap_accepts_the_edges_of_the_valid_domain(tmp_path):
+    """The bounds reject only what is out of domain: 0 and just-above-4 are
+    both legal distortion budgets, and the iteration caps are inclusive."""
+    v, f = _cube_arrays()
+    src = str(tmp_path / "cube.ply")
+    hm.Mesh.from_arrays(v, f).save(src)
+    for knobs in (
+        dict(max_uv_distortion=0.0),
+        dict(max_uv_distortion=4.001),
+        dict(fold_rescue_slits=16, repair_carve_rings=16),
+        dict(tiny_chart_side=0.0),
+    ):
+        meta = hm.unwrap(src, str(tmp_path / "cube_uv.ply"), resolution=1024, padding=2, **knobs)
+        assert meta["charts"] >= 1
+
+
 def test_unwrap_explicit_defaults_match_omitted(tmp_path):
     """Passing every knob at its default reproduces omitting them all: the
     keyword args are additive and match the C++ ParametrizeParams/AtlasParams

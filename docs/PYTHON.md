@@ -13,7 +13,7 @@ re-exports it.
 [GitHub Release](https://github.com/cdcseacave/halfmesh/releases):
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.3.1/halfmesh-0.3.1-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.0/halfmesh-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 Pick the `cpXY-cpXY` tag matching your interpreter (`cp310`, `cp311`, `cp312`,
@@ -69,7 +69,7 @@ any C++ work happens. The GIL is released around all native computation (see
 
 ### `version() -> str`
 
-The halfmesh library version string (`"0.3.1"`), single-sourced from
+The halfmesh library version string (`"0.4.0"`), single-sourced from
 `project(halfmesh VERSION …)` in `CMakeLists.txt`. Also exposed as
 `halfmesh.__version__`.
 
@@ -328,6 +328,15 @@ re-deriving it at the Python boundary.
   a 1-texel gutter instead of `padding`. `0` disables (the default).
   Packing-only — never changes the chart partition.
 
+Raises `ValueError` for a knob no run could honour, rather than working from it:
+`resolution == 0`, or a `padding` leaving no page (`2*padding >= resolution`); a
+`max_cone_error` that is not finite and positive; a `max_uv_distortion` in
+`(0, 4]`, which is at or below the isometry floor and so splits every chart in
+the mesh; a `fold_rescue_slits` or `repair_carve_rings` above 16, each unit of
+which re-flattens or re-splits a chart; a negative or non-finite
+`tiny_chart_side`. A C++ caller setting `developableMaxUvDistortion` into
+`(0, 4]` gets a warning and the internal ship-ability bar instead.
+
 Returns a `dict`:
 
 | Key | Meaning |
@@ -336,9 +345,9 @@ Returns a `dict`:
 | `pages` | number of atlas pages the charts were packed into |
 | `width`, `height` | final atlas page dimensions in texels |
 | `occupancy` | fraction of atlas area covered by charts, `[0, 1]` (0 only for a degenerate empty atlas) |
-| `coverage` | fraction of the texel budget under actual UV triangles, `[0, 1]` — the honest density number (`occupancy` is padded-rect fill and reads far higher with many small charts) |
+| `coverage` | fraction of the texel budget under actual UV triangles, `[0, 1]` — the honest density number (`occupancy` is padded-rect fill and reads far higher with many small charts). Triangle areas are summed absolute, so a non-injective chart's doubled-back area counts twice; it is a mean over pages, so a near-empty second page roughly halves it |
 | `fit_attempts` | number of fit-to-resolution packing probes it took to fit the target page size |
-| `fit_scale` | the single global scale fit-to-resolution applied to every chart (1.0 when it was off) |
+| `fit_scale` | the single global scale fit-to-resolution applied to every chart. 1.0 is ambiguous — it is also the value when the solve could not produce a usable scale, and `fit_attempts` is 0 on that path too |
 | `max_chart_extent` | widest **unpadded** chart side in texels, in the packed atlas |
 | `padding_applied` | `{nominal, min, n_charts_reduced}` — the requested gutter, the narrowest one actually applied, and how many charts got it |
 | `vertices`, `faces` | vertex/face counts of the (welded) output mesh |
