@@ -62,15 +62,25 @@ inline bool AllChartsConnectedTopo(const halfmesh::Mesh& m, const std::vector<un
 			return math::NO_ID;
 		return nb;
 	};
+	// Seed + size per chart in ONE pass over the faces. Scanning every face once
+	// per chart instead is O(charts x faces): tolerable on the challenge mesh
+	// (~3e8 compares, under a second of a 97s suite -- removing it is not
+	// measurable) but quadratic in the partition, so a Truck-class one (100k
+	// charts over 500k faces) would cost ~5e10. Complexity fix, not a speedup.
+	// The BFS below stays O(faces) in total: a face belongs to exactly one chart,
+	// so `visited` is safe to share across charts.
+	std::vector<size_t> seedOf(n, nf), total(n, 0);
+	for (size_t f = 0; f < nf; ++f) {
+		const unsigned c = fc[f];
+		if (c >= n)
+			continue; // out-of-range ids are ExpectValidPartition's business
+		if (seedOf[c] == nf)
+			seedOf[c] = f;
+		++total[c];
+	}
 	std::vector<char> visited(nf, 0);
 	for (unsigned c = 0; c < n; ++c) {
-		size_t seed = nf, total = 0;
-		for (size_t f = 0; f < nf; ++f)
-			if (fc[f] == c) {
-				if (seed == nf)
-					seed = f;
-				++total;
-			}
+		const size_t seed = seedOf[c];
 		if (seed == nf)
 			return false; // empty chart
 		std::queue<size_t> q;
@@ -89,7 +99,7 @@ inline bool AllChartsConnectedTopo(const halfmesh::Mesh& m, const std::vector<un
 				q.push(nb);
 			}
 		}
-		if (count != total)
+		if (count != total[c])
 			return false; // chart c is disconnected via topo edges
 	}
 	return true;

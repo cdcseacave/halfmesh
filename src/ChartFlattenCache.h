@@ -141,6 +141,13 @@ struct AtlasSegmentStats
 		// this round's repair wave split right back, i.e. folded. Blacklisted
 		// for every later round, so a key here never repeats across stats.rounds.
 		std::vector<std::pair<Mesh::FIndex, Mesh::FIndex>> refoldedPairs;
+		// How many of `refoldedPairs` were blacklisted WITHOUT evidence: a chart
+		// built by a chain of merges contributes one key per merge, and the repair
+		// reports only that the chart split, not which merge folded it -- so every
+		// key past the first for a given chart blocks a pair that may never have
+		// folded. Non-zero means this round over-blacklisted by that many pairs,
+		// which can only raise the final chart count.
+		unsigned refoldedPairsCollateral = 0;
 	};
 	std::vector<MergeRound> rounds; // one per post-repair merge round
 };

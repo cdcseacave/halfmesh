@@ -265,7 +265,7 @@ TEST(SegmentQuality, DistanceTermReducesChartsOnRealMesh)
 // a partition CarveFailureRegion actually shaped is checked. The slit arms assert
 // only a bound: the repair and the post-repair merge iterate to a fixed point
 // that a changed split predicate perturbs either way, and foldRescueSlits
-// measured non-monotone on this mesh (CHANGELOG 0.3.1, docs/BENCHMARKS.md §4).
+// measured non-monotone on this mesh (CHANGELOG 0.4.0, docs/BENCHMARKS.md §4).
 // What IS real is that a rescue either ships a folding chart as ONE chart or
 // falls through to the same split safety net the baseline used, so the count
 // stays in the baseline's neighbourhood.

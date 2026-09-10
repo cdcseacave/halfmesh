@@ -1508,12 +1508,16 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 			// compactedChartId) for this round's merges in the SAME post-Compact
 			// numbering `dirty`/`splitSet` use. A merged chart the repair wave just
 			// split back folded — memoize its pair key so it is never retried.
+			std::unordered_set<unsigned> foldedChartsSeen; // stats only; see refoldedPairsCollateral
 			for (const auto& [fa, fb, compactedId] : mergedPairs) {
 				if (splitSet.count(compactedId) == 0)
 					continue; // shipped merged — not a fold, stays available to future rounds
 				foldedUnions.insert(PairKey(fa, fb));
-				if (stats != nullptr)
+				if (stats != nullptr) {
 					roundStats.refoldedPairs.emplace_back(fa, fb);
+					if (!foldedChartsSeen.insert(compactedId).second)
+						++roundStats.refoldedPairsCollateral;
+				}
 			}
 			if (stats != nullptr) {
 				unsigned resplit = 0;

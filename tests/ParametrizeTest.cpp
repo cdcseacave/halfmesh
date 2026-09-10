@@ -286,8 +286,8 @@ TEST(Parametrize, RealMeshSanity)
 	// stricter cone budget reshapes seed charts whose refined maps may happen to
 	// fold LESS. How far it lands the other way is a floating-point-implementation
 	// property, not a behavioral one: Apple Silicon measured 12.6% under the
-	// default-budget count before 0.3.1 and 15.4% after (2840 -> 2403), the shift
-	// coming from 0.3.1's segmentation changes (fold blacklist, always-on
+	// default-budget count before 0.4.0 and 15.4% after (2840 -> 2403), the shift
+	// coming from 0.4.0's segmentation changes (fold blacklist, always-on
 	// distortion bar), while x86-64 (Linux and Windows CI) stays inside the old
 	// 15% band on the same input.
 	// So this is a COLLAPSE guard, not a monotonicity guard — the band has to
