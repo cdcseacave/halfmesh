@@ -203,10 +203,21 @@ half-edge core accepts:
   displaced toward the incident-face barycenter). A no-op once `halfMesh`
   exists: the structure cannot represent what it fixes.
 - `RemoveSmallComponents(minComponentSize)` — floater removal by face count.
+- `RemoveLongEdgeFaces(factor)` — drop faces with an edge longer than
+  `percentile95(edgeLength) * factor`, a global threshold over the mesh's own
+  edge-length distribution.
+- `RemoveLongEdgeFacesLocal(factor, rings)` — drop faces whose longest edge
+  exceeds `factor` × the local edge scale: a vertex's scale is the median
+  length of the edges inside its k-ring (every edge with an endpoint at BFS
+  depth `< rings`), a face's scale is the largest of its three vertex scales.
+  A surface that merely gets sparser keeps its own scale and survives; a face
+  spanning between denser regions does not. Vertex scales are computed in
+  parallel.
 - `RemoveSpuriousComponents(factor)` — reconstruction-debris removal relative
-  to the mesh's own edge-length distribution: drop faces with an edge longer
-  than `percentile95(edgeLength) * factor`, then components whose bounding-box
-  diagonal is shorter than `percentile55(edgeLength) * factor`.
+  to the mesh's own edge-length distribution: drop connected components whose
+  bounding-box diagonal is shorter than `percentile55(edgeLength) * factor`.
+  Pair it with `RemoveLongEdgeFaces` for the classic "long edges first, then
+  floaters" cleanup.
 - `RemoveSpikes(maxIterations)` — drop vertices incident to at most one face
   (an isolated vertex or a dangling triangle's tip) together with that face,
   repeating until stable.
@@ -244,7 +255,7 @@ after an `untextured-only` operation.
 | `RemoveUnreferencedVerticesArrays`, `RemoveDegenerateFacesArrays`, `RemoveSpikesArrays` | attribute-preserving (bonus) |
 | `RemoveUnreferencedVertices`, `RemoveDegenerateFaces`, `RemoveSpikes` | representation-dependent: array arm preserves as a bonus; native arm is untextured-only |
 | `ECollapse`, `RemoveFacesHalfEdge`, `RemoveUnreferencedVerticesHalfEdge`, `RemoveDegenerateFacesHalfEdge`, `RemoveSpikesHalfEdge` | untextured-only |
-| `RemoveSmallComponents`, `RemoveSpuriousComponents`, `RemoveVerticesAndFill`, `CloseHoles` | untextured-only |
+| `RemoveSmallComponents`, `RemoveLongEdgeFaces`, `RemoveLongEdgeFacesLocal`, `RemoveSpuriousComponents`, `RemoveVerticesAndFill`, `CloseHoles` | untextured-only |
 | `FixNonManifold`, `ListHalfEdgesSafe` | untextured-only ingest repair |
 | `Simplify`, `RemeshIsotropic` | untextured-only |
 | `Smooth`, `SmoothHCLaplacian`, `SmoothTaubin` | attribute-preserving (bonus; positions move, topology/UVs/colors stay, cached face normals clear) |
