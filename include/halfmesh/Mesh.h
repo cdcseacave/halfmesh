@@ -405,7 +405,8 @@ class Mesh
 	// (every edge with at least one endpoint at BFS depth < rings from the vertex),
 	// a face's scale is the largest of its three vertex scales, so a surface that
 	// merely gets sparser survives while a face that spans between denser regions
-	// does not (factor <= 0 disables); return number of faces removed
+	// does not (factor <= 0 disables, rings 0 counts as 1; the per-vertex cost grows
+	// with the k-ring size, so keep rings small); return number of faces removed
 	FIndex RemoveLongEdgeFacesLocal(float factor, unsigned rings = 1);
 
 	// remove connected components whose bounding-box diagonal is shorter than

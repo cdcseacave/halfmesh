@@ -13,7 +13,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   factor` edge pass that `RemoveSpuriousComponents` used to run first.
   `RemoveSpuriousComponents` is now the component pass alone (drop components
   whose bounding-box diagonal is under `percentile55(edgeLength) * factor`), so a
-  caller wanting the old behaviour calls both, in that order.
+  caller wanting the old cleanup calls both, in that order. The component cutoff
+  is then measured on the mesh the edge pass leaves behind rather than on the
+  original, which lowers it by a few percent (on `truck.ply` at the default
+  factor this keeps 159 more faces out of 170k removed).
 - **`RemoveLongEdgeFacesLocal(factor, rings = 1)`.** Removes faces whose longest
   edge exceeds `factor` × the local edge scale: a vertex's scale is the median
   length of the edges inside its k-ring (every edge with an endpoint at BFS depth

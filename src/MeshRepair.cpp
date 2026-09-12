@@ -817,39 +817,37 @@ Mesh::FIndex Mesh::RemoveLongEdgeFacesLocal(float factor, unsigned rings)
 		rings = 1;
 	// per-vertex scale: median length of the edges inside the vertex k-ring, i.e.
 	// every edge with at least one endpoint at BFS depth < rings; an unreferenced
-	// vertex keeps 0 (it has no faces to filter anyway)
+	// vertex keeps 0 (it has no faces to filter anyway). The k-ring is a few dozen
+	// vertices for the ring counts this filter is meant for, so membership is a
+	// linear scan of the visited list rather than a vertex-sized depth array per
+	// thread (V x threads words, each cleared once per call).
 	std::vector<float> vertexScales(halfMesh.VSize(), 0.f);
 	BS::light_thread_pool pool;
 	ParallelForPool(pool, halfMesh.VSize(), [&](std::size_t v) {
-		if (halfMesh.VHalfedge(static_cast<VIndex>(v)) == NO_ID)
+		const VIndex root = static_cast<VIndex>(v);
+		if (halfMesh.VHalfedge(root) == NO_ID)
 			return;
-		thread_local std::vector<unsigned> depths; // NO_ID = not reached by the current BFS
-		thread_local std::vector<VIndex> queue;
+		thread_local std::vector<std::pair<VIndex, unsigned>> ring; // (vertex, BFS depth) in BFS order
 		thread_local std::vector<float> lengths;
-		if (depths.size() != halfMesh.VSize())
-			depths.assign(halfMesh.VSize(), NO_ID);
-		queue.assign(1, static_cast<VIndex>(v));
-		depths[v] = 0;
+		ring.assign(1, {root, 0u});
 		lengths.clear();
-		for (std::size_t i = 0; i < queue.size(); ++i) {
-			const VIndex u = queue[i];
-			const unsigned depth = depths[u];
+		for (std::size_t i = 0; i < ring.size(); ++i) {
+			const auto [u, depth] = ring[i]; // by value: ring may grow below
 			if (depth >= rings)
 				break; // BFS order: every vertex from here on is at least this deep
 			for (EIndex edge : halfMesh.VAdjacentEdges(u)) {
 				const auto verts = halfMesh.EVertices(edge);
 				const VIndex w = verts.first == u ? verts.second : verts.first;
-				if (depths[w] == NO_ID) {
-					depths[w] = depth + 1;
-					queue.emplace_back(w);
-				} else if (depths[w] < depth || (depths[w] == depth && w < u)) {
-					continue; // already collected from the other endpoint
+				const auto seen = std::find_if(ring.begin(), ring.end(), [w](const auto& entry) { return entry.first == w; });
+				if (seen == ring.end()) {
+					ring.emplace_back(w, depth + 1);
+				} else if (seen->second < depth || (seen->second == depth && w < u)) {
+					continue; // the other endpoint owns this edge
 				}
 				lengths.emplace_back(edgeLengths[edge]);
 			}
 		}
-		for (VIndex u : queue)
-			depths[u] = NO_ID;
+		ASSERT(!lengths.empty()); // a referenced vertex has at least its own star
 		const auto median = lengths.begin() + lengths.size() / 2;
 		std::nth_element(lengths.begin(), median, lengths.end());
 		vertexScales[v] = *median;
