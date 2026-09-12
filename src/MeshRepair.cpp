@@ -15,6 +15,7 @@
 #include <halfmesh/Util/Maths.h>
 #include <halfmesh/Util/Accumulator.h>
 #include <halfmesh/Util/Hash.h> // std::hash<std::tuple<...>>
+#include "ParallelFor.h"
 
 #include <algorithm>
 #include <bit>
@@ -25,9 +26,13 @@
 #include <unordered_map>
 #include <vector>
 
+#include <BS_thread_pool.hpp>
+
 using namespace math;
 
 namespace halfmesh {
+
+using detail::ParallelForPool;
 
 // ---------------------------------------------------------------------------
 // ListHalfEdgesSafe (original line 635)
@@ -721,6 +726,159 @@ unsigned Mesh::RemoveSmallComponents(unsigned minComponentSize)
 	return numSmallComponents;
 }
 
+namespace {
+
+// length of every edge of the live half-edge structure, indexed by EIndex
+std::vector<float> EdgeLengths(const Mesh& mesh)
+{
+	std::vector<float> edgeLengths;
+	edgeLengths.reserve(mesh.halfMesh.ESize());
+	for (Mesh::EIndex edge = 0; edge < mesh.halfMesh.ESize(); ++edge) {
+		const auto verts = mesh.halfMesh.EVertices(edge);
+		edgeLengths.emplace_back((mesh.vertices[verts.first] - mesh.vertices[verts.second]).norm());
+	}
+	return edgeLengths;
+}
+
+} // namespace
+
+Mesh::FIndex Mesh::RemoveLongEdgeFaces(float factor)
+{
+	if (factor <= 0.f) {
+		SyncFacesOnPublicExit();
+		return 0;
+	}
+	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
+		return 0;
+	TIMER_START("RemoveLongEdgeFaces");
+	const FIndex initialFaces = halfMesh.Empty() ? static_cast<FIndex>(faces.size()) : halfMesh.FSize();
+	// ListHalfEdges, not ListHalfEdgesSafe: the manifold build is a fraction of the
+	// cost of the weld/dedupe/repair sweep, and it falls back to the safe path by
+	// itself when the input turns out to be non-manifold
+	ListHalfEdges();
+	if (halfMesh.Empty()) {
+		SyncFacesOnPublicExit();
+		return initialFaces - static_cast<FIndex>(faces.size());
+	}
+
+	const std::vector<float> edgeLengths = EdgeLengths(*this);
+	if (edgeLengths.empty()) {
+		SyncFacesOnPublicExit();
+		return 0;
+	}
+	std::vector<float> percentiles(edgeLengths);
+	const size_t idx95 = percentiles.size() * 95 / 100;
+	std::nth_element(percentiles.begin(), percentiles.begin() + idx95, percentiles.end());
+	const float maxEdgeLength = percentiles[idx95] * factor;
+
+	std::vector<FIndex> removeFaces;
+	for (EIndex edge = 0; edge < halfMesh.ESize(); ++edge) {
+		if (edgeLengths[edge] <= maxEdgeLength)
+			continue;
+		for (HIndex iHe : halfMesh.EAdjacentInteriorHalfedges(edge))
+			removeFaces.emplace_back(halfMesh.HeFace(iHe));
+	}
+	std::sort(removeFaces.begin(), removeFaces.end());
+	removeFaces.erase(std::unique(removeFaces.begin(), removeFaces.end()), removeFaces.end());
+	if (!removeFaces.empty()) {
+		std::vector<VIndex> removedVerts;
+		std::vector<VIndex> splitSrcVerts;
+		RemoveFacesHalfEdgeImpl(removeFaces, removedVerts, splitSrcVerts);
+	}
+
+	const FIndex removed = initialFaces - halfMesh.FSize();
+	SyncFacesOnPublicExit();
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
+	if (removed > 0)
+		REPORT_STATUS_NOW("Removed {} long-edge faces ({})", removed, TIMER_STR());
+	return removed;
+}
+
+Mesh::FIndex Mesh::RemoveLongEdgeFacesLocal(float factor, unsigned rings)
+{
+	if (factor <= 0.f) {
+		SyncFacesOnPublicExit();
+		return 0;
+	}
+	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
+		return 0;
+	TIMER_START("RemoveLongEdgeFacesLocal");
+	const FIndex initialFaces = halfMesh.Empty() ? static_cast<FIndex>(faces.size()) : halfMesh.FSize();
+	ListHalfEdges();
+	if (halfMesh.Empty()) {
+		SyncFacesOnPublicExit();
+		return initialFaces - static_cast<FIndex>(faces.size());
+	}
+
+	const std::vector<float> edgeLengths = EdgeLengths(*this);
+	if (rings == 0)
+		rings = 1;
+	// per-vertex scale: median length of the edges inside the vertex k-ring, i.e.
+	// every edge with at least one endpoint at BFS depth < rings; an unreferenced
+	// vertex keeps 0 (it has no faces to filter anyway). The k-ring is a few dozen
+	// vertices for the ring counts this filter is meant for, so membership is a
+	// linear scan of the visited list rather than a vertex-sized depth array per
+	// thread (V x threads words, each cleared once per call).
+	std::vector<float> vertexScales(halfMesh.VSize(), 0.f);
+	BS::light_thread_pool pool;
+	ParallelForPool(pool, halfMesh.VSize(), [&](std::size_t v) {
+		const VIndex root = static_cast<VIndex>(v);
+		if (halfMesh.VHalfedge(root) == NO_ID)
+			return;
+		thread_local std::vector<std::pair<VIndex, unsigned>> ring; // (vertex, BFS depth) in BFS order
+		thread_local std::vector<float> lengths;
+		ring.assign(1, {root, 0u});
+		lengths.clear();
+		for (std::size_t i = 0; i < ring.size(); ++i) {
+			const auto [u, depth] = ring[i]; // by value: ring may grow below
+			if (depth >= rings)
+				break; // BFS order: every vertex from here on is at least this deep
+			for (EIndex edge : halfMesh.VAdjacentEdges(u)) {
+				const auto verts = halfMesh.EVertices(edge);
+				const VIndex w = verts.first == u ? verts.second : verts.first;
+				const auto seen = std::find_if(ring.begin(), ring.end(), [w](const auto& entry) { return entry.first == w; });
+				if (seen == ring.end()) {
+					ring.emplace_back(w, depth + 1);
+				} else if (seen->second < depth || (seen->second == depth && w < u)) {
+					continue; // the other endpoint owns this edge
+				}
+				lengths.emplace_back(edgeLengths[edge]);
+			}
+		}
+		ASSERT(!lengths.empty()); // a referenced vertex has at least its own star
+		const auto median = lengths.begin() + lengths.size() / 2;
+		std::nth_element(lengths.begin(), median, lengths.end());
+		vertexScales[v] = *median;
+	});
+
+	std::vector<FIndex> removeFaces;
+	for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace) {
+		float longestEdge = 0.f, scale = 0.f;
+		for (HIndex iHe : halfMesh.FAdjacentHalfedges(idxFace)) {
+			longestEdge = std::max(longestEdge, edgeLengths[halfMesh.HeEdge(iHe)]);
+			scale = std::max(scale, vertexScales[halfMesh.HeVertex(iHe)]);
+		}
+		if (longestEdge > factor * scale)
+			removeFaces.emplace_back(idxFace);
+	}
+	if (!removeFaces.empty()) {
+		std::vector<VIndex> removedVerts;
+		std::vector<VIndex> splitSrcVerts;
+		RemoveFacesHalfEdgeImpl(removeFaces, removedVerts, splitSrcVerts);
+	}
+
+	const FIndex removed = initialFaces - halfMesh.FSize();
+	SyncFacesOnPublicExit();
+	// cheap contract check only; the O(F log F) ValidateHalfMesh() rebuild-and-compare
+	// is run by the test suite after every native mutator (see tests/AGENTS.md)
+	ASSERT(ValidateInvariants());
+	if (removed > 0)
+		REPORT_STATUS_NOW("Removed {} locally long-edge faces ({})", removed, TIMER_STR());
+	return removed;
+}
+
 Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 {
 	if (factor <= 0.f) {
@@ -740,44 +898,14 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 		return initialFaces - static_cast<FIndex>(faces.size());
 	}
 
-	std::vector<float> edgeLengths;
-	edgeLengths.reserve(halfMesh.ESize());
-	for (EIndex edge = 0; edge < halfMesh.ESize(); ++edge) {
-		const auto verts = halfMesh.EVertices(edge);
-		edgeLengths.emplace_back((vertices[verts.first] - vertices[verts.second]).norm());
-	}
-	if (edgeLengths.empty()) {
+	std::vector<float> percentiles = EdgeLengths(*this);
+	if (percentiles.empty()) {
 		SyncFacesOnPublicExit();
 		return 0;
 	}
-	std::vector<float> percentiles(edgeLengths);
-	const size_t idx95 = percentiles.size() * 95 / 100;
 	const size_t idx55 = percentiles.size() * 55 / 100;
-	std::nth_element(percentiles.begin(), percentiles.begin() + idx95, percentiles.end());
-	const float maxEdgeLength = percentiles[idx95] * factor;
-	// the prefix left by the pass above already holds the idx95 smallest lengths,
-	// so the lower percentile only has to be selected within it
-	std::nth_element(percentiles.begin(), percentiles.begin() + idx55, percentiles.begin() + idx95);
+	std::nth_element(percentiles.begin(), percentiles.begin() + idx55, percentiles.end());
 	const float minComponentDiameter = percentiles[idx55] * factor;
-
-	std::vector<FIndex> removeFaces;
-	for (EIndex edge = 0; edge < halfMesh.ESize(); ++edge) {
-		if (edgeLengths[edge] <= maxEdgeLength)
-			continue;
-		for (HIndex iHe : halfMesh.EAdjacentInteriorHalfedges(edge))
-			removeFaces.emplace_back(halfMesh.HeFace(iHe));
-	}
-	std::sort(removeFaces.begin(), removeFaces.end());
-	removeFaces.erase(std::unique(removeFaces.begin(), removeFaces.end()), removeFaces.end());
-	if (!removeFaces.empty()) {
-		std::vector<VIndex> removedVerts;
-		std::vector<VIndex> splitSrcVerts;
-		RemoveFacesHalfEdgeImpl(removeFaces, removedVerts, splitSrcVerts);
-	}
-	if (halfMesh.Empty()) {
-		SyncFacesOnPublicExit();
-		return initialFaces;
-	}
 
 	std::vector<FIndex> components;
 	const FIndex numComponents = halfMesh.ConnectedComponents(components);
@@ -788,7 +916,7 @@ Mesh::FIndex Mesh::RemoveSpuriousComponents(float factor)
 			for (int i = 0; i < 3; ++i)
 				bounds[components[idxFace]].extend(vertices[face[i]]);
 		}
-		removeFaces.clear();
+		std::vector<FIndex> removeFaces;
 		for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace) {
 			const Eigen::AlignedBox<float, 3>& bound = bounds[components[idxFace]];
 			if (!bound.isEmpty() && bound.diagonal().norm() < minComponentDiameter)

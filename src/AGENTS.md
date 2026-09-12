@@ -20,7 +20,8 @@ The `Mesh` class is split across several TUs by concern:
   `ListHalfEdges`, edit primitives (RemoveFaces/RemoveUnreferencedVertices…).
 - `MeshIO.cpp` — PLY/glTF load/save, texture & texcoord handling, seam export.
 - `MeshRepair.cpp` — RemoveDuplicate/Degenerate faces, FixNonManifold,
-  RemoveSmallComponents, RemoveSpuriousComponents, RemoveSpikes. Repair entry points
+  RemoveSmallComponents, RemoveLongEdgeFaces, RemoveLongEdgeFacesLocal,
+  RemoveSpuriousComponents, RemoveSpikes. Repair entry points
   that work on both representations dispatch to an `*Arrays` / `*HalfEdge` arm.
 - `MeshSimplify.cpp` — `Mesh::Simplify`: QEM edge-collapse decimation (priority/exact mode
   and the fast threshold-sweep mode; setup is parallelized); the file has explanatory comments
