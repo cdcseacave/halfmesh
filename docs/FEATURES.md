@@ -206,7 +206,7 @@ half-edge core accepts:
 - `RemoveLongEdgeFaces(factor)` — drop faces with an edge longer than
   `percentile95(edgeLength) * factor`, a global threshold over the mesh's own
   edge-length distribution.
-- `RemoveLongEdgeFacesLocal(factor, rings)` — drop faces whose longest edge
+- `RemoveLongEdgeFacesLocal(factor, rings = 3)` — drop faces whose longest edge
   exceeds `factor` × the local edge scale: a vertex's scale is the median
   length of the edges inside its k-ring (every edge with an endpoint at BFS
   depth `< rings`), a face's scale is the largest of its three vertex scales.

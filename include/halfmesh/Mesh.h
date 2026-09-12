@@ -406,8 +406,10 @@ class Mesh
 	// a face's scale is the largest of its three vertex scales, so a surface that
 	// merely gets sparser survives while a face that spans between denser regions
 	// does not (factor <= 0 disables, rings 0 counts as 1; the per-vertex cost grows
-	// with the k-ring size, so keep rings small); return number of faces removed
-	FIndex RemoveLongEdgeFacesLocal(float factor, unsigned rings = 1);
+	// with the k-ring size, so keep rings small; the default of 3 is measured on
+	// Delaunay graph-cut surfaces, where the 1-ring median is inflated by the very
+	// long edges the filter should catch); return number of faces removed
+	FIndex RemoveLongEdgeFacesLocal(float factor, unsigned rings = 3);
 
 	// remove connected components whose bounding-box diagonal is shorter than
 	// percentile55(edgeLength)*factor (factor <= 0 disables); return number of faces removed
