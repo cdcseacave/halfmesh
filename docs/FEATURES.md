@@ -213,6 +213,14 @@ half-edge core accepts:
   A surface that merely gets sparser keeps its own scale and survives; a face
   spanning between denser regions does not. Vertex scales are computed in
   parallel.
+- `RemoveLongEdgeFacesCapped(factor = 2, reach = 4, cone = 0.35)` — drop
+  long-edged faces (longest edge > `factor` × the median longest edge) that have
+  mesh surface close behind or in front of them along their normal: probes at
+  0.5, 1, 2, …, `reach` × the longest edge on both sides of the centroid, hit
+  when the nearest surface lies within `cone` × the probe distance. A lid
+  across an open box or a sheet under a chassis is capped; a coarsely sampled
+  real surface has nothing behind it and survives, which no edge-length
+  statistic can tell apart. Probes run in parallel on a `TriangleBVH`.
 - `RemoveSpuriousComponents(factor)` — reconstruction-debris removal relative
   to the mesh's own edge-length distribution: drop connected components whose
   bounding-box diagonal is shorter than `percentile55(edgeLength) * factor`.
@@ -255,7 +263,7 @@ after an `untextured-only` operation.
 | `RemoveUnreferencedVerticesArrays`, `RemoveDegenerateFacesArrays`, `RemoveSpikesArrays` | attribute-preserving (bonus) |
 | `RemoveUnreferencedVertices`, `RemoveDegenerateFaces`, `RemoveSpikes` | representation-dependent: array arm preserves as a bonus; native arm is untextured-only |
 | `ECollapse`, `RemoveFacesHalfEdge`, `RemoveUnreferencedVerticesHalfEdge`, `RemoveDegenerateFacesHalfEdge`, `RemoveSpikesHalfEdge` | untextured-only |
-| `RemoveSmallComponents`, `RemoveLongEdgeFaces`, `RemoveLongEdgeFacesLocal`, `RemoveSpuriousComponents`, `RemoveVerticesAndFill`, `CloseHoles` | untextured-only |
+| `RemoveSmallComponents`, `RemoveLongEdgeFaces`, `RemoveLongEdgeFacesLocal`, `RemoveLongEdgeFacesCapped`, `RemoveSpuriousComponents`, `RemoveVerticesAndFill`, `CloseHoles` | untextured-only |
 | `FixNonManifold`, `ListHalfEdgesSafe` | untextured-only ingest repair |
 | `Simplify`, `RemeshIsotropic` | untextured-only |
 | `Smooth`, `SmoothHCLaplacian`, `SmoothTaubin` | attribute-preserving (bonus; positions move, topology/UVs/colors stay, cached face normals clear) |

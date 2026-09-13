@@ -9,7 +9,8 @@
 
 // Tests for MeshRepair.cpp:
 //   RemoveDuplicateFaces, RemoveDegenerateFaces, RemoveSmallComponents,
-//   RemoveLongEdgeFaces, RemoveLongEdgeFacesLocal, RemoveSpuriousComponents, RemoveSpikes,
+//   RemoveLongEdgeFaces, RemoveLongEdgeFacesLocal, RemoveLongEdgeFacesCapped,
+//   RemoveSpuriousComponents, RemoveSpikes,
 //   RemoveFacesOutside, FixNonManifold, ListHalfEdgesSafe
 //   + sanity run on tests/data/mesh.ply
 
@@ -727,6 +728,81 @@ TEST(MeshRepairTest, RemoveLongEdgeFacesLocalRingsWidenTheScale)
 	EXPECT_EQ(twoRings.vertices.size(), 80u) << "the unreferenced apex is dropped";
 	for (const Mesh::Vertex& vertex : twoRings.vertices)
 		EXPECT_EQ(vertex.z(), 0.f);
+}
+
+// ---------------------------------------------------------------------------
+// RemoveLongEdgeFacesCapped
+// ---------------------------------------------------------------------------
+namespace {
+
+// a 9x9 spacing-1 floor (128 faces, longest edge sqrt(2)) and a single 8x8 cell
+// (2 faces, longest edge 8*sqrt(2)) floating `height` above it, inside its footprint:
+// the cell is the only candidate (median longest edge stays sqrt(2))
+Mesh MakeFloorAndLid(float height)
+{
+	Mesh mesh;
+	AppendGrid(mesh, 8, 8, 1.f, 0.f, 0.f);
+	const Mesh::VIndex lid = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.emplace_back(0.f, 0.f, height);
+	mesh.vertices.emplace_back(8.f, 0.f, height);
+	mesh.vertices.emplace_back(8.f, 8.f, height);
+	mesh.vertices.emplace_back(0.f, 8.f, height);
+	mesh.faces.emplace_back(lid, lid + 1, lid + 2);
+	mesh.faces.emplace_back(lid, lid + 2, lid + 3);
+	return mesh;
+}
+
+} // namespace
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedDisabledIsNoOp)
+{
+	Mesh mesh = MakeFloorAndLid(6.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(0.f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 0.f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 4.f, 0.f), 0u);
+	EXPECT_EQ(mesh.faces.size(), 130u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedDropsLidOverSurface)
+{
+	// lid 6 above the floor: the first probe (0.5 x 11.3 = 5.66 below the centroid)
+	// lands 0.34 from the floor, inside its 0.35 x 5.66 = 1.98 cone radius
+	Mesh mesh = MakeFloorAndLid(6.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(), 2u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 128u);
+	EXPECT_EQ(mesh.vertices.size(), 81u) << "the unreferenced lid corners are dropped";
+	for (const Mesh::Vertex& vertex : mesh.vertices)
+		EXPECT_EQ(vertex.z(), 0.f);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedKeepsCoarseSurfaceWithNothingBehind)
+{
+	// the same lid 100 above the floor: the farthest probe (4 x 11.3 = 45.3) stops
+	// 54.7 short of the floor, so the lid is just a coarsely sampled surface
+	Mesh mesh = MakeFloorAndLid(100.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(), 0u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 130u);
+	// reach 6 still misses (probe 6 x 11.3 = 67.9, 32.1 short, radius 23.8); reach 7
+	// brings the floor into range (probe 79.2, 20.8 short, radius 27.7)
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 6.f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 7.f), 2u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 128u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedInsidePipeline)
+{
+	// the probe BVH reads the face array, which a pipeline scope has cleared: the
+	// filter must harvest it rather than probe an empty tree and remove nothing
+	Mesh mesh = MakeFloorAndLid(6.f);
+	mesh.BeginHalfEdgePipeline();
+	ASSERT_TRUE(mesh.faces.empty());
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(), 2u);
+	mesh.EndHalfEdgePipeline();
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 128u);
 }
 
 // ---------------------------------------------------------------------------

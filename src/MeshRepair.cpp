@@ -9,6 +9,7 @@
 
 #include <halfmesh/Mesh.h>
 #include <halfmesh/HalfMesh.h>
+#include <halfmesh/TriangleBVH.h>
 #include <halfmesh/Util/Loop.h>
 #include <halfmesh/Util/Assert.h>
 #include <halfmesh/Util/Log.h>
@@ -876,6 +877,100 @@ Mesh::FIndex Mesh::RemoveLongEdgeFacesLocal(float factor, unsigned rings)
 	ASSERT(ValidateInvariants());
 	if (removed > 0)
 		REPORT_STATUS_NOW("Removed {} locally long-edge faces ({})", removed, TIMER_STR());
+	return removed;
+}
+
+Mesh::FIndex Mesh::RemoveLongEdgeFacesCapped(float factor, float reach, float cone)
+{
+	if (factor <= 0.f || reach <= 0.f || cone <= 0.f) {
+		SyncFacesOnPublicExit();
+		return 0;
+	}
+	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
+		return 0;
+	TIMER_START("RemoveLongEdgeFacesCapped");
+	const FIndex initialFaces = halfMesh.Empty() ? static_cast<FIndex>(faces.size()) : halfMesh.FSize();
+	ListHalfEdges();
+	if (halfMesh.Empty()) {
+		SyncFacesOnPublicExit();
+		return initialFaces - static_cast<FIndex>(faces.size());
+	}
+
+	// candidates: faces whose longest edge exceeds factor x the median longest edge
+	// (median of a per-face maximum, so the long tail this filter targets cannot pull it)
+	const std::vector<float> edgeLengths = EdgeLengths(*this);
+	std::vector<float> longestEdges(halfMesh.FSize(), 0.f);
+	for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace)
+		for (HIndex iHe : halfMesh.FAdjacentHalfedges(idxFace))
+			longestEdges[idxFace] = std::max(longestEdges[idxFace], edgeLengths[halfMesh.HeEdge(iHe)]);
+	std::vector<float> sorted(longestEdges);
+	const auto median = sorted.begin() + sorted.size() / 2;
+	std::nth_element(sorted.begin(), median, sorted.end());
+	const float minLongestEdge = *median * factor;
+	std::vector<FIndex> candidates;
+	for (FIndex idxFace = 0; idxFace < halfMesh.FSize(); ++idxFace)
+		if (longestEdges[idxFace] > minLongestEdge)
+			candidates.emplace_back(idxFace);
+	if (candidates.empty()) {
+		SyncFacesOnPublicExit();
+		return initialFaces - halfMesh.FSize(); // the non-manifold fallback may have dropped faces
+	}
+
+	// probe distances in units of the face's longest edge: half an edge for a cavity
+	// as shallow as the face is wide, then every whole edge length up to reach
+	std::vector<float> probeDistances{0.5f};
+	for (float d = 1.f; d <= reach; d += 1.f)
+		probeDistances.emplace_back(d);
+
+	// a probe at distance d along the normal sees the surface inside a ball of radius
+	// cone x d; the face's own plane is d away, so it (and its coplanar neighbours)
+	// never counts, while a surface facing it across the cavity does. The BVH reads
+	// the face array, so it harvests one even inside a BeginHalfEdgePipeline scope
+	// (linear, next to the build itself)
+	const TriangleBVH bvh(*this);
+	std::vector<uint8_t> capped(candidates.size(), 0);
+	BS::light_thread_pool pool;
+	ParallelForPool(pool, candidates.size(), [&](std::size_t i) {
+		const FIndex idxFace = candidates[i];
+		Vertex corners[3];
+		unsigned c = 0;
+		for (HIndex iHe : halfMesh.FAdjacentHalfedges(idxFace))
+			corners[c++] = vertices[halfMesh.HeVertex(iHe)];
+		ASSERT(c == 3);
+		Normal normal = ComputeTriangleNormal(corners[0], corners[1], corners[2]);
+		const Type length = normal.norm();
+		if (length <= Type(0))
+			return; // degenerate face: no normal to probe along
+		normal /= length;
+		const Vertex centroid = (corners[0] + corners[1] + corners[2]) / Type(3);
+		const float longestEdge = longestEdges[idxFace];
+		for (const float d : probeDistances) {
+			const Type dist = static_cast<Type>(d * longestEdge);
+			for (const Type side : {Type(1), Type(-1)}) {
+				const Vertex probe = centroid + normal * (side * dist);
+				if (bvh.NearestPoint(probe, static_cast<Type>(cone) * dist).IsValid()) {
+					capped[i] = 1;
+					return;
+				}
+			}
+		}
+	});
+
+	std::vector<FIndex> removeFaces;
+	for (std::size_t i = 0; i < candidates.size(); ++i)
+		if (capped[i])
+			removeFaces.emplace_back(candidates[i]);
+	if (!removeFaces.empty()) {
+		std::vector<VIndex> removedVerts;
+		std::vector<VIndex> splitSrcVerts;
+		RemoveFacesHalfEdgeImpl(removeFaces, removedVerts, splitSrcVerts);
+	}
+
+	const FIndex removed = initialFaces - halfMesh.FSize();
+	SyncFacesOnPublicExit();
+	ASSERT(ValidateInvariants());
+	if (removed > 0)
+		REPORT_STATUS_NOW("Removed {} capped long-edge faces ({})", removed, TIMER_STR());
 	return removed;
 }
 

@@ -411,6 +411,19 @@ class Mesh
 	// long edges the filter should catch); return number of faces removed
 	FIndex RemoveLongEdgeFacesLocal(float factor, unsigned rings = 3);
 
+	// remove faces that cap a cavity: a long-edged face (longest edge > factor x the
+	// median longest edge over all faces) with mesh surface close behind or in front
+	// of it along its normal spans occluded space (a lid across an open box, a sheet
+	// under a chassis), whereas a real surface that is merely sampled coarsely has
+	// nothing behind it. Probe points are placed on both sides of the centroid at
+	// 0.5, 1, 2, ..., reach x the longest edge; the face is capped when the surface
+	// nearest to some probe lies within cone x that probe's distance (a cone around
+	// the normal, so a hole in the surface behind does not hide it). Edge length alone
+	// cannot tell the two apart; this test does (factor, reach or cone <= 0 disables;
+	// the defaults are measured on Delaunay graph-cut surfaces); return number of
+	// faces removed
+	FIndex RemoveLongEdgeFacesCapped(float factor = 2.f, float reach = 4.f, float cone = 0.35f);
+
 	// remove connected components whose bounding-box diagonal is shorter than
 	// percentile55(edgeLength)*factor (factor <= 0 disables); return number of faces removed
 	FIndex RemoveSpuriousComponents(float factor = 2.f);

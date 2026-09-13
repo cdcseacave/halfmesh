@@ -23,6 +23,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `< rings`), a face's scale is the largest of its three vertex scales. A
   uniformly sparse surface keeps its own scale and survives; a face that spans
   between denser regions does not. Vertex scales are computed in parallel.
+- **`RemoveLongEdgeFacesCapped(factor = 2, reach = 4, cone = 0.35)`.** Removes
+  long-edged faces (longest edge > `factor` × the median longest edge) that cap
+  a cavity: probes on both sides of the centroid along the normal, at 0.5, 1,
+  2, …, `reach` × the longest edge, hit when the nearest mesh surface lies
+  within `cone` × the probe distance. A lid across an open box or a sheet under
+  a chassis has surface behind it and goes; a coarsely sampled real surface has
+  nothing behind it and stays, which no edge-length statistic can tell apart.
+  Probes run in parallel on a `TriangleBVH`.
 
 ### Caller-supplied remesh sizing field
 
