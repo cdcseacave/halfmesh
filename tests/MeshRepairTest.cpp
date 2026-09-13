@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -802,6 +803,28 @@ TEST(MeshRepairTest, RemoveLongEdgeFacesCappedInsidePipeline)
 	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(), 2u);
 	mesh.EndHalfEdgePipeline();
 	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 128u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedRejectsInvalidParams)
+{
+	// cone >= 1 would let a probe find the face's own plane (exactly one probe
+	// distance away) and cap every candidate; a non-finite reach never ends the probes
+	Mesh mesh = MakeFloorAndLid(100.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 4.f, 1.f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 4.f, 1.5f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, std::numeric_limits<float>::infinity()), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(std::numeric_limits<float>::quiet_NaN()), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 4.f, std::numeric_limits<float>::quiet_NaN()), 0u);
+	EXPECT_EQ(mesh.faces.size(), 130u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedHugeReachStopsAtMeshExtent)
+{
+	// probes farther from the centroid than diagonal / (1 - cone) cannot reach the
+	// mesh, so a reach far beyond the float-step limit (2^24) ends at the extent
+	Mesh mesh = MakeFloorAndLid(100.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 1e30f), 2u);
 	EXPECT_EQ(mesh.faces.size(), 128u);
 }
 

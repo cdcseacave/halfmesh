@@ -420,8 +420,10 @@ class Mesh
 	// nearest to some probe lies within cone x that probe's distance (a cone around
 	// the normal, so a hole in the surface behind does not hide it). Edge length alone
 	// cannot tell the two apart; this test does (factor, reach or cone <= 0 disables;
-	// the defaults are measured on Delaunay graph-cut surfaces); return number of
-	// faces removed
+	// cone must stay below 1, as the face's own plane is exactly one probe distance
+	// away, and a cone >= 1 or a non-finite parameter is refused with a warning; the
+	// defaults are measured on Delaunay graph-cut surfaces); return number of faces
+	// removed
 	FIndex RemoveLongEdgeFacesCapped(float factor = 2.f, float reach = 4.f, float cone = 0.35f);
 
 	// remove connected components whose bounding-box diagonal is shorter than

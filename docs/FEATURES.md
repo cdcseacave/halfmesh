@@ -217,10 +217,11 @@ half-edge core accepts:
   long-edged faces (longest edge > `factor` × the median longest edge) that have
   mesh surface close behind or in front of them along their normal: probes at
   0.5, 1, 2, …, `reach` × the longest edge on both sides of the centroid, hit
-  when the nearest surface lies within `cone` × the probe distance. A lid
-  across an open box or a sheet under a chassis is capped; a coarsely sampled
-  real surface has nothing behind it and survives, which no edge-length
-  statistic can tell apart. Probes run in parallel on a `TriangleBVH`.
+  when the nearest surface lies within `cone` × the probe distance (`cone` < 1,
+  or the face's own plane would count). A lid across an open box or a sheet
+  under a chassis is capped; a coarsely sampled real surface has nothing behind
+  it and survives, which no edge-length statistic can tell apart. Probes run in
+  parallel on a `TriangleBVH`.
 - `RemoveSpuriousComponents(factor)` — reconstruction-debris removal relative
   to the mesh's own edge-length distribution: drop connected components whose
   bounding-box diagonal is shorter than `percentile55(edgeLength) * factor`.

@@ -27,10 +27,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   long-edged faces (longest edge > `factor` × the median longest edge) that cap
   a cavity: probes on both sides of the centroid along the normal, at 0.5, 1,
   2, …, `reach` × the longest edge, hit when the nearest mesh surface lies
-  within `cone` × the probe distance. A lid across an open box or a sheet under
-  a chassis has surface behind it and goes; a coarsely sampled real surface has
-  nothing behind it and stays, which no edge-length statistic can tell apart.
-  Probes run in parallel on a `TriangleBVH`.
+  within `cone` × the probe distance (`cone` must stay below 1, or the face's
+  own plane would count). A lid across an open box or a sheet under a chassis
+  has surface behind it and goes; a coarsely sampled real surface has nothing
+  behind it and stays, which no edge-length statistic can tell apart. Probes run
+  in parallel on a `TriangleBVH`.
 
 ### Caller-supplied remesh sizing field
 

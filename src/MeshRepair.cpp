@@ -882,6 +882,14 @@ Mesh::FIndex Mesh::RemoveLongEdgeFacesLocal(float factor, unsigned rings)
 
 Mesh::FIndex Mesh::RemoveLongEdgeFacesCapped(float factor, float reach, float cone)
 {
+	// cone >= 1 would reach the face's own plane, exactly one probe distance away,
+	// and cap every candidate
+	if (!std::isfinite(factor) || !std::isfinite(reach) || !std::isfinite(cone) || cone >= 1.f) {
+		REPORT_WARNING("RemoveLongEdgeFacesCapped: invalid params (factor={}, reach={}, cone={}); no-op",
+		               factor, reach, cone);
+		SyncFacesOnPublicExit();
+		return 0;
+	}
 	if (factor <= 0.f || reach <= 0.f || cone <= 0.f) {
 		SyncFacesOnPublicExit();
 		return 0;
@@ -891,7 +899,7 @@ Mesh::FIndex Mesh::RemoveLongEdgeFacesCapped(float factor, float reach, float co
 	TIMER_START("RemoveLongEdgeFacesCapped");
 	const FIndex initialFaces = halfMesh.Empty() ? static_cast<FIndex>(faces.size()) : halfMesh.FSize();
 	ListHalfEdges();
-	if (halfMesh.Empty()) {
+	if (halfMesh.Empty() || halfMesh.FSize() == 0) {
 		SyncFacesOnPublicExit();
 		return initialFaces - static_cast<FIndex>(faces.size());
 	}
@@ -916,18 +924,24 @@ Mesh::FIndex Mesh::RemoveLongEdgeFacesCapped(float factor, float reach, float co
 		return initialFaces - halfMesh.FSize(); // the non-manifold fallback may have dropped faces
 	}
 
-	// probe distances in units of the face's longest edge: half an edge for a cavity
-	// as shallow as the face is wide, then every whole edge length up to reach
-	std::vector<float> probeDistances{0.5f};
-	for (float d = 1.f; d <= reach; d += 1.f)
-		probeDistances.emplace_back(d);
-
 	// a probe at distance d along the normal sees the surface inside a ball of radius
 	// cone x d; the face's own plane is d away, so it (and its coplanar neighbours)
 	// never counts, while a surface facing it across the cavity does. The BVH reads
 	// the face array, so it harvests one even inside a BeginHalfEdgePipeline scope
 	// (linear, next to the build itself)
 	const TriangleBVH bvh(*this);
+
+	// probe distances in units of the face's longest edge: half an edge for a cavity
+	// as shallow as the face is wide, then every whole edge length up to reach. The
+	// centroid lies on the mesh, so a probe farther than diagonal / (1 - cone) from it
+	// is more than cone x its distance from every mesh point and cannot hit: reach is
+	// clamped there, in units of the candidate threshold (below every candidate's
+	// longest edge), which also bounds the probe count for any finite reach
+	const double diagonal = bvh.GetAABBox().diagonal().norm();
+	const double maxUnits = std::min<double>(reach, diagonal / ((1.0 - cone) * minLongestEdge));
+	std::vector<float> probeDistances{0.5f};
+	for (uint64_t d = 1; static_cast<double>(d) <= maxUnits; ++d)
+		probeDistances.emplace_back(static_cast<float>(d));
 	std::vector<uint8_t> capped(candidates.size(), 0);
 	BS::light_thread_pool pool;
 	ParallelForPool(pool, candidates.size(), [&](std::size_t i) {
