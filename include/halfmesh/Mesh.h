@@ -396,11 +396,38 @@ class Mesh
 	//  - minComponentSize: remove components with less number of faces
 	unsigned RemoveSmallComponents(unsigned minComponentSize);
 
-	// remove reconstruction debris relative to the mesh's own edge-length
-	// distribution: first discard faces containing an edge longer than
-	// percentile95(edgeLength)*factor, then discard connected components whose
-	// bounding-box diagonal is shorter than percentile55(edgeLength)*factor.
-	// return number of faces removed
+	// remove faces containing an edge longer than percentile95(edgeLength)*factor
+	// (factor <= 0 disables); return number of faces removed
+	FIndex RemoveLongEdgeFaces(float factor);
+
+	// remove faces whose longest edge exceeds factor x the local edge scale:
+	// a vertex's scale is the median length of the edges inside its k-ring
+	// (every edge with at least one endpoint at BFS depth < rings from the vertex),
+	// a face's scale is the largest of its three vertex scales, so a surface that
+	// merely gets sparser survives while a face that spans between denser regions
+	// does not (factor <= 0 disables, rings 0 counts as 1; the per-vertex cost grows
+	// with the k-ring size, so keep rings small; the default of 3 is measured on
+	// Delaunay graph-cut surfaces, where the 1-ring median is inflated by the very
+	// long edges the filter should catch); return number of faces removed
+	FIndex RemoveLongEdgeFacesLocal(float factor, unsigned rings = 3);
+
+	// remove faces that cap a cavity: a long-edged face (longest edge > factor x the
+	// median longest edge over all faces) with mesh surface close behind or in front
+	// of it along its normal spans occluded space (a lid across an open box, a sheet
+	// under a chassis), whereas a real surface that is merely sampled coarsely has
+	// nothing behind it. Probe points are placed on both sides of the centroid at
+	// 0.5, 1, 2, ..., reach x the longest edge; the face is capped when the surface
+	// nearest to some probe lies within cone x that probe's distance (a cone around
+	// the normal, so a hole in the surface behind does not hide it). Edge length alone
+	// cannot tell the two apart; this test does (factor, reach or cone <= 0 disables;
+	// cone must stay below 1, as the face's own plane is exactly one probe distance
+	// away, and a cone >= 1 or a non-finite parameter is refused with a warning; the
+	// defaults are measured on Delaunay graph-cut surfaces); return number of faces
+	// removed
+	FIndex RemoveLongEdgeFacesCapped(float factor = 2.f, float reach = 4.f, float cone = 0.35f);
+
+	// remove connected components whose bounding-box diagonal is shorter than
+	// percentile55(edgeLength)*factor (factor <= 0 disables); return number of faces removed
 	FIndex RemoveSpuriousComponents(float factor = 2.f);
 
 	// remove spike/needle vertices: a vertex incident to at most one face is not
