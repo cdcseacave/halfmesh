@@ -46,6 +46,9 @@ via std::format), `Loop.h` (`FOREACH`/`RFOREACH`… index/pointer loop macros),
 `Hash.h`, `Accumulator.h` (`WeightedAccumulator`).
 
 ## Notes
+- A user-facing change here is not done until `python/binding.cpp` and `docs/PYTHON.md`
+  follow it (or the feature is listed there as deliberately absent) — see the
+  Python-bindings convention in the root AGENTS.md.
 - Headers stay ISO-clean (the implementation `.cpp` files may use compiler extensions).
 - `Mesh.h` exposes same-name const/non-const accessor overloads (e.g. `FVertex`) — no
   `Mutable`-suffixed accessors.

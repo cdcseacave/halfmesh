@@ -7,6 +7,40 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.4.0]
 
+### Long-edge face filters
+
+- **`RemoveLongEdgeFaces(factor)`** holds the global `percentile95(edgeLength) *
+  factor` edge pass that `RemoveSpuriousComponents` used to run first.
+  `RemoveSpuriousComponents` is now the component pass alone (drop components
+  whose bounding-box diagonal is under `percentile55(edgeLength) * factor`), so a
+  caller wanting the old cleanup calls both, in that order. The component cutoff
+  is then measured on the mesh the edge pass leaves behind rather than on the
+  original, which lowers it by a few percent (on `truck.ply` at the default
+  factor this keeps 159 more faces out of 170k removed).
+- **`RemoveLongEdgeFacesLocal(factor, rings = 3)`.** Removes faces whose longest
+  edge exceeds `factor` × the local edge scale: a vertex's scale is the median
+  length of the edges inside its k-ring (every edge with an endpoint at BFS depth
+  `< rings`), a face's scale is the largest of its three vertex scales. A
+  uniformly sparse surface keeps its own scale and survives; a face that spans
+  between denser regions does not. Vertex scales are computed in parallel.
+- **`RemoveLongEdgeFacesCapped(factor = 2, reach = 4, cone = 0.35)`.** Removes
+  long-edged faces (longest edge > `factor` × the median longest edge) that cap
+  a cavity: probes on both sides of the centroid along the normal, at 0.5, 1,
+  2, …, `reach` × the longest edge, hit when the nearest mesh surface lies
+  within `cone` × the probe distance (`cone` must stay below 1, or the face's
+  own plane would count). A lid across an open box or a sheet under a chassis
+  has surface behind it and goes; a coarsely sampled real surface has nothing
+  behind it and stays, which no edge-length statistic can tell apart. Probes run
+  in parallel on a `TriangleBVH`.
+- **Python**: `hm.remove_long_edge_faces(v, f, factor)`,
+  `hm.remove_long_edge_faces_local(v, f, factor, rings=3)`,
+  `hm.remove_long_edge_faces_capped(v, f, factor=2, reach=4, cone=0.35)` and
+  `hm.remove_spurious_components(v, f, factor=2)` each return
+  `(vertices, faces, removed)` with unreferenced vertices dropped, like
+  `remove_small_components`; `removed` counts faces. `capped` raises `ValueError`
+  for a non-finite parameter or a `cone >= 1` instead of the C++ warning and
+  no-op.
+
 ### Caller-supplied remesh sizing field
 
 - **`RemeshParams::vertexSizing`.** An optional per-vertex target edge length for
@@ -327,6 +361,29 @@ refoldedPairsCollateral` counts the surplus per round.
 
 ### Python and CLI
 
+- `remove_spikes(v, f, max_iterations=100)` and
+  `remove_vertices_and_fill(v, f, vertex_indices)` bind the 0.3.0 repair ops
+  `RemoveSpikes` and `RemoveVerticesAndFill`, which had no Python binding;
+  `remove_spurious_components` is listed with the long-edge filters above.
+  `remove_vertices_and_fill` takes a 1-D integer index array and raises
+  `ValueError` for a boolean mask or float array (which would forcecast to wrong
+  indices), an out-of-range index (which the C++ call drops silently), or input
+  that requires topology repair.
+- `pack_rectangles(sizes, page_size=1024, mode="grow", ...)` and
+  `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9)` bind
+  the 0.3.0 mesh-independent packer (`RectPacking.h`). They take an `[N,2]`
+  integer `(width, height)` array. The packer returns a dict with per-rect
+  `rects` (`x, y, w, h`), `page`, `rotated` and `packed` arrays in input order,
+  plus `pages`, `n_packed`, `width`, `height`, `packed_area` and `occupancy`.
+  `mode` is `"grow"`, `"single"` or `"multi"` (`GrowSinglePage`,
+  `FixedSinglePage`, `FixedMultiPage`). It raises `ValueError` for:
+  - a non-integer `sizes` array
+  - a negative or out-of-range size
+  - a non-positive `page_size`
+  - a `max_page_size` combined with a fixed mode, which never reads it
+- `docs/PYTHON.md` now also lists the C++ features that are deliberately not
+  bound. A test fails if a native function is missing from
+  `halfmesh.__all__`.
 - `unwrap()` gains `repair_carve_rings`, `fold_rescue_slits`,
   `tiny_chart_side`, `debris_chart_faces`, plus `max_cone_error`
   (→ `developableMaxConeError`), `cut_to_disk` (→ `cutToDisk`) and

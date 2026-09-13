@@ -310,6 +310,7 @@ TEST(PerfHarness, PrebuiltRepairPipelinePerformsZeroBuilds)
 	halfmesh::Mesh mesh = hmtest::corpus::UVSphere(24, 36);
 	mesh.ListHalfEdges();
 	halfmesh::HalfMesh::ResetBuildCount();
+	mesh.RemoveLongEdgeFaces(100.f);
 	mesh.RemoveSpuriousComponents(100.f);
 	mesh.RemoveSpikes();
 	mesh.RemoveDegenerateFaces();
@@ -324,6 +325,7 @@ TEST(PerfHarness, SimulatedCleanPerformsOneBuildAndOneFaceHarvest)
 	halfmesh::HalfMesh::ResetBuildCount();
 	halfmesh::HalfMesh::ResetFFacesCount();
 	mesh.BeginHalfEdgePipeline();
+	mesh.RemoveLongEdgeFaces(100.f);
 	mesh.RemoveSpuriousComponents(100.f);
 	mesh.RemoveSpikes();
 	mesh.Simplify(0.8f);
@@ -349,6 +351,7 @@ TEST(PerfHarness, TruckScaleNativeCleaningPerformsOneBuildAndOneFaceHarvest)
 	halfmesh::HalfMesh::ResetFFacesCount();
 	const auto t0 = Clock::now();
 	mesh.BeginHalfEdgePipeline();
+	mesh.RemoveLongEdgeFaces(100.f);
 	mesh.RemoveSpuriousComponents(100.f);
 	mesh.RemoveSpikes();
 	mesh.CloseHoles();

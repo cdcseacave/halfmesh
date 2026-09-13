@@ -9,6 +9,7 @@
 
 // Tests for MeshRepair.cpp:
 //   RemoveDuplicateFaces, RemoveDegenerateFaces, RemoveSmallComponents,
+//   RemoveLongEdgeFaces, RemoveLongEdgeFacesLocal, RemoveLongEdgeFacesCapped,
 //   RemoveSpuriousComponents, RemoveSpikes,
 //   RemoveFacesOutside, FixNonManifold, ListHalfEdgesSafe
 //   + sanity run on tests/data/mesh.ply
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -99,22 +101,24 @@ static unsigned RemoveSmallComponentsArraysReference(Mesh& mesh, unsigned minCom
 	return removedComponents;
 }
 
-static Mesh::FIndex RemoveSpuriousComponentsArraysReference(Mesh& mesh, float factor)
+static std::vector<float> EdgeLengthsReference(Mesh& mesh)
 {
-	const Mesh::FIndex initialFaces = static_cast<Mesh::FIndex>(mesh.faces.size());
 	mesh.ListHalfEdges();
 	std::vector<float> edgeLengths;
 	for (Mesh::EIndex edge = 0; edge < mesh.halfMesh.ESize(); ++edge) {
 		const auto vertices = mesh.halfMesh.EVertices(edge);
 		edgeLengths.emplace_back((mesh.vertices[vertices.first] - mesh.vertices[vertices.second]).norm());
 	}
+	return edgeLengths;
+}
+
+static Mesh::FIndex RemoveLongEdgeFacesArraysReference(Mesh& mesh, float factor)
+{
+	const Mesh::FIndex initialFaces = static_cast<Mesh::FIndex>(mesh.faces.size());
+	std::vector<float> edgeLengths = EdgeLengthsReference(mesh);
 	const size_t idx95 = edgeLengths.size() * 95 / 100;
-	const size_t idx55 = edgeLengths.size() * 55 / 100;
 	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx95, edgeLengths.end());
 	const float maxEdgeLength = edgeLengths[idx95] * factor;
-	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx55, edgeLengths.end());
-	const float minComponentDiameter = edgeLengths[idx55] * factor;
-
 	std::vector<Mesh::FIndex> removes;
 	for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
 		for (int edge = 0; edge < 3; ++edge)
@@ -125,27 +129,102 @@ static Mesh::FIndex RemoveSpuriousComponentsArraysReference(Mesh& mesh, float fa
 	if (!removes.empty()) {
 		mesh.RemoveFaces(removes);
 		mesh.RemoveUnreferencedVertices();
-		mesh.ListHalfEdges();
 	}
-	if (!mesh.faces.empty() && !mesh.halfMesh.Empty()) {
-		std::vector<Mesh::FIndex> components;
-		const Mesh::FIndex numComponents = mesh.halfMesh.ConnectedComponents(components);
-		if (numComponents > 1) {
-			std::vector<Eigen::AlignedBox<float, 3>> bounds(numComponents);
-			for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
-				for (int corner = 0; corner < 3; ++corner)
-					bounds[components[face]].extend(mesh.vertices[mesh.faces[face][corner]]);
-			removes.clear();
-			for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
-				if (bounds[components[face]].diagonal().norm() < minComponentDiameter)
-					removes.emplace_back(face);
-			if (!removes.empty()) {
-				mesh.RemoveFaces(removes);
-				mesh.RemoveUnreferencedVertices();
-			}
+	return initialFaces - static_cast<Mesh::FIndex>(mesh.faces.size());
+}
+
+static Mesh::FIndex RemoveSpuriousComponentsArraysReference(Mesh& mesh, float factor)
+{
+	const Mesh::FIndex initialFaces = static_cast<Mesh::FIndex>(mesh.faces.size());
+	std::vector<float> edgeLengths = EdgeLengthsReference(mesh);
+	const size_t idx55 = edgeLengths.size() * 55 / 100;
+	std::nth_element(edgeLengths.begin(), edgeLengths.begin() + idx55, edgeLengths.end());
+	const float minComponentDiameter = edgeLengths[idx55] * factor;
+	std::vector<Mesh::FIndex> components;
+	const Mesh::FIndex numComponents = mesh.halfMesh.ConnectedComponents(components);
+	if (numComponents > 1) {
+		std::vector<Eigen::AlignedBox<float, 3>> bounds(numComponents);
+		for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+			for (int corner = 0; corner < 3; ++corner)
+				bounds[components[face]].extend(mesh.vertices[mesh.faces[face][corner]]);
+		std::vector<Mesh::FIndex> removes;
+		for (Mesh::FIndex face = 0; face < mesh.faces.size(); ++face)
+			if (bounds[components[face]].diagonal().norm() < minComponentDiameter)
+				removes.emplace_back(face);
+		if (!removes.empty()) {
+			mesh.RemoveFaces(removes);
+			mesh.RemoveUnreferencedVertices();
 		}
 	}
 	return initialFaces - static_cast<Mesh::FIndex>(mesh.faces.size());
+}
+
+// Helper: a 10x1 strip of unit cells (22 vertices, 20 faces) with a detached
+// triangle of the given size at x=20; spurious-debris fixtures build on it.
+static Mesh MakeStripWithDetachedTriangle(float size)
+{
+	Mesh mesh;
+	for (unsigned x = 0; x <= 10; ++x) {
+		mesh.vertices.emplace_back(static_cast<float>(x), 0.f, 0.f);
+		mesh.vertices.emplace_back(static_cast<float>(x), 1.f, 0.f);
+	}
+	for (unsigned x = 0; x < 10; ++x) {
+		const Mesh::VIndex lower = 2 * x;
+		mesh.faces.emplace_back(lower, lower + 1, lower + 3);
+		mesh.faces.emplace_back(lower, lower + 3, lower + 2);
+	}
+	const Mesh::VIndex tri = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.emplace_back(20.f, 0.f, 0.f);
+	mesh.vertices.emplace_back(20.f + size, 0.f, 0.f);
+	mesh.vertices.emplace_back(20.f, size, 0.f);
+	mesh.faces.emplace_back(tri, tri + 1, tri + 2);
+	return mesh;
+}
+
+// Helper: a hexagonal fan of 6 faces around the origin whose ring holds two
+// edges of length 2; dropping those two faces leaves a pinch at the center.
+static Mesh MakePinchFan()
+{
+	Mesh mesh;
+	mesh.vertices = {
+	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {-1.f, 0.f, 0.f}, {-0.5f, 0.8660254f, 0.f}, {0.f, 1.f, 0.f}, {0.f, -1.f, 0.f}, {0.8660254f, -0.5f, 0.f}};
+	for (Mesh::VIndex ring = 1; ring <= 6; ++ring)
+		mesh.faces.emplace_back(0, ring, ring == 6 ? 1 : ring + 1);
+	return mesh;
+}
+
+// Helper: append a regular (cols x rows)-cell grid of the given spacing at the
+// given origin and return its base index (vertex (x, y) is base + y * (cols + 1) + x).
+// Cells are split (a,b,c),(a,c,d) with a=(x,y), b=(x+1,y), c=(x+1,y+1), d=(x,y+1),
+// so every axis-aligned edge is shared by exactly two cells (or is a border) and
+// the diagonals are unique to their cell.
+static Mesh::VIndex AppendGrid(Mesh& mesh, unsigned cols, unsigned rows, float spacing, float x0, float y0, float z = 0.f)
+{
+	const Mesh::VIndex base = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	const Mesh::VIndex stride = cols + 1;
+	for (unsigned y = 0; y <= rows; ++y)
+		for (unsigned x = 0; x <= cols; ++x)
+			mesh.vertices.emplace_back(x0 + spacing * x, y0 + spacing * y, z);
+	for (unsigned y = 0; y < rows; ++y)
+		for (unsigned x = 0; x < cols; ++x) {
+			const Mesh::VIndex a = base + y * stride + x;
+			mesh.faces.emplace_back(a, a + 1, a + stride + 1);
+			mesh.faces.emplace_back(a, a + stride + 1, a + stride);
+		}
+	return base;
+}
+
+static bool HasFace(const Mesh& mesh, Mesh::VIndex a, Mesh::VIndex b, Mesh::VIndex c)
+{
+	std::vector<Mesh::VIndex> want = {a, b, c};
+	std::sort(want.begin(), want.end());
+	for (const Mesh::Face& face : mesh.faces) {
+		std::vector<Mesh::VIndex> have = {face[0], face[1], face[2]};
+		std::sort(have.begin(), have.end());
+		if (have == want)
+			return true;
+	}
+	return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +584,251 @@ TEST(MeshRepairTest, RemoveSmallComponentsNativeMatchesArrayReference)
 }
 
 // ---------------------------------------------------------------------------
+// RemoveLongEdgeFaces
+// ---------------------------------------------------------------------------
+TEST(MeshRepairTest, RemoveLongEdgeFacesDisabledIsNoOp)
+{
+	Mesh mesh = MakeTetra();
+	const std::vector<Mesh::Vertex> vertices = mesh.vertices;
+	const std::vector<Mesh::Face> faces = mesh.faces;
+	EXPECT_EQ(mesh.RemoveLongEdgeFaces(0.f), 0u);
+	EXPECT_EQ(mesh.vertices, vertices);
+	EXPECT_EQ(mesh.faces, faces);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCountsAutoRepairRemovals)
+{
+	Mesh mesh;
+	mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+	mesh.faces = {{0, 1, 2}, {0, 1, 2}};
+	EXPECT_EQ(mesh.RemoveLongEdgeFaces(100.f), 1u);
+	EXPECT_EQ(mesh.faces.size(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesDropsLongEdgeFace)
+{
+	// strip edges are 1 / sqrt(2), the detached triangle has edges 10, 10, 14.1:
+	// percentile95 is 10, so at factor 1 only the 14.1 edge exceeds it
+	Mesh mesh = MakeStripWithDetachedTriangle(10.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFaces(1.f), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 20u);
+	EXPECT_EQ(mesh.vertices.size(), 22u);
+	for (const Mesh::Vertex& vertex : mesh.vertices)
+		EXPECT_LT(vertex.x(), 20.f);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesSplitsCreatedPinch)
+{
+	Mesh mesh = MakePinchFan();
+	EXPECT_EQ(mesh.RemoveLongEdgeFaces(0.9f), 2u);
+	EXPECT_EQ(mesh.faces.size(), 4u);
+	EXPECT_EQ(mesh.vertices.size(), 8u) << "the center pinch must duplicate its source vertex";
+	EXPECT_FALSE(mesh.halfMesh.Empty());
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	HalfMesh rebuilt;
+	EXPECT_TRUE(rebuilt.Build(mesh));
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesNativeMatchesArrayReference)
+{
+	Mesh arrays = MakeStripWithDetachedTriangle(10.f);
+	Mesh native = arrays;
+	native.ListHalfEdges();
+
+	EXPECT_EQ(RemoveLongEdgeFacesArraysReference(arrays, 1.f), native.RemoveLongEdgeFaces(1.f));
+	EXPECT_EQ(native.vertices, arrays.vertices);
+	EXPECT_EQ(native.faces, arrays.faces);
+	EXPECT_FALSE(native.halfMesh.Empty());
+	EXPECT_TRUE(native.ValidateHalfMesh());
+}
+
+// ---------------------------------------------------------------------------
+// RemoveLongEdgeFacesLocal
+// ---------------------------------------------------------------------------
+TEST(MeshRepairTest, RemoveLongEdgeFacesLocalKeepsUniformlySparseSurface)
+{
+	// a spacing-1 grid and a far-away spacing-8 grid: each face's longest edge is
+	// sqrt(2) x its own scale, so nothing exceeds 4 x the local scale
+	Mesh mesh;
+	AppendGrid(mesh, 5, 5, 1.f, 0.f, 0.f);
+	AppendGrid(mesh, 5, 5, 8.f, 100.f, 0.f);
+	const size_t numFaces = mesh.faces.size();
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesLocal(4.f, 1), 0u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), numFaces);
+	EXPECT_EQ(mesh.vertices.size(), 72u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesLocalDropsBridgesBetweenDenseRegions)
+{
+	// two spacing-1 grids 8 units apart bridged by two faces (edges 8, 8.06):
+	// every bridge vertex sits in a dense grid, so the face scale stays ~1.4 and
+	// the bridge exceeds 4 x scale; a second bridge from the right grid to a
+	// spacing-8 grid (edges 6.1-8.5) has one vertex of scale 8 and survives
+	Mesh mesh;
+	const Mesh::VIndex left = AppendGrid(mesh, 3, 3, 1.f, 0.f, 0.f);
+	const Mesh::VIndex right = AppendGrid(mesh, 3, 3, 1.f, 11.f, 0.f);
+	const Mesh::VIndex sparse = AppendGrid(mesh, 3, 3, 8.f, 20.f, 0.f);
+	const auto at = [](Mesh::VIndex base, unsigned x, unsigned y) { return base + y * 4 + x; };
+	// dense-dense bridge: left border edge (3,1)-(3,2) to right border edge (0,1)-(0,2)
+	mesh.faces.emplace_back(at(left, 3, 2), at(left, 3, 1), at(right, 0, 1));
+	mesh.faces.emplace_back(at(left, 3, 2), at(right, 0, 1), at(right, 0, 2));
+	// dense-sparse bridge: right border edge (3,1)-(3,2) to sparse border edge (0,0)-(0,1)
+	mesh.faces.emplace_back(at(right, 3, 2), at(right, 3, 1), at(sparse, 0, 0));
+	mesh.faces.emplace_back(at(right, 3, 2), at(sparse, 0, 0), at(sparse, 0, 1));
+	const size_t numFaces = mesh.faces.size();
+	const size_t numVertices = mesh.vertices.size();
+
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesLocal(4.f, 1), 2u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), numFaces - 2);
+	EXPECT_EQ(mesh.vertices.size(), numVertices) << "bridge vertices stay referenced by their grids";
+	EXPECT_FALSE(HasFace(mesh, at(left, 3, 2), at(left, 3, 1), at(right, 0, 1)));
+	EXPECT_FALSE(HasFace(mesh, at(left, 3, 2), at(right, 0, 1), at(right, 0, 2)));
+	EXPECT_TRUE(HasFace(mesh, at(right, 3, 2), at(right, 3, 1), at(sparse, 0, 0)));
+	EXPECT_TRUE(HasFace(mesh, at(right, 3, 2), at(sparse, 0, 0), at(sparse, 0, 1)));
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesLocalRingsWidenTheScale)
+{
+	// an 8x8 spacing-1 grid whose center vertex is lifted 10 units and fanned to
+	// its 8 ring neighbours (the 4 cells around it become 8 tent faces): every
+	// edge at the apex is ~10, so with rings=1 the apex scale is ~10 and the tent
+	// survives, while with rings=2 the apex sees the ring's short grid edges, its
+	// median drops to ~1 and the tent goes
+	const auto makeTent = []() {
+		Mesh mesh;
+		for (unsigned y = 0; y <= 8; ++y)
+			for (unsigned x = 0; x <= 8; ++x)
+				mesh.vertices.emplace_back(static_cast<float>(x), static_cast<float>(y), (x == 4 && y == 4) ? 10.f : 0.f);
+		const auto at = [](unsigned x, unsigned y) { return static_cast<Mesh::VIndex>(y * 9 + x); };
+		for (unsigned y = 0; y < 8; ++y)
+			for (unsigned x = 0; x < 8; ++x) {
+				if (x >= 3 && x <= 4 && y >= 3 && y <= 4)
+					continue;
+				mesh.faces.emplace_back(at(x, y), at(x + 1, y), at(x + 1, y + 1));
+				mesh.faces.emplace_back(at(x, y), at(x + 1, y + 1), at(x, y + 1));
+			}
+		const Mesh::VIndex ring[8] = {at(3, 3), at(4, 3), at(5, 3), at(5, 4), at(5, 5), at(4, 5), at(3, 5), at(3, 4)};
+		for (unsigned i = 0; i < 8; ++i)
+			mesh.faces.emplace_back(at(4, 4), ring[i], ring[(i + 1) % 8]);
+		return mesh;
+	};
+
+	Mesh oneRing = makeTent();
+	EXPECT_EQ(oneRing.RemoveLongEdgeFacesLocal(4.f, 1), 0u);
+	EXPECT_TRUE(oneRing.ValidateHalfMesh());
+	EXPECT_EQ(oneRing.faces.size(), 128u);
+
+	Mesh twoRings = makeTent();
+	EXPECT_EQ(twoRings.RemoveLongEdgeFacesLocal(4.f, 2), 8u);
+	EXPECT_TRUE(twoRings.ValidateHalfMesh());
+	EXPECT_EQ(twoRings.faces.size(), 120u);
+	EXPECT_EQ(twoRings.vertices.size(), 80u) << "the unreferenced apex is dropped";
+	for (const Mesh::Vertex& vertex : twoRings.vertices)
+		EXPECT_EQ(vertex.z(), 0.f);
+}
+
+// ---------------------------------------------------------------------------
+// RemoveLongEdgeFacesCapped
+// ---------------------------------------------------------------------------
+namespace {
+
+// a 9x9 spacing-1 floor (128 faces, longest edge sqrt(2)) and a single 8x8 cell
+// (2 faces, longest edge 8*sqrt(2)) floating `height` above it, inside its footprint:
+// the cell is the only candidate (median longest edge stays sqrt(2))
+Mesh MakeFloorAndLid(float height)
+{
+	Mesh mesh;
+	AppendGrid(mesh, 8, 8, 1.f, 0.f, 0.f);
+	const Mesh::VIndex lid = static_cast<Mesh::VIndex>(mesh.vertices.size());
+	mesh.vertices.emplace_back(0.f, 0.f, height);
+	mesh.vertices.emplace_back(8.f, 0.f, height);
+	mesh.vertices.emplace_back(8.f, 8.f, height);
+	mesh.vertices.emplace_back(0.f, 8.f, height);
+	mesh.faces.emplace_back(lid, lid + 1, lid + 2);
+	mesh.faces.emplace_back(lid, lid + 2, lid + 3);
+	return mesh;
+}
+
+} // namespace
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedDisabledIsNoOp)
+{
+	Mesh mesh = MakeFloorAndLid(6.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(0.f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 0.f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 4.f, 0.f), 0u);
+	EXPECT_EQ(mesh.faces.size(), 130u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedDropsLidOverSurface)
+{
+	// lid 6 above the floor: the first probe (0.5 x 11.3 = 5.66 below the centroid)
+	// lands 0.34 from the floor, inside its 0.35 x 5.66 = 1.98 cone radius
+	Mesh mesh = MakeFloorAndLid(6.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(), 2u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 128u);
+	EXPECT_EQ(mesh.vertices.size(), 81u) << "the unreferenced lid corners are dropped";
+	for (const Mesh::Vertex& vertex : mesh.vertices)
+		EXPECT_EQ(vertex.z(), 0.f);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedKeepsCoarseSurfaceWithNothingBehind)
+{
+	// the same lid 100 above the floor: the farthest probe (4 x 11.3 = 45.3) stops
+	// 54.7 short of the floor, so the lid is just a coarsely sampled surface
+	Mesh mesh = MakeFloorAndLid(100.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(), 0u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 130u);
+	// reach 6 still misses (probe 6 x 11.3 = 67.9, 32.1 short, radius 23.8); reach 7
+	// brings the floor into range (probe 79.2, 20.8 short, radius 27.7)
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 6.f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 7.f), 2u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 128u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedInsidePipeline)
+{
+	// the probe BVH reads the face array, which a pipeline scope has cleared: the
+	// filter must harvest it rather than probe an empty tree and remove nothing
+	Mesh mesh = MakeFloorAndLid(6.f);
+	mesh.BeginHalfEdgePipeline();
+	ASSERT_TRUE(mesh.faces.empty());
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(), 2u);
+	mesh.EndHalfEdgePipeline();
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 128u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedRejectsInvalidParams)
+{
+	// cone >= 1 would let a probe find the face's own plane (exactly one probe
+	// distance away) and cap every candidate; a non-finite reach never ends the probes
+	Mesh mesh = MakeFloorAndLid(100.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 4.f, 1.f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 4.f, 1.5f), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, std::numeric_limits<float>::infinity()), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(std::numeric_limits<float>::quiet_NaN()), 0u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 4.f, std::numeric_limits<float>::quiet_NaN()), 0u);
+	EXPECT_EQ(mesh.faces.size(), 130u);
+}
+
+TEST(MeshRepairTest, RemoveLongEdgeFacesCappedHugeReachStopsAtMeshExtent)
+{
+	// probes farther from the centroid than diagonal / (1 - cone) cannot reach the
+	// mesh, so a reach far beyond the float-step limit (2^24) ends at the extent
+	Mesh mesh = MakeFloorAndLid(100.f);
+	EXPECT_EQ(mesh.RemoveLongEdgeFacesCapped(2.f, 1e30f), 2u);
+	EXPECT_EQ(mesh.faces.size(), 128u);
+}
+
+// ---------------------------------------------------------------------------
 // RemoveSpuriousComponents
 // ---------------------------------------------------------------------------
 TEST(MeshRepairTest, RemoveSpuriousComponentsDisabledIsNoOp)
@@ -524,67 +848,36 @@ TEST(MeshRepairTest, RemoveSpuriousComponentsCountsAutoRepairRemovals)
 	mesh.faces = {{0, 1, 2}, {0, 1, 2}};
 	EXPECT_EQ(mesh.RemoveSpuriousComponents(100.f), 1u);
 	EXPECT_EQ(mesh.faces.size(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
 }
 
 TEST(MeshRepairTest, RemoveSpuriousComponentsDropsSmallDisconnectedSurface)
 {
-	Mesh mesh;
-	for (unsigned x = 0; x <= 10; ++x) {
-		mesh.vertices.emplace_back(static_cast<float>(x), 0.f, 0.f);
-		mesh.vertices.emplace_back(static_cast<float>(x), 1.f, 0.f);
-	}
-	for (unsigned x = 0; x < 10; ++x) {
-		const Mesh::VIndex lower = 2 * x;
-		mesh.faces.emplace_back(lower, lower + 1, lower + 3);
-		mesh.faces.emplace_back(lower, lower + 3, lower + 2);
-	}
-	const Mesh::VIndex tiny = static_cast<Mesh::VIndex>(mesh.vertices.size());
-	mesh.vertices.emplace_back(20.f, 0.f, 0.f);
-	mesh.vertices.emplace_back(20.01f, 0.f, 0.f);
-	mesh.vertices.emplace_back(20.f, 0.01f, 0.f);
-	mesh.faces.emplace_back(tiny, tiny + 1, tiny + 2);
-
+	Mesh mesh = MakeStripWithDetachedTriangle(0.01f);
 	EXPECT_EQ(mesh.RemoveSpuriousComponents(), 1u);
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
 	EXPECT_EQ(mesh.faces.size(), 20u);
 	EXPECT_EQ(mesh.vertices.size(), 22u);
 	for (const Mesh::Vertex& vertex : mesh.vertices)
 		EXPECT_LT(vertex.x(), 20.f);
 }
 
-TEST(MeshRepairTest, RemoveSpuriousComponentsSplitsCreatedPinch)
+TEST(MeshRepairTest, RemoveSpuriousComponentsKeepsLongEdgeFaces)
 {
-	Mesh mesh;
-	mesh.vertices = {
-	    {0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {-1.f, 0.f, 0.f}, {-0.5f, 0.8660254f, 0.f}, {0.f, 1.f, 0.f}, {0.f, -1.f, 0.f}, {0.8660254f, -0.5f, 0.f}};
-	for (Mesh::VIndex ring = 1; ring <= 6; ++ring)
-		mesh.faces.emplace_back(0, ring, ring == 6 ? 1 : ring + 1);
-
-	EXPECT_EQ(mesh.RemoveSpuriousComponents(0.9f), 2u);
-	EXPECT_EQ(mesh.faces.size(), 4u);
-	EXPECT_EQ(mesh.vertices.size(), 8u) << "the center pinch must duplicate its source vertex";
-	EXPECT_FALSE(mesh.halfMesh.Empty());
+	// the component pass alone: the detached triangle spans 14 units, far above
+	// percentile55 x factor, so it stays even though its edges are the longest
+	Mesh mesh = MakeStripWithDetachedTriangle(10.f);
+	EXPECT_EQ(mesh.RemoveSpuriousComponents(1.f), 0u);
 	EXPECT_TRUE(mesh.ValidateHalfMesh());
-	HalfMesh rebuilt;
-	EXPECT_TRUE(rebuilt.Build(mesh));
+	EXPECT_EQ(mesh.faces.size(), 21u);
+	EXPECT_EQ(mesh.RemoveLongEdgeFaces(1.f), 1u) << "the edge pass is what drops it";
+	EXPECT_TRUE(mesh.ValidateHalfMesh());
+	EXPECT_EQ(mesh.faces.size(), 20u);
 }
 
 TEST(MeshRepairTest, RemoveSpuriousComponentsNativeMatchesArrayReference)
 {
-	Mesh arrays;
-	for (unsigned x = 0; x <= 10; ++x) {
-		arrays.vertices.emplace_back(static_cast<float>(x), 0.f, 0.f);
-		arrays.vertices.emplace_back(static_cast<float>(x), 1.f, 0.f);
-	}
-	for (unsigned x = 0; x < 10; ++x) {
-		const Mesh::VIndex lower = 2 * x;
-		arrays.faces.emplace_back(lower, lower + 1, lower + 3);
-		arrays.faces.emplace_back(lower, lower + 3, lower + 2);
-	}
-	const Mesh::VIndex tiny = static_cast<Mesh::VIndex>(arrays.vertices.size());
-	arrays.vertices.emplace_back(20.f, 0.f, 0.f);
-	arrays.vertices.emplace_back(20.01f, 0.f, 0.f);
-	arrays.vertices.emplace_back(20.f, 0.01f, 0.f);
-	arrays.faces.emplace_back(tiny, tiny + 1, tiny + 2);
+	Mesh arrays = MakeStripWithDetachedTriangle(0.01f);
 	Mesh native = arrays;
 	native.ListHalfEdges();
 

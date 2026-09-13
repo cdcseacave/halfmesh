@@ -167,11 +167,80 @@ boundary of a scanned surface stays open while its small gaps are patched.
 `closed` (an `int`) is the number of holes filled. Pass a large cap to fill
 every hole.
 
+### `remove_vertices_and_fill(vertices, faces, vertex_indices) -> (v, f, filled)`
+
+Remove the selected vertices together with every face touching them, then close
+only the holes that removal created, by Liepa triangulation. Unlike
+`close_holes`, the patch is **not** refined, so no vertex is added and the
+vertex count always shrinks. That makes it a targeted decimation. Holes that
+were already there stay open, and so does a removed region that reaches an
+existing boundary. `filled` is the number of new holes closed.
+
+`vertex_indices` is a 1-D **integer** array of indices into `vertices`;
+duplicates are harmless. Anything else raises `ValueError`:
+
+- A boolean mask would be read as indices 0 and 1, and a float array would be
+  truncated, so both are rejected. Pass `np.flatnonzero(mask)` instead.
+- An index outside `[0, len(vertices))` is rejected. The C++ call silently
+  drops it.
+- Input that requires topology repair is rejected, for the same reason as the
+  per-vertex arrays of `simplify` and `remesh`: repair may remap or add
+  vertices. Call `repair()` first and select from *its* output.
+
 ### `remove_small_components(vertices, faces, min_faces) -> (v, f, removed)`
 
 Drop every connected component with fewer than `min_faces` triangles (and
 the vertices that fall unreferenced as a result). `removed` is the number of
 components dropped.
+
+### `remove_spurious_components(vertices, faces, factor=2.0) -> (v, f, removed)`
+
+Drop every connected component whose bounding-box diagonal is shorter than
+`percentile55(edge length) * factor`. The cutoff is relative to the mesh's own
+sampling, so the same `factor` works at any scale, where `remove_small_components`
+counts faces. `factor <= 0` disables. `removed` is the number of **faces** dropped;
+unreferenced vertices go with them.
+
+Debris is often still attached to the surface by a few long edges, so run
+`remove_long_edge_faces` first to cut it loose. The two calls in that order are
+the reconstruction-debris cleanup that the C++ `RemoveSpuriousComponents`
+performed on its own before 0.4.0.
+
+### `remove_spikes(vertices, faces, max_iterations=100) -> (v, f, removed)`
+
+Drop every vertex incident to at most one face: isolated vertices, and the tips
+of dangling triangles, each taken with its face. Dropping a tip can leave a
+neighbour with a single face, so the sweep repeats until nothing changes or
+`max_iterations` rounds have run. `removed` is the number of **vertices**
+dropped. Works on non-manifold input as is: nothing is manifoldized.
+
+### `remove_long_edge_faces(vertices, faces, factor) -> (v, f, removed)`
+
+Drop every face with an edge longer than `percentile95(edge length) * factor`,
+one global threshold over the mesh's own edge-length distribution; `factor <= 0`
+disables. `removed` is the number of faces dropped; unreferenced vertices go
+with them. Follow it with `remove_spurious_components` to drop the debris it
+cuts loose.
+
+### `remove_long_edge_faces_local(vertices, faces, factor, rings=3) -> (v, f, removed)`
+
+Drop every face whose longest edge exceeds `factor` × the local edge scale: a
+vertex's scale is the median length of the edges inside its k-ring (every edge
+with an endpoint at BFS depth `< rings`), a face's scale the largest of its three
+vertex scales. A surface that merely gets sparser keeps its own scale and
+survives; a face spanning between denser regions does not. `factor <= 0`
+disables; the per-vertex cost grows with the k-ring, so keep `rings` small.
+
+### `remove_long_edge_faces_capped(vertices, faces, factor=2.0, reach=4.0, cone=0.35) -> (v, f, removed)`
+
+Drop long-edged faces (longest edge > `factor` × the median longest edge over all
+faces) that cap a cavity: probes on both sides of the centroid along the normal,
+at 0.5, 1, 2, …, `reach` × the longest edge, hit when the nearest mesh surface
+lies within `cone` × the probe distance. A lid across an open box or a sheet
+under a chassis has surface behind it and goes; a coarsely sampled real surface
+has nothing behind it and stays, which no edge-length statistic can tell apart.
+`factor`, `reach` or `cone <= 0` disables; a non-finite parameter or `cone >= 1`
+(the face's own plane sits at exactly one probe distance) raises `ValueError`.
 
 ### `remesh(vertices, faces, edge_length, iterations=3, vertex_sizing=None, adapt=False, approx_error=0.0, min_adaptive_mult=0.25, max_adaptive_mult=4.0) -> (v, f)`
 
@@ -371,6 +440,68 @@ gutter bleeds between charts at a lower mip level than you asked for.
 Raises `RuntimeError` if `input_path` fails to load or `output_path` fails
 to save.
 
+### `pack_rectangles(sizes, page_size=1024, mode="grow", max_page_size=None, padding=2, allow_rotation=True, power_of_two=False, square=False) -> dict`
+
+Pack integer pixel rectangles into texture pages, with no mesh involved: sprite
+sheets, lightmaps, repacking the patches of an existing texture. It is the same
+two-tier skyline and shelf packer `unwrap()` runs on mesh charts, so it stays
+near-linear on 100k+ small rectangles.
+
+`sizes` is an `[N,2]` **integer** array of `(width, height)` pairs. A float array
+would be truncated and a boolean one read as 1s, so both raise `ValueError`, as
+do a negative size and one above `2**31 - 1`. A zero width or height is
+degenerate: that entry is left unpacked rather than raising.
+
+- `page_size` — an `int` for a square page or a `(width, height)` pair, `> 0`.
+  In `"grow"` mode it is the starting page; the fixed modes use it as is.
+- `mode`:
+  - `"grow"` repacks from scratch on a page doubled in size until every rect fits
+    one page, or until `max_page_size` is reached.
+  - `"single"` packs one fixed-size page; whatever does not fit comes back with
+    `packed == False`.
+  - `"multi"` opens as many fixed-size pages as needed.
+- `max_page_size` — `"grow"` only: an `int` or `(width, height)` growth cap,
+  `0` leaving that axis unbounded. Passing it with a fixed mode raises
+  `ValueError`, since those modes never resize the page and the cap would be
+  silently ignored.
+- `padding` — gutter texels kept on all four sides of every rect.
+- `allow_rotation` — let the packer turn a rect 90°.
+- `power_of_two` / `square` — round each page dimension up to a power of two,
+  or force square pages.
+
+Returns a `dict`:
+
+| Key | Meaning |
+|---|---|
+| `rects` | `int32 [N,4]`: `(x, y, w, h)` of each rect on its page, gutter excluded; `w`/`h` are swapped for a rotated rect, all zero for an unpacked one |
+| `page` | `uint32 [N]`: the page each rect landed on |
+| `rotated` | `bool [N]`: whether the rect was turned 90° |
+| `packed` | `bool [N]`: whether it was placed at all |
+| `pages` | number of pages used (0 when a multi-page run packed nothing; `"single"` always reports its one page) |
+| `n_packed` | number of rects placed |
+| `width`, `height` | page dimensions in texels, after growth and rounding |
+| `packed_area` | placed area **including** gutters |
+| `occupancy` | `packed_area / (width * height * pages)` |
+
+Every per-rect array is in input order, even though the packer sorts internally.
+
+```python
+sizes = np.array([[w, h] for w, h in sprite_shapes], dtype=np.int32)
+side = hm.estimate_square_texture_size(sizes, target_occupancy=0.85)
+out = hm.pack_rectangles(sizes, page_size=side, padding=1)
+x, y, w, h = out["rects"][i]  # where sprite i goes (w/h swapped if out["rotated"][i])
+```
+
+### `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9) -> int`
+
+Approximate the smallest square page side that holds `sizes` (same `[N,2]`
+integer `(width, height)` array as `pack_rectangles`) at `target_occupancy`, and
+never smaller than the longest rect side. The result is rounded up to a
+multiple of `multiple`, or to a power of two when `multiple` is `0`. It is an
+estimate from area, not a packing, so it makes a good starting `page_size` for
+`pack_rectangles`. Raises `ValueError` for `target_occupancy` outside `(0, 1]`
+or a negative `multiple`.
+
 ## Worked example
 
 Load a noisy scan, run the standard cleanup pipeline, and generate a UV
@@ -384,8 +515,11 @@ mesh = hm.Mesh()
 mesh.load("noisy_scan.ply")
 v, f = mesh.to_arrays()
 
-# Clean → denoise → decimate → patch small holes
+# Clean → drop debris → denoise → decimate → patch small holes
 v, f = hm.repair(v, f)
+v, f, _ = hm.remove_long_edge_faces(v, f, factor=2.0)
+v, f, _ = hm.remove_spurious_components(v, f)
+v, f, _ = hm.remove_spikes(v, f)
 v, f = hm.smooth(v, f, iterations=10, method="taubin")
 v, f = hm.simplify(v, f, target=0.5)          # keep ~50% of faces
 v, f, closed = hm.close_holes(v, f, max_hole_edges=50)
@@ -430,10 +564,24 @@ oversights:
   keeps this extension free of any dependency on torch's C++ ABI. If you
   work in torch, convert at the boundary yourself with
   `torch.from_numpy(v)` / `v.numpy()`.
-- **Texture baking** (`BakeAtlas`, `RebakeTexture`, source-image resolvers)
+- **Texture baking** (`BakeAtlas`, `BakeOntoAtlas`, `RebakeTexture`,
+  `DefragmentTexture`, `BakeParams::faceMask`, source-image resolvers)
   — not bound yet. It needs image-array marshalling and a
   Python-subclassable source resolver, and is planned as its own follow-up
   designed together with the texturing-stage consumer.
+- **Per-element attributes on `Mesh`** — vertex colors and normals, per-corner
+  UVs and textures are carried through `load`/`save`, but `to_arrays` returns
+  geometry only. The array ops take and return bare geometry.
+- **Low-level editing and the representation API** — index-level editing
+  (`RemoveFaces`, `RemoveVertices`, `ECollapse`, `RemoveFacesOutside`),
+  `HalfMesh`, adjacency queries, spatial indices, and the half-edge pipeline
+  scope. Every array op builds a fresh mesh, so there is no persistent
+  structure to address or keep in sync. `repair()` bundles the individual
+  repair passes (duplicate vertices/faces, degenerate faces, non-manifold).
+- **Knobs not listed on a function** — the remaining `RemeshParams`,
+  `ParametrizeParams` and `AtlasParams` fields, Taubin's `lambda`/`mu`, the
+  smoothers' vertex lock mask, and `Simplify`'s `minEdgeLength` keep their C++
+  defaults.
 - **openMVS interop** (`InteropOpenMVS.h`) — a C++-side concern (conversion
   between `halfmesh::Mesh` and `MVS::Mesh`); out of scope for the Python
   package.

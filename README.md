@@ -169,13 +169,16 @@ target_link_libraries(myapp PRIVATE halfmesh::halfmesh)
 ```
 
 The package exports version compatibility files (`halfmeshConfigVersion.cmake`)
-so `find_package(halfmesh 0.1.0 CONFIG REQUIRED)` works as expected.
+with `SameMinorVersion` compatibility: `find_package(halfmesh 0.4 CONFIG REQUIRED)`
+accepts any 0.4.x and refuses every other minor, because before 1.0 a minor
+release may reorder public struct fields.
 
 ## Python bindings
 
-A pip-installable `halfmesh` package wraps the core mesh ops (repair, smooth,
-simplify, close holes, remove small components, remesh) plus a `Mesh` facade
-and UV-atlas `unwrap`, all numpy in/out:
+A pip-installable `halfmesh` package wraps the core mesh ops (repair, the
+debris filters — small/spurious components, spikes, long-edge faces — smooth,
+simplify, close holes, remove-vertices-and-fill, remesh) plus a `Mesh` facade,
+UV-atlas `unwrap` and the mesh-independent rectangle packer, all numpy in/out:
 
 ```sh
 pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.0/halfmesh-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl
