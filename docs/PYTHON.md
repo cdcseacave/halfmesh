@@ -13,7 +13,7 @@ re-exports it.
 [GitHub Release](https://github.com/cdcseacave/halfmesh/releases):
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.0/halfmesh-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.1/halfmesh-0.4.1-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 Pick the `cpXY-cpXY` tag matching your interpreter (`cp310`, `cp311`, `cp312`,
@@ -69,7 +69,7 @@ any C++ work happens. The GIL is released around all native computation (see
 
 ### `version() -> str`
 
-The halfmesh library version string (`"0.4.0"`), single-sourced from
+The halfmesh library version string (`"0.4.1"`), single-sourced from
 `project(halfmesh VERSION …)` in `CMakeLists.txt`. Also exposed as
 `halfmesh.__version__`.
 
@@ -172,6 +172,34 @@ every hole.
 Drop every connected component with fewer than `min_faces` triangles (and
 the vertices that fall unreferenced as a result). `removed` is the number of
 components dropped.
+
+### `remove_long_edge_faces(vertices, faces, factor) -> (v, f, removed)`
+
+Drop every face with an edge longer than `percentile95(edge length) * factor`,
+one global threshold over the mesh's own edge-length distribution; `factor <= 0`
+disables. `removed` is the number of faces dropped; unreferenced vertices go
+with them. Pair it with `remove_small_components` for the classic "long edges
+first, then floaters" cleanup.
+
+### `remove_long_edge_faces_local(vertices, faces, factor, rings=3) -> (v, f, removed)`
+
+Drop every face whose longest edge exceeds `factor` × the local edge scale: a
+vertex's scale is the median length of the edges inside its k-ring (every edge
+with an endpoint at BFS depth `< rings`), a face's scale the largest of its three
+vertex scales. A surface that merely gets sparser keeps its own scale and
+survives; a face spanning between denser regions does not. `factor <= 0`
+disables; the per-vertex cost grows with the k-ring, so keep `rings` small.
+
+### `remove_long_edge_faces_capped(vertices, faces, factor=2.0, reach=4.0, cone=0.35) -> (v, f, removed)`
+
+Drop long-edged faces (longest edge > `factor` × the median longest edge over all
+faces) that cap a cavity: probes on both sides of the centroid along the normal,
+at 0.5, 1, 2, …, `reach` × the longest edge, hit when the nearest mesh surface
+lies within `cone` × the probe distance. A lid across an open box or a sheet
+under a chassis has surface behind it and goes; a coarsely sampled real surface
+has nothing behind it and stays, which no edge-length statistic can tell apart.
+`factor`, `reach` or `cone <= 0` disables; a non-finite parameter or `cone >= 1`
+(the face's own plane sits at exactly one probe distance) raises `ValueError`.
 
 ### `remesh(vertices, faces, edge_length, iterations=3, vertex_sizing=None, adapt=False, approx_error=0.0, min_adaptive_mult=0.25, max_adaptive_mult=4.0) -> (v, f)`
 

@@ -174,11 +174,12 @@ so `find_package(halfmesh 0.1.0 CONFIG REQUIRED)` works as expected.
 ## Python bindings
 
 A pip-installable `halfmesh` package wraps the core mesh ops (repair, smooth,
-simplify, close holes, remove small components, remesh) plus a `Mesh` facade
+simplify, close holes, remove small components, the long-edge face filters,
+remesh) plus a `Mesh` facade
 and UV-atlas `unwrap`, all numpy in/out:
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.0/halfmesh-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.1/halfmesh-0.4.1-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 (replace `cp312-cp312` with your interpreter's tag — wheels are published for

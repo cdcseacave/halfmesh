@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1]
+
+### Python bindings
+
+- **`remove_long_edge_faces(vertices, faces, factor)`**,
+  **`remove_long_edge_faces_local(vertices, faces, factor, rings=3)`** and
+  **`remove_long_edge_faces_capped(vertices, faces, factor=2, reach=4, cone=0.35)`**
+  expose the three long-edge face filters, each returning `(vertices, faces, removed)`
+  with unreferenced vertices dropped, like `remove_small_components`. `capped` rejects
+  a non-finite parameter or a `cone >= 1` with `ValueError` instead of the C++ warning
+  and no-op.
+
 ## [0.4.0]
 
 ### Long-edge face filters

@@ -328,3 +328,85 @@ def test_remesh_rejects_bad_adaptive_params():
         hm.remesh(v, f, 0.5, 3, adapt=True, min_adaptive_mult=0.0)
     with pytest.raises(ValueError):  # inverted range
         hm.remesh(v, f, 0.5, 3, adapt=True, min_adaptive_mult=4.0, max_adaptive_mult=0.25)
+
+
+# --- long-edge face filters -----------------------------------------------------------
+
+
+def _two_sheets():
+    """A fine grid (edge ~1/63) and, beside it, a coarse grid (edge ~1/7) as a second
+    component: the same surface sampled at two densities. Returns (v, f, n_coarse)."""
+    fv, ff = _grid_mesh(n=64, noise=0.0)
+    cv, cf = _grid_mesh(n=8, noise=0.0)
+    cv = cv + np.array([2.0, 0.0, 0.0], dtype=np.float32)
+    v = np.concatenate([fv, cv])
+    f = np.concatenate([ff, cf + np.uint32(len(fv))]).astype(np.uint32)
+    return v, f, len(cf)
+
+
+def test_remove_long_edge_faces_uses_one_global_threshold():
+    """percentile95 of every edge is a fine-grid edge, so the coarse sheet goes whole."""
+    v, f, n_coarse = _two_sheets()
+    rv, rf, removed = hm.remove_long_edge_faces(v, f, 2.0)
+    assert removed == n_coarse
+    assert len(rf) == len(f) - n_coarse
+
+
+def test_remove_long_edge_faces_local_keeps_a_uniformly_coarse_sheet():
+    v, f, _ = _two_sheets()
+    rv, rf, removed = hm.remove_long_edge_faces_local(v, f, 2.0)
+    assert removed == 0
+    assert len(rf) == len(f)
+
+
+def test_remove_long_edge_faces_local_drops_a_strip_spanning_two_dense_sheets():
+    """Two triangles bridging the fine grid's right boundary edge (63, 127) to the
+    coarse grid's left boundary edge, oriented to match both sheets: every vertex
+    of the strip sits in a dense ring, so its ~1.0 edges are many times the local
+    scale on either side."""
+    v, f, _ = _two_sheets()
+    a, b = 63, 127  # fine grid, x = 1: (1, 0) and (1, 1/63)
+    c, d = 64 * 64 + 0, 64 * 64 + 8  # coarse grid, x = 2: (2, 0) and (2, 1/7)
+    strip = np.array([[b, a, d], [d, a, c]], dtype=np.uint32)
+    rv, rf, removed = hm.remove_long_edge_faces_local(v, np.concatenate([f, strip]), 2.0)
+    assert removed == 2
+    assert len(rf) == len(f)
+
+
+def test_remove_long_edge_faces_capped_drops_a_lid_over_a_floor():
+    """A two-triangle lid 0.5 above a fine floor has surface behind it along its
+    normal within the probe cone; the floor's own faces are not long-edged and stay."""
+    fv, ff = _grid_mesh(n=32, noise=0.0)
+    lid_v = np.array(
+        [[0, 0, 0.5], [1, 0, 0.5], [1, 1, 0.5], [0, 1, 0.5]], dtype=np.float32
+    )
+    lid_f = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32) + np.uint32(len(fv))
+    v = np.concatenate([fv, lid_v])
+    f = np.concatenate([ff, lid_f])
+    rv, rf, removed = hm.remove_long_edge_faces_capped(v, f)
+    assert removed == 2
+    assert len(rf) == len(ff)
+
+
+def test_remove_long_edge_faces_capped_keeps_a_coarse_sheet_with_nothing_behind_it():
+    v, f, _ = _two_sheets()
+    rv, rf, removed = hm.remove_long_edge_faces_capped(v, f)
+    assert removed == 0
+    assert len(rf) == len(f)
+
+
+def test_long_edge_filters_are_noops_at_factor_zero():
+    v, f, _ = _two_sheets()
+    for rv, rf, removed in (
+        hm.remove_long_edge_faces(v, f, 0.0),
+        hm.remove_long_edge_faces_local(v, f, 0.0),
+        hm.remove_long_edge_faces_capped(v, f, factor=0.0),
+    ):
+        assert removed == 0
+        assert len(rf) == len(f)
+
+
+def test_remove_long_edge_faces_capped_refuses_a_cone_of_one():
+    v, f, _ = _two_sheets()
+    with pytest.raises(ValueError):
+        hm.remove_long_edge_faces_capped(v, f, cone=1.0)

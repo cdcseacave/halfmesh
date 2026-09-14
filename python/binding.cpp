@@ -198,6 +198,41 @@ PYBIND11_MODULE(_halfmesh, m)
 		py::tuple vf = ArraysFromMesh(mesh);
 		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("min_faces"), "Remove connected components with fewer than min_faces faces.");
 
+	m.def("remove_long_edge_faces", [](const VertArray& v, const FaceArray& f, float factor) {
+		Mesh mesh = MeshFromArrays(v, f);
+		Mesh::FIndex removed = 0;
+		{
+			py::gil_scoped_release release;
+			removed = mesh.RemoveLongEdgeFaces(factor);
+			mesh.RemoveUnreferencedVertices();
+		}
+		py::tuple vf = ArraysFromMesh(mesh);
+		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("factor"), "Remove faces with an edge longer than percentile95(edge length) * factor, one global threshold over the mesh's own edge-length distribution; factor <= 0 disables. Returns (vertices, faces, removed).");
+
+	m.def("remove_long_edge_faces_local", [](const VertArray& v, const FaceArray& f, float factor, unsigned rings) {
+		Mesh mesh = MeshFromArrays(v, f);
+		Mesh::FIndex removed = 0;
+		{
+			py::gil_scoped_release release;
+			removed = mesh.RemoveLongEdgeFacesLocal(factor, rings);
+			mesh.RemoveUnreferencedVertices();
+		}
+		py::tuple vf = ArraysFromMesh(mesh);
+		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("factor"), py::arg("rings") = 3u, "Remove faces whose longest edge exceeds factor x the local edge scale: a vertex's scale is the median length of the edges inside its k-ring (BFS depth < rings), a face's scale the largest of its three vertex scales, so a uniformly sparse surface keeps its own scale and survives while a face spanning between denser regions does not; factor <= 0 disables. Returns (vertices, faces, removed).");
+
+	m.def("remove_long_edge_faces_capped", [](const VertArray& v, const FaceArray& f, float factor, float reach, float cone) {
+		if (!std::isfinite(factor) || !std::isfinite(reach) || !std::isfinite(cone) || cone >= 1.f)
+			throw py::value_error("remove_long_edge_faces_capped needs finite factor, reach and cone with cone < 1: the face's own plane sits at exactly one probe distance");
+		Mesh mesh = MeshFromArrays(v, f);
+		Mesh::FIndex removed = 0;
+		{
+			py::gil_scoped_release release;
+			removed = mesh.RemoveLongEdgeFacesCapped(factor, reach, cone);
+			mesh.RemoveUnreferencedVertices();
+		}
+		py::tuple vf = ArraysFromMesh(mesh);
+		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("factor") = 2.f, py::arg("reach") = 4.f, py::arg("cone") = 0.35f, "Remove long-edged faces (longest edge > factor x the median longest edge) that cap a cavity: probes on both sides of the centroid along the normal, at 0.5, 1, 2, ..., reach x the longest edge, hit when the nearest surface lies within cone x the probe distance. A lid across an open box or a sheet under a chassis goes; a coarsely sampled real surface has nothing behind it and stays. factor, reach or cone <= 0 disables. Returns (vertices, faces, removed).");
+
 	m.def("remesh", [](const VertArray& v, const FaceArray& f, float edge_length, int iterations, std::optional<BoundArray> vertexSizing, bool adapt, float approx_error, float min_adaptive_mult, float max_adaptive_mult) {
 		if (edge_length <= 0.f)
 			throw py::value_error("remesh edge_length must be > 0");
