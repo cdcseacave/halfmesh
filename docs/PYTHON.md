@@ -13,7 +13,7 @@ re-exports it.
 [GitHub Release](https://github.com/cdcseacave/halfmesh/releases):
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.1/halfmesh-0.4.1-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.0/halfmesh-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 Pick the `cpXY-cpXY` tag matching your interpreter (`cp310`, `cp311`, `cp312`,
@@ -69,7 +69,7 @@ any C++ work happens. The GIL is released around all native computation (see
 
 ### `version() -> str`
 
-The halfmesh library version string (`"0.4.1"`), single-sourced from
+The halfmesh library version string (`"0.4.0"`), single-sourced from
 `project(halfmesh VERSION …)` in `CMakeLists.txt`. Also exposed as
 `halfmesh.__version__`.
 
@@ -167,19 +167,60 @@ boundary of a scanned surface stays open while its small gaps are patched.
 `closed` (an `int`) is the number of holes filled. Pass a large cap to fill
 every hole.
 
+### `remove_vertices_and_fill(vertices, faces, vertex_indices) -> (v, f, filled)`
+
+Remove the selected vertices together with every face touching them, then close
+only the holes that removal created, by Liepa triangulation. Unlike
+`close_holes`, the patch is **not** refined, so no vertex is added and the
+vertex count always shrinks. That makes it a targeted decimation. Holes that
+were already there stay open, and so does a removed region that reaches an
+existing boundary. `filled` is the number of new holes closed.
+
+`vertex_indices` is a 1-D **integer** array of indices into `vertices`;
+duplicates are harmless. Anything else raises `ValueError`:
+
+- A boolean mask would be read as indices 0 and 1, and a float array would be
+  truncated, so both are rejected. Pass `np.flatnonzero(mask)` instead.
+- An index outside `[0, len(vertices))` is rejected. The C++ call silently
+  drops it.
+- Input that requires topology repair is rejected, for the same reason as the
+  per-vertex arrays of `simplify` and `remesh`: repair may remap or add
+  vertices. Call `repair()` first and select from *its* output.
+
 ### `remove_small_components(vertices, faces, min_faces) -> (v, f, removed)`
 
 Drop every connected component with fewer than `min_faces` triangles (and
 the vertices that fall unreferenced as a result). `removed` is the number of
 components dropped.
 
+### `remove_spurious_components(vertices, faces, factor=2.0) -> (v, f, removed)`
+
+Drop every connected component whose bounding-box diagonal is shorter than
+`percentile55(edge length) * factor`. The cutoff is relative to the mesh's own
+sampling, so the same `factor` works at any scale, where `remove_small_components`
+counts faces. `factor <= 0` disables. `removed` is the number of **faces** dropped;
+unreferenced vertices go with them.
+
+Debris is often still attached to the surface by a few long edges, so run
+`remove_long_edge_faces` first to cut it loose. The two calls in that order are
+the reconstruction-debris cleanup that the C++ `RemoveSpuriousComponents`
+performed on its own before 0.4.0.
+
+### `remove_spikes(vertices, faces, max_iterations=100) -> (v, f, removed)`
+
+Drop every vertex incident to at most one face: isolated vertices, and the tips
+of dangling triangles, each taken with its face. Dropping a tip can leave a
+neighbour with a single face, so the sweep repeats until nothing changes or
+`max_iterations` rounds have run. `removed` is the number of **vertices**
+dropped. Works on non-manifold input as is: nothing is manifoldized.
+
 ### `remove_long_edge_faces(vertices, faces, factor) -> (v, f, removed)`
 
 Drop every face with an edge longer than `percentile95(edge length) * factor`,
 one global threshold over the mesh's own edge-length distribution; `factor <= 0`
 disables. `removed` is the number of faces dropped; unreferenced vertices go
-with them. Pair it with `remove_small_components` for the classic "long edges
-first, then floaters" cleanup.
+with them. Follow it with `remove_spurious_components` to drop the debris it
+cuts loose.
 
 ### `remove_long_edge_faces_local(vertices, faces, factor, rings=3) -> (v, f, removed)`
 
@@ -412,8 +453,11 @@ mesh = hm.Mesh()
 mesh.load("noisy_scan.ply")
 v, f = mesh.to_arrays()
 
-# Clean → denoise → decimate → patch small holes
+# Clean → drop debris → denoise → decimate → patch small holes
 v, f = hm.repair(v, f)
+v, f, _ = hm.remove_long_edge_faces(v, f, factor=2.0)
+v, f, _ = hm.remove_spurious_components(v, f)
+v, f, _ = hm.remove_spikes(v, f)
 v, f = hm.smooth(v, f, iterations=10, method="taubin")
 v, f = hm.simplify(v, f, target=0.5)          # keep ~50% of faces
 v, f, closed = hm.close_holes(v, f, max_hole_edges=50)
@@ -458,10 +502,27 @@ oversights:
   keeps this extension free of any dependency on torch's C++ ABI. If you
   work in torch, convert at the boundary yourself with
   `torch.from_numpy(v)` / `v.numpy()`.
-- **Texture baking** (`BakeAtlas`, `RebakeTexture`, source-image resolvers)
+- **Texture baking** (`BakeAtlas`, `BakeOntoAtlas`, `RebakeTexture`,
+  `DefragmentTexture`, `BakeParams::faceMask`, source-image resolvers)
   — not bound yet. It needs image-array marshalling and a
   Python-subclassable source resolver, and is planned as its own follow-up
   designed together with the texturing-stage consumer.
+- **Rectangle packing** (`RectPacking.h`: `PackRectangles`,
+  `EstimateSquareTextureSize`) — a mesh-independent utility for sprite sheets
+  and lightmaps. `unwrap()` already runs the same packer on mesh charts.
+- **Per-element attributes on `Mesh`** — vertex colors and normals, per-corner
+  UVs and textures are carried through `load`/`save`, but `to_arrays` returns
+  geometry only. The array ops take and return bare geometry.
+- **Low-level editing and the representation API** — index-level editing
+  (`RemoveFaces`, `RemoveVertices`, `ECollapse`, `RemoveFacesOutside`),
+  `HalfMesh`, adjacency queries, spatial indices, and the half-edge pipeline
+  scope. Every array op builds a fresh mesh, so there is no persistent
+  structure to address or keep in sync. `repair()` bundles the individual
+  repair passes (duplicate vertices/faces, degenerate faces, non-manifold).
+- **Knobs not listed on a function** — the remaining `RemeshParams`,
+  `ParametrizeParams` and `AtlasParams` fields, Taubin's `lambda`/`mu`, the
+  smoothers' vertex lock mask, and `Simplify`'s `minEdgeLength` keep their C++
+  defaults.
 - **openMVS interop** (`InteropOpenMVS.h`) — a C++-side concern (conversion
   between `halfmesh::Mesh` and `MVS::Mesh`); out of scope for the Python
   package.

@@ -201,6 +201,98 @@ def test_remove_small_components_drops_a_floater():
     assert len(rf) == 12
 
 
+def test_remove_spurious_components_drops_debris_relative_to_the_sampling():
+    """The cutoff is percentile55(edge) * factor ~ 2/63, so a 0.01-wide triangle is
+    debris beside the fine grid while a unit cube, far coarser than the cutoff, stays."""
+    gv, gf = _grid_mesh(n=64, noise=0.0)
+    cv, cf = _cube_mesh()
+    dv = np.array([[3, 3, 3], [3.01, 3, 3], [3, 3.01, 3]], dtype=np.float32)
+    v = np.concatenate([gv, cv + np.float32(5), dv])
+    f = np.concatenate(
+        [gf, cf + np.uint32(len(gv)), np.array([[0, 1, 2]], dtype=np.uint32) + np.uint32(len(gv) + 8)]
+    )
+    rv, rf, removed = hm.remove_spurious_components(v, f)
+    assert removed == 1  # counted in faces, unlike remove_small_components
+    assert len(rf) == len(gf) + len(cf)
+    assert len(rv) == len(gv) + len(cv)  # the debris vertices go with it
+
+
+def test_remove_spurious_components_is_a_noop_at_factor_zero():
+    v, f = _cube_mesh()
+    rv, rf, removed = hm.remove_spurious_components(v, f, 0.0)
+    assert removed == 0 and len(rf) == len(f)
+
+
+def _cube_with_spikes():
+    """Unit cube, plus an isolated vertex and a detached two-triangle strip: the strip's
+    two tips have one face each, and dropping them leaves its middle edge's two
+    vertices with none, so the sweep needs a second round."""
+    v, f = _cube_mesh()
+    extra = np.array(
+        [[9, 9, 9], [5, 0, 0], [6, 0, 0], [5, 1, 0], [6, 1, 0]], dtype=np.float32
+    )
+    strip = np.array([[9, 10, 11], [10, 12, 11]], dtype=np.uint32)
+    return np.concatenate([v, extra]), np.concatenate([f, strip])
+
+
+def test_remove_spikes_cascades_until_stable():
+    v, f = _cube_with_spikes()
+    rv, rf, removed = hm.remove_spikes(v, f)
+    assert removed == 5  # counted in vertices: isolated one, two tips, then two starved
+    assert len(rv) == 8 and len(rf) == 12
+
+
+def test_remove_spikes_stops_at_max_iterations():
+    v, f = _cube_with_spikes()
+    rv, rf, removed = hm.remove_spikes(v, f, max_iterations=1)
+    assert removed == 3  # the strip's middle vertices only become spikes in round 2
+    assert len(rv) == 10 and len(rf) == 12
+
+
+def test_remove_vertices_and_fill_patches_the_hole_it_creates():
+    v, f = _grid_mesh(n=16, noise=0.0)
+    interior = 5 * 16 + 5  # valence 6: six faces go, a four-triangle patch comes back
+    rv, rf, filled = hm.remove_vertices_and_fill(v, f, np.array([interior]))
+    assert filled == 1
+    assert len(rv) == len(v) - 1  # no refinement, so the vertex count only shrinks
+    assert len(rf) == len(f) - 2
+    assert _euler_characteristic(rv, rf) == 1  # still one disk: the hole was closed
+
+
+def test_remove_vertices_and_fill_leaves_a_boundary_region_open():
+    v, f = _grid_mesh(n=16, noise=0.0)
+    rv, rf, filled = hm.remove_vertices_and_fill(v, f, np.array([5], dtype=np.uint32))
+    assert filled == 0
+    assert len(rv) == len(v) - 1 and len(rf) < len(f)
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint32, np.uint64])
+def test_remove_vertices_and_fill_accepts_integer_dtypes(dtype):
+    v, f = _grid_mesh(n=8, noise=0.0)
+    _, _, filled = hm.remove_vertices_and_fill(v, f, np.array([3 * 8 + 3], dtype=dtype))
+    assert filled == 1
+
+
+def test_remove_vertices_and_fill_rejects_bad_indices():
+    v, f = _grid_mesh(n=8, noise=0.0)
+    with pytest.raises(ValueError, match="flatnonzero"):  # a mask read as indices 0 and 1
+        hm.remove_vertices_and_fill(v, f, np.zeros(len(v), dtype=bool))
+    with pytest.raises(ValueError):  # truncating floats
+        hm.remove_vertices_and_fill(v, f, np.array([3.0]))
+    with pytest.raises(ValueError):  # wrong rank
+        hm.remove_vertices_and_fill(v, f, np.array([[3]]))
+    for bad in (len(v), -1):
+        with pytest.raises(ValueError, match="out of range"):
+            hm.remove_vertices_and_fill(v, f, np.array([bad]))
+
+
+def test_remove_vertices_and_fill_rejects_input_requiring_repair():
+    v, f = _cube_mesh()
+    duplicate_face = np.concatenate([f, f[:1]])
+    with pytest.raises(ValueError, match="requires topology repair"):
+        hm.remove_vertices_and_fill(v, duplicate_face, np.array([0]))
+
+
 def test_remesh_coarsens_toward_target_edge_length():
     v, f = _grid_mesh(noise=0.0)  # grid spacing 1/63
     rv, rf = hm.remesh(v, f, 4.0 / 63.0, 3)
@@ -406,7 +498,19 @@ def test_long_edge_filters_are_noops_at_factor_zero():
         assert len(rf) == len(f)
 
 
-def test_remove_long_edge_faces_capped_refuses_a_cone_of_one():
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"cone": 1.0},  # the face's own plane sits at exactly one probe distance
+        {"cone": 1.5},
+        {"cone": np.nan},
+        {"factor": np.nan},
+        {"factor": np.inf},
+        {"reach": np.nan},
+        {"reach": np.inf},
+    ],
+)
+def test_remove_long_edge_faces_capped_refuses_unusable_parameters(bad):
     v, f, _ = _two_sheets()
     with pytest.raises(ValueError):
-        hm.remove_long_edge_faces_capped(v, f, cone=1.0)
+        hm.remove_long_edge_faces_capped(v, f, **bad)

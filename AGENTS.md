@@ -34,12 +34,29 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 - Vertex representatives are written only through `HalfMesh::SetVHalfedge` (the `alwaysEven`
   choke point), never `vHalfedges[v] =`. `GuaranteeAlwaysEven()` is a full in-place rebuild:
   it is never the fix for a parity problem.
+- **Python bindings ship with the C++ change, not after it.** A change that adds or
+  alters a user-facing feature in `include/halfmesh/` — a `Mesh` op, a parameter, a
+  result field, a default, or its validation — updates the Python side in the same PR:
+  `python/binding.cpp`, the re-export and `__all__` in `python/halfmesh/__init__.py`,
+  `python/tests/`, the API reference in `docs/PYTHON.md`, and a **Python** note in the
+  CHANGELOG entry. A feature left unbound goes in the "Deliberately absent" list in
+  `docs/PYTHON.md`, with the reason. Binding conventions: numpy in, new arrays out;
+  release the GIL around native work; copy input arrays rather than alias them; raise
+  `ValueError` where the C++ only warns and carries on or silently drops input; refuse
+  input requiring topology repair when an argument is indexed by input vertex
+  (`RequireIndexStableBuild`). Before a release, diff the `Mesh.h` / `*Params` /
+  `AtlasResult` surface since the last tag against `binding.cpp`; 0.4.0 had to be
+  re-cut because ops from 0.3.0 and 0.4.0 had shipped unbound.
 
 ## Layout
 - `include/halfmesh/` — public API headers (+ `Util/` helpers). See its AGENTS.md.
 - `src/` — implementation TUs (the `Mesh` class is split across several `.cpp`). See its AGENTS.md.
 - `tests/` — gtest suite + reusable test infra (corpus/metrics/golden) + perf + python crosscheck. See its AGENTS.md.
 - `examples/` — five example CLIs (decimate / remesh / smooth / unwrap / texturebake). See its AGENTS.md.
+- `python/` — the pip-installable `halfmesh` package: pybind11 `binding.cpp`, the
+  `halfmesh/__init__.py` re-export, pytest suite under `python/tests/` (built by
+  `pip install '.[test]'`, `-DHALFMESH_BUILD_PYTHON=ON`). Kept in sync with the C++ API —
+  see the Python-bindings convention above.
 - `cmake/` — `Utils.cmake` (warning flags helper) + `halfmeshConfig.cmake.in` (install/export).
 - `docs/` — `FEATURES.md` (API tour + the representation/texture contracts),
   `TESTING.md` (layered testing strategy), `BENCHMARKS.md` (atlasbench harness

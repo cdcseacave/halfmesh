@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstring>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -86,6 +87,46 @@ py::tuple ArraysFromMesh(Mesh& m)
 	return py::make_tuple(std::move(v), std::move(f));
 }
 
+// Run a counting op without the GIL and return (vertices, faces, count).
+template <typename Op>
+py::tuple ArraysWithCount(Mesh& mesh, Op op)
+{
+	const auto count = [&] {
+		py::gil_scoped_release release;
+		return op(mesh);
+	}();
+	py::tuple vf = ArraysFromMesh(mesh);
+	return py::make_tuple(vf[0], vf[1], count);
+}
+
+// Copy a per-vertex [N] array, never alias it: the op runs without the GIL, so it
+// must not read a buffer Python could resize or free underneath it.
+std::vector<float> CopyPerVertex(const BoundArray& a, py::ssize_t numVertices, const char* name)
+{
+	if (a.ndim() != 1 || a.shape(0) != numVertices)
+		throw py::value_error(std::string(name) + " must have shape [N] matching the N vertices");
+	std::vector<float> values(static_cast<size_t>(numVertices));
+	if (!values.empty())
+		std::memcpy(values.data(), a.data(), sizeof(float) * values.size());
+	return values;
+}
+
+// Build the half-edge up front for an op taking an argument stated over INPUT vertex
+// indices. A failed build would make the op repair and potentially remap vertices,
+// silently misaddressing the argument, so require callers to repair first instead.
+void RequireIndexStableBuild(Mesh& mesh, const char* name)
+{
+	if (mesh.faces.empty())
+		return;
+	bool built = false;
+	{
+		py::gil_scoped_release release;
+		built = mesh.halfMesh.Build(mesh);
+	}
+	if (!built)
+		throw py::value_error(std::string("input requires topology repair, so ") + name + " may no longer address its vertices; call repair() first and state it over its output");
+}
+
 // The recommended pre-pass from the Simplify header docs: dissolves the phantom
 // topology that blocks collapses and makes every later half-edge build
 // non-mutating.
@@ -144,30 +185,14 @@ PYBIND11_MODULE(_halfmesh, m)
 			}
 			return ArraysFromMesh(mesh);
 		}
-		const BoundArray& b = *vertexMaxError;
-		if (b.ndim() != 1 || b.shape(0) != v.shape(0))
-			throw py::value_error("vertex_max_error must have shape [N] matching the N vertices");
 		if (aggressiveness > 0.f)
 			throw py::value_error("vertex_max_error is exact-mode only: leave aggressiveness at 0");
-		// Copied, never aliased: Simplify compacts the bound in place, and the module
-		// contract is that inputs are not mutated.
-		std::vector<float> bounds(static_cast<size_t>(b.shape(0)));
-		if (!bounds.empty())
-			std::memcpy(bounds.data(), b.data(), sizeof(float) * bounds.size());
+		// the copy also keeps the input unmutated: Simplify compacts the bound in place
+		std::vector<float> bounds = CopyPerVertex(*vertexMaxError, v.shape(0), "vertex_max_error");
+		RequireIndexStableBuild(mesh, "vertex_max_error");
 		if (!mesh.faces.empty()) {
-			bool built = false;
-			{
-				py::gil_scoped_release release;
-				built = mesh.halfMesh.Build(mesh);
-			}
-			// A failed build would make Simplify repair and potentially remap vertices. The
-			// bound is stated over INPUT indices, so require callers to repair first instead.
-			if (!built)
-				throw py::value_error("input requires topology repair, so vertex_max_error may no longer address its vertices; call repair() first and state the bound over its output");
-			{
-				py::gil_scoped_release release;
-				mesh.Simplify(target, /*minEdgeLength=*/0.f, aggressiveness, bounds);
-			}
+			py::gil_scoped_release release;
+			mesh.Simplify(target, /*minEdgeLength=*/0.f, aggressiveness, bounds);
 		}
 		py::tuple vf = ArraysFromMesh(mesh);
 		// the live prefix Simplify compacted the bound into: one entry per survivor
@@ -179,59 +204,73 @@ PYBIND11_MODULE(_halfmesh, m)
 
 	m.def("close_holes", [](const VertArray& v, const FaceArray& f, unsigned max_hole_edges) {
 		Mesh mesh = MeshFromArrays(v, f);
-		unsigned closed = 0;
-		{
-			py::gil_scoped_release release;
-			closed = mesh.CloseHoles(max_hole_edges);
+		return ArraysWithCount(mesh, [=](Mesh& self) { return self.CloseHoles(max_hole_edges); }); }, py::arg("vertices"), py::arg("faces"), py::arg("max_hole_edges") = 30u, "Liepa hole filling (fill + refine + fair) of every hole spanned by at most max_hole_edges boundary edges. Returns (vertices, faces, closed).");
+
+	m.def("remove_vertices_and_fill", [](const VertArray& v, const FaceArray& f, const py::array& vertex_indices) {
+		// Integer dtypes only: forcecasting a boolean mask or float array to indices
+		// would silently remove vertices 0 and 1 (or truncated positions) instead.
+		const char kind = vertex_indices.dtype().kind();
+		if (vertex_indices.ndim() != 1 || (kind != 'i' && kind != 'u'))
+			throw py::value_error("vertex_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
+		Mesh mesh = MeshFromArrays(v, f);
+		const auto indices = py::array_t<int64_t, py::array::c_style | py::array::forcecast>::ensure(vertex_indices);
+		const auto numVertices = static_cast<int64_t>(mesh.vertices.size());
+		std::vector<Mesh::VIndex> removes;
+		removes.reserve(static_cast<size_t>(indices.shape(0)));
+		for (const int64_t idx : std::span(indices.data(), static_cast<size_t>(indices.shape(0)))) {
+			// the C++ call drops an out-of-range index silently; a Python caller hears of it
+			if (idx < 0 || idx >= numVertices)
+				throw py::value_error("vertex index " + std::to_string(idx) + " is out of range for " + std::to_string(numVertices) + " vertices");
+			removes.push_back(static_cast<Mesh::VIndex>(idx));
 		}
-		py::tuple vf = ArraysFromMesh(mesh);
-		return py::make_tuple(vf[0], vf[1], closed); }, py::arg("vertices"), py::arg("faces"), py::arg("max_hole_edges") = 30u, "Liepa hole filling (fill + refine + fair) of every hole spanned by at most max_hole_edges boundary edges.");
+		RequireIndexStableBuild(mesh, "vertex_indices");
+		return ArraysWithCount(mesh, [&removes](Mesh& self) { return self.RemoveVerticesAndFill(std::move(removes)); }); }, py::arg("vertices"), py::arg("faces"), py::arg("vertex_indices"), "Remove the given vertices with their incident faces, then close only the holes that removal created (Liepa triangulation, no refinement, so the vertex count always shrinks). Pre-existing holes stay open, as does a removed region reaching an existing boundary. Returns (vertices, faces, filled).");
 
 	m.def("remove_small_components", [](const VertArray& v, const FaceArray& f, unsigned min_faces) {
 		Mesh mesh = MeshFromArrays(v, f);
-		unsigned removed = 0;
-		{
-			py::gil_scoped_release release;
-			removed = mesh.RemoveSmallComponents(min_faces);
-			mesh.RemoveUnreferencedVertices();
-		}
-		py::tuple vf = ArraysFromMesh(mesh);
-		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("min_faces"), "Remove connected components with fewer than min_faces faces.");
+		return ArraysWithCount(mesh, [=](Mesh& self) {
+			const unsigned removed = self.RemoveSmallComponents(min_faces);
+			self.RemoveUnreferencedVertices();
+			return removed;
+		}); }, py::arg("vertices"), py::arg("faces"), py::arg("min_faces"), "Remove connected components with fewer than min_faces faces. Returns (vertices, faces, removed components).");
+
+	m.def("remove_spurious_components", [](const VertArray& v, const FaceArray& f, float factor) {
+		Mesh mesh = MeshFromArrays(v, f);
+		return ArraysWithCount(mesh, [=](Mesh& self) {
+			const Mesh::FIndex removed = self.RemoveSpuriousComponents(factor);
+			self.RemoveUnreferencedVertices();
+			return removed;
+		}); }, py::arg("vertices"), py::arg("faces"), py::arg("factor") = 2.f, "Remove connected components whose bounding-box diagonal is shorter than percentile55(edge length) * factor, a cutoff relative to the mesh's own sampling; factor <= 0 disables. Run remove_long_edge_faces first to detach debris hanging off the surface. Returns (vertices, faces, removed faces).");
+
+	m.def("remove_spikes", [](const VertArray& v, const FaceArray& f, unsigned max_iterations) {
+		Mesh mesh = MeshFromArrays(v, f);
+		return ArraysWithCount(mesh, [=](Mesh& self) { return self.RemoveSpikes(max_iterations); }); }, py::arg("vertices"), py::arg("faces"), py::arg("max_iterations") = 100u, "Remove vertices incident to at most one face (isolated vertices and dangling-triangle tips) with their face, repeating while a removal starves a neighbour down to one face, up to max_iterations rounds. Returns (vertices, faces, removed vertices).");
 
 	m.def("remove_long_edge_faces", [](const VertArray& v, const FaceArray& f, float factor) {
 		Mesh mesh = MeshFromArrays(v, f);
-		Mesh::FIndex removed = 0;
-		{
-			py::gil_scoped_release release;
-			removed = mesh.RemoveLongEdgeFaces(factor);
-			mesh.RemoveUnreferencedVertices();
-		}
-		py::tuple vf = ArraysFromMesh(mesh);
-		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("factor"), "Remove faces with an edge longer than percentile95(edge length) * factor, one global threshold over the mesh's own edge-length distribution; factor <= 0 disables. Returns (vertices, faces, removed).");
+		return ArraysWithCount(mesh, [=](Mesh& self) {
+			const Mesh::FIndex removed = self.RemoveLongEdgeFaces(factor);
+			self.RemoveUnreferencedVertices();
+			return removed;
+		}); }, py::arg("vertices"), py::arg("faces"), py::arg("factor"), "Remove faces with an edge longer than percentile95(edge length) * factor, one global threshold over the mesh's own edge-length distribution; factor <= 0 disables. Returns (vertices, faces, removed).");
 
 	m.def("remove_long_edge_faces_local", [](const VertArray& v, const FaceArray& f, float factor, unsigned rings) {
 		Mesh mesh = MeshFromArrays(v, f);
-		Mesh::FIndex removed = 0;
-		{
-			py::gil_scoped_release release;
-			removed = mesh.RemoveLongEdgeFacesLocal(factor, rings);
-			mesh.RemoveUnreferencedVertices();
-		}
-		py::tuple vf = ArraysFromMesh(mesh);
-		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("factor"), py::arg("rings") = 3u, "Remove faces whose longest edge exceeds factor x the local edge scale: a vertex's scale is the median length of the edges inside its k-ring (BFS depth < rings), a face's scale the largest of its three vertex scales, so a uniformly sparse surface keeps its own scale and survives while a face spanning between denser regions does not; factor <= 0 disables. Returns (vertices, faces, removed).");
+		return ArraysWithCount(mesh, [=](Mesh& self) {
+			const Mesh::FIndex removed = self.RemoveLongEdgeFacesLocal(factor, rings);
+			self.RemoveUnreferencedVertices();
+			return removed;
+		}); }, py::arg("vertices"), py::arg("faces"), py::arg("factor"), py::arg("rings") = 3u, "Remove faces whose longest edge exceeds factor x the local edge scale: a vertex's scale is the median length of the edges inside its k-ring (BFS depth < rings), a face's scale the largest of its three vertex scales, so a uniformly sparse surface keeps its own scale and survives while a face spanning between denser regions does not; factor <= 0 disables. Returns (vertices, faces, removed).");
 
 	m.def("remove_long_edge_faces_capped", [](const VertArray& v, const FaceArray& f, float factor, float reach, float cone) {
 		if (!std::isfinite(factor) || !std::isfinite(reach) || !std::isfinite(cone) || cone >= 1.f)
 			throw py::value_error("remove_long_edge_faces_capped needs finite factor, reach and cone with cone < 1: the face's own plane sits at exactly one probe distance");
 		Mesh mesh = MeshFromArrays(v, f);
-		Mesh::FIndex removed = 0;
-		{
-			py::gil_scoped_release release;
-			removed = mesh.RemoveLongEdgeFacesCapped(factor, reach, cone);
-			mesh.RemoveUnreferencedVertices();
-		}
-		py::tuple vf = ArraysFromMesh(mesh);
-		return py::make_tuple(vf[0], vf[1], removed); }, py::arg("vertices"), py::arg("faces"), py::arg("factor") = 2.f, py::arg("reach") = 4.f, py::arg("cone") = 0.35f, "Remove long-edged faces (longest edge > factor x the median longest edge) that cap a cavity: probes on both sides of the centroid along the normal, at 0.5, 1, 2, ..., reach x the longest edge, hit when the nearest surface lies within cone x the probe distance. A lid across an open box or a sheet under a chassis goes; a coarsely sampled real surface has nothing behind it and stays. factor, reach or cone <= 0 disables. Returns (vertices, faces, removed).");
+		return ArraysWithCount(mesh, [=](Mesh& self) {
+			const Mesh::FIndex removed = self.RemoveLongEdgeFacesCapped(factor, reach, cone);
+			self.RemoveUnreferencedVertices();
+			return removed;
+		}); }, py::arg("vertices"), py::arg("faces"), py::arg("factor") = 2.f, py::arg("reach") = 4.f, py::arg("cone") = 0.35f, "Remove long-edged faces (longest edge > factor x the median longest edge) that cap a cavity: probes on both sides of the centroid along the normal, at 0.5, 1, 2, ..., reach x the longest edge, hit when the nearest surface lies within cone x the probe distance. A lid across an open box or a sheet under a chassis goes; a coarsely sampled real surface has nothing behind it and stays. factor, reach or cone <= 0 disables. Returns (vertices, faces, removed).");
 
 	m.def("remesh", [](const VertArray& v, const FaceArray& f, float edge_length, int iterations, std::optional<BoundArray> vertexSizing, bool adapt, float approx_error, float min_adaptive_mult, float max_adaptive_mult) {
 		if (edge_length <= 0.f)
@@ -263,30 +302,13 @@ PYBIND11_MODULE(_halfmesh, m)
 			}
 			return ArraysFromMesh(mesh);
 		}
-		const BoundArray& s = *vertexSizing;
-		if (s.ndim() != 1 || s.shape(0) != v.shape(0))
-			throw py::value_error("vertex_sizing must have shape [N] matching the N vertices");
-		// Copied, not aliased: the remesh runs without the GIL, so it must not read a
-		// buffer Python could resize or free underneath it.
-		std::vector<float> sizing(static_cast<size_t>(s.shape(0)));
-		if (!sizing.empty())
-			std::memcpy(sizing.data(), s.data(), sizeof(float) * sizing.size());
+		const std::vector<float> sizing = CopyPerVertex(*vertexSizing, v.shape(0), "vertex_sizing");
 		// RemeshIsotropic only warns and carries on without the field; raise instead, so a
 		// silently ungraded result is never what a Python caller gets back.
 		for (const float len : sizing)
 			if (!(len > 0.f) || !std::isfinite(len))
 				throw py::value_error("vertex_sizing entries must be finite and > 0");
-		if (!mesh.faces.empty()) {
-			bool built = false;
-			{
-				py::gil_scoped_release release;
-				built = mesh.halfMesh.Build(mesh);
-			}
-			// RemeshIsotropic would repair and potentially remap vertices. The field is
-			// stated over INPUT indices, so require callers to repair first instead.
-			if (!built)
-				throw py::value_error("input requires topology repair, so vertex_sizing may no longer address its vertices; call repair() first and state the field over its output");
-		}
+		RequireIndexStableBuild(mesh, "vertex_sizing");
 		params.vertexSizing = sizing;
 		{
 			py::gil_scoped_release release;

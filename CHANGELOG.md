@@ -5,18 +5,6 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.1]
-
-### Python bindings
-
-- **`remove_long_edge_faces(vertices, faces, factor)`**,
-  **`remove_long_edge_faces_local(vertices, faces, factor, rings=3)`** and
-  **`remove_long_edge_faces_capped(vertices, faces, factor=2, reach=4, cone=0.35)`**
-  expose the three long-edge face filters, each returning `(vertices, faces, removed)`
-  with unreferenced vertices dropped, like `remove_small_components`. `capped` rejects
-  a non-finite parameter or a `cone >= 1` with `ValueError` instead of the C++ warning
-  and no-op.
-
 ## [0.4.0]
 
 ### Long-edge face filters
@@ -44,6 +32,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   has surface behind it and goes; a coarsely sampled real surface has nothing
   behind it and stays, which no edge-length statistic can tell apart. Probes run
   in parallel on a `TriangleBVH`.
+- **Python**: `hm.remove_long_edge_faces(v, f, factor)`,
+  `hm.remove_long_edge_faces_local(v, f, factor, rings=3)`,
+  `hm.remove_long_edge_faces_capped(v, f, factor=2, reach=4, cone=0.35)` and
+  `hm.remove_spurious_components(v, f, factor=2)` each return
+  `(vertices, faces, removed)` with unreferenced vertices dropped, like
+  `remove_small_components`; `removed` counts faces. `capped` raises `ValueError`
+  for a non-finite parameter or a `cone >= 1` instead of the C++ warning and
+  no-op.
 
 ### Caller-supplied remesh sizing field
 
@@ -365,6 +361,17 @@ refoldedPairsCollateral` counts the surplus per round.
 
 ### Python and CLI
 
+- `remove_spikes(v, f, max_iterations=100)` and
+  `remove_vertices_and_fill(v, f, vertex_indices)` bind the 0.3.0 repair ops
+  `RemoveSpikes` and `RemoveVerticesAndFill`, which had no Python binding;
+  `remove_spurious_components` is listed with the long-edge filters above.
+  `remove_vertices_and_fill` takes a 1-D integer index array and raises
+  `ValueError` for a boolean mask or float array (which would forcecast to wrong
+  indices), an out-of-range index (which the C++ call drops silently), or input
+  that requires topology repair.
+- `docs/PYTHON.md` now also lists the C++ features that are deliberately not
+  bound. A test fails if a native function is missing from
+  `halfmesh.__all__`.
 - `unwrap()` gains `repair_carve_rings`, `fold_rescue_slits`,
   `tiny_chart_side`, `debris_chart_faces`, plus `max_cone_error`
   (→ `developableMaxConeError`), `cut_to_disk` (→ `cutToDisk`) and
