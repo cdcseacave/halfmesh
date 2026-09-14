@@ -369,6 +369,18 @@ refoldedPairsCollateral` counts the surplus per round.
   `ValueError` for a boolean mask or float array (which would forcecast to wrong
   indices), an out-of-range index (which the C++ call drops silently), or input
   that requires topology repair.
+- `pack_rectangles(sizes, page_size=1024, mode="grow", ...)` and
+  `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9)` bind
+  the 0.3.0 mesh-independent packer (`RectPacking.h`). They take an `[N,2]`
+  integer `(width, height)` array. The packer returns a dict with per-rect
+  `rects` (`x, y, w, h`), `page`, `rotated` and `packed` arrays in input order,
+  plus `pages`, `n_packed`, `width`, `height`, `packed_area` and `occupancy`.
+  `mode` is `"grow"`, `"single"` or `"multi"` (`GrowSinglePage`,
+  `FixedSinglePage`, `FixedMultiPage`). It raises `ValueError` for:
+  - a non-integer `sizes` array
+  - a negative or out-of-range size
+  - a non-positive `page_size`
+  - a `max_page_size` combined with a fixed mode, which never reads it
 - `docs/PYTHON.md` now also lists the C++ features that are deliberately not
   bound. A test fails if a native function is missing from
   `halfmesh.__all__`.

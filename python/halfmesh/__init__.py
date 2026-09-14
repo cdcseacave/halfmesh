@@ -9,6 +9,8 @@ vertex/face indices are never guaranteed stable across a call.
 from ._halfmesh import (
     Mesh,
     close_holes,
+    estimate_square_texture_size,
+    pack_rectangles,
     remesh,
     remove_long_edge_faces,
     remove_long_edge_faces_capped,
@@ -28,6 +30,8 @@ __version__ = version()
 __all__ = [
     "Mesh",
     "close_holes",
+    "estimate_square_texture_size",
+    "pack_rectangles",
     "remesh",
     "remove_long_edge_faces",
     "remove_long_edge_faces_capped",

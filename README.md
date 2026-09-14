@@ -177,8 +177,8 @@ release may reorder public struct fields.
 
 A pip-installable `halfmesh` package wraps the core mesh ops (repair, the
 debris filters — small/spurious components, spikes, long-edge faces — smooth,
-simplify, close holes, remove-vertices-and-fill, remesh) plus a `Mesh` facade
-and UV-atlas `unwrap`, all numpy in/out:
+simplify, close holes, remove-vertices-and-fill, remesh) plus a `Mesh` facade,
+UV-atlas `unwrap` and the mesh-independent rectangle packer, all numpy in/out:
 
 ```sh
 pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.0/halfmesh-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl

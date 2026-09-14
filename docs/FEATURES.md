@@ -517,7 +517,9 @@ and no mesh. `RectPackMode` selects `GrowSinglePage` (double the page until
 everything fits, up to `maxPageSize`), `FixedSinglePage`, or
 `FixedMultiPage`; `placements` is indexed in lockstep with the input and
 degenerate, oversized, and cap-limited entries come back with
-`packed = false` instead of silently enlarging the atlas.
+`packed = false` instead of silently enlarging the atlas. From Python:
+`halfmesh.pack_rectangles` / `halfmesh.estimate_square_texture_size`
+([`PYTHON.md`](PYTHON.md)).
 
 Header: [`RectPacking.h`](../include/halfmesh/RectPacking.h) ·
 implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp` ·

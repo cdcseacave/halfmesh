@@ -19,13 +19,17 @@
 #include <halfmesh/Parametrize.h>
 #include <halfmesh/AtlasCharting.h>
 #include <halfmesh/AtlasPacking.h>
+#include <halfmesh/RectPacking.h>
 
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace py = pybind11;
@@ -37,6 +41,9 @@ namespace {
 using VertArray = py::array_t<float, py::array::c_style | py::array::forcecast>;
 using FaceArray = py::array_t<uint32_t, py::array::c_style | py::array::forcecast>;
 using BoundArray = py::array_t<float, py::array::c_style | py::array::forcecast>;
+using Int64Array = py::array_t<int64_t, py::array::c_style | py::array::forcecast>;
+// a page size: one int for a square page, or (width, height)
+using PageSizeArg = std::variant<int, std::array<int, 2>>;
 
 // The memcpy bulk copies below require the element types to be padding-free
 // scalar triples. Size-only, like the asserts guarding the same copies in
@@ -109,6 +116,44 @@ std::vector<float> CopyPerVertex(const BoundArray& a, py::ssize_t numVertices, c
 	if (!values.empty())
 		std::memcpy(values.data(), a.data(), sizeof(float) * values.size());
 	return values;
+}
+
+// Integer dtypes only: forcecasting a boolean array would read True/False as 1/0,
+// and a float array would be truncated, instead of either failing.
+Int64Array IntegerArray(const py::array& a, py::ssize_t ndim, const char* error)
+{
+	const char kind = a.dtype().kind();
+	if (a.ndim() != ndim || (kind != 'i' && kind != 'u'))
+		throw py::value_error(error);
+	return Int64Array::ensure(a);
+}
+
+// [N,2] integer (width, height) pairs as the cv::Rect list RectPacking.h consumes.
+std::vector<cv::Rect> RectsFromSizes(const py::array& sizes)
+{
+	const Int64Array s = IntegerArray(sizes, 2, "sizes must be an [N,2] integer array of (width, height)");
+	if (s.shape(1) != 2)
+		throw py::value_error("sizes must be an [N,2] integer array of (width, height)");
+	std::vector<cv::Rect> rects;
+	rects.reserve(static_cast<size_t>(s.shape(0)));
+	const int64_t* wh = s.data();
+	for (py::ssize_t i = 0; i < s.shape(0); ++i) {
+		const int64_t w = wh[2 * i];
+		const int64_t h = wh[2 * i + 1];
+		// a negative size is a caller bug, not the "degenerate, left unpacked" a zero is
+		if (w < 0 || h < 0 || w > std::numeric_limits<int>::max() || h > std::numeric_limits<int>::max())
+			throw py::value_error("rect sizes must lie in [0, 2^31 - 1], got (" + std::to_string(w) + ", " + std::to_string(h) + ")");
+		rects.emplace_back(0, 0, static_cast<int>(w), static_cast<int>(h));
+	}
+	return rects;
+}
+
+cv::Size ToSize(const PageSizeArg& size)
+{
+	if (const int* side = std::get_if<int>(&size))
+		return cv::Size(*side, *side);
+	const auto& wh = std::get<std::array<int, 2>>(size);
+	return cv::Size(wh[0], wh[1]);
 }
 
 // Build the half-edge up front for an op taking an argument stated over INPUT vertex
@@ -207,13 +252,8 @@ PYBIND11_MODULE(_halfmesh, m)
 		return ArraysWithCount(mesh, [=](Mesh& self) { return self.CloseHoles(max_hole_edges); }); }, py::arg("vertices"), py::arg("faces"), py::arg("max_hole_edges") = 30u, "Liepa hole filling (fill + refine + fair) of every hole spanned by at most max_hole_edges boundary edges. Returns (vertices, faces, closed).");
 
 	m.def("remove_vertices_and_fill", [](const VertArray& v, const FaceArray& f, const py::array& vertex_indices) {
-		// Integer dtypes only: forcecasting a boolean mask or float array to indices
-		// would silently remove vertices 0 and 1 (or truncated positions) instead.
-		const char kind = vertex_indices.dtype().kind();
-		if (vertex_indices.ndim() != 1 || (kind != 'i' && kind != 'u'))
-			throw py::value_error("vertex_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
+		const Int64Array indices = IntegerArray(vertex_indices, 1, "vertex_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
 		Mesh mesh = MeshFromArrays(v, f);
-		const auto indices = py::array_t<int64_t, py::array::c_style | py::array::forcecast>::ensure(vertex_indices);
 		const auto numVertices = static_cast<int64_t>(mesh.vertices.size());
 		std::vector<Mesh::VIndex> removes;
 		removes.reserve(static_cast<size_t>(indices.shape(0)));
@@ -416,4 +456,78 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["vertices"] = mesh.vertices.size();
 		meta["faces"] = mesh.faces.size();
 		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("max_cone_error") = 0.05f, py::arg("cut_to_disk") = false, py::arg("max_uv_distortion") = 0.f, py::arg("repair_carve_rings") = 0u, py::arg("fold_rescue_slits") = 0u, py::arg("tiny_chart_side") = 0.f, py::arg("debris_chart_faces") = 0u, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. Returns {charts, pages, width, height, occupancy, coverage, fit_attempts, fit_scale, max_chart_extent, padding_applied{nominal,min,n_charts_reduced}, vertices, faces}.");
+
+	m.def("pack_rectangles", [](const py::array& sizes, const PageSizeArg& page_size, const std::string& mode, const std::optional<PageSizeArg>& max_page_size, unsigned padding, bool allow_rotation, bool power_of_two, bool square) {
+		halfmesh::RectPackParams params;
+		if (mode == "grow")
+			params.mode = halfmesh::RectPackMode::GrowSinglePage;
+		else if (mode == "single")
+			params.mode = halfmesh::RectPackMode::FixedSinglePage;
+		else if (mode == "multi")
+			params.mode = halfmesh::RectPackMode::FixedMultiPage;
+		else
+			throw py::value_error("pack_rectangles mode must be 'grow', 'single' or 'multi', got '" + mode + "'");
+		params.pageSize = ToSize(page_size);
+		if (params.pageSize.width <= 0 || params.pageSize.height <= 0)
+			throw py::value_error("page_size must be > 0");
+		if (max_page_size) {
+			// the fixed modes never resize the page, so a cap there would be silently ignored
+			if (params.mode != halfmesh::RectPackMode::GrowSinglePage)
+				throw py::value_error("max_page_size only caps mode='grow'; the fixed modes never resize the page");
+			params.maxPageSize = ToSize(*max_page_size);
+			if (params.maxPageSize.width < 0 || params.maxPageSize.height < 0)
+				throw py::value_error("max_page_size entries must be >= 0 (0 leaves that axis unbounded)");
+		}
+		params.padding = padding;
+		params.allowRotation = allow_rotation;
+		params.powerOfTwo = power_of_two;
+		params.square = square;
+		const std::vector<cv::Rect> rects = RectsFromSizes(sizes);
+		std::vector<halfmesh::RectPlacement> placements;
+		halfmesh::RectPackResult result;
+		{
+			py::gil_scoped_release release;
+			result = halfmesh::PackRectangles(rects, params, placements);
+		}
+		const auto n = static_cast<py::ssize_t>(placements.size());
+		py::array_t<int32_t> outRects({n, py::ssize_t(4)});
+		py::array_t<uint32_t> outPage(n);
+		py::array_t<bool> outRotated(n);
+		py::array_t<bool> outPacked(n);
+		auto r = outRects.mutable_unchecked<2>();
+		auto pg = outPage.mutable_unchecked<1>();
+		auto rot = outRotated.mutable_unchecked<1>();
+		auto pk = outPacked.mutable_unchecked<1>();
+		for (py::ssize_t i = 0; i < n; ++i) {
+			const halfmesh::RectPlacement& p = placements[static_cast<size_t>(i)];
+			r(i, 0) = p.rect.x;
+			r(i, 1) = p.rect.y;
+			r(i, 2) = p.rect.width;
+			r(i, 3) = p.rect.height;
+			pg(i) = p.page;
+			rot(i) = p.rotated;
+			pk(i) = p.packed;
+		}
+		const double pageArea = static_cast<double>(result.pageSize.width) * result.pageSize.height * result.numPages;
+		py::dict out;
+		out["rects"] = std::move(outRects);
+		out["page"] = std::move(outPage);
+		out["rotated"] = std::move(outRotated);
+		out["packed"] = std::move(outPacked);
+		out["pages"] = result.numPages;
+		out["n_packed"] = result.numPacked;
+		out["width"] = result.pageSize.width;
+		out["height"] = result.pageSize.height;
+		out["packed_area"] = result.packedArea;
+		out["occupancy"] = pageArea > 0. ? static_cast<double>(result.packedArea) / pageArea : 0.;
+		return out; }, py::arg("sizes"), py::arg("page_size") = PageSizeArg(1024), py::arg("mode") = "grow", py::arg("max_page_size") = py::none(), py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("power_of_two") = false, py::arg("square") = false, "Pack integer (width, height) rectangles into texture pages, no mesh involved (sprite sheets, lightmaps, texture repacking); the packer unwrap() uses for charts. mode: 'grow' doubles one page until everything fits (up to max_page_size), 'single' uses one fixed page and leaves what does not fit unpacked, 'multi' opens as many fixed pages as needed. Returns {rects [N,4] int32 (x, y, w, h), page [N], rotated [N], packed [N], pages, n_packed, width, height, packed_area, occupancy}, each per-rect array in input order.");
+
+	m.def("estimate_square_texture_size", [](const py::array& sizes, int multiple, float target_occupancy) {
+		if (multiple < 0)
+			throw py::value_error("multiple must be >= 0 (0 rounds up to a power of two)");
+		if (!(target_occupancy > 0.f && target_occupancy <= 1.f))
+			throw py::value_error("target_occupancy must lie in (0, 1]");
+		const std::vector<cv::Rect> rects = RectsFromSizes(sizes);
+		py::gil_scoped_release release;
+		return halfmesh::EstimateSquareTextureSize(rects, multiple, target_occupancy); }, py::arg("sizes"), py::arg("multiple") = 0, py::arg("target_occupancy") = 0.9f, "Approximate the smallest square page side holding these (width, height) rectangles at target_occupancy, rounded up to a multiple of `multiple`, or to a power of two when it is 0. A starting page_size for pack_rectangles.");
 }

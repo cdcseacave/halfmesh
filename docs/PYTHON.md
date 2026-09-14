@@ -440,6 +440,68 @@ gutter bleeds between charts at a lower mip level than you asked for.
 Raises `RuntimeError` if `input_path` fails to load or `output_path` fails
 to save.
 
+### `pack_rectangles(sizes, page_size=1024, mode="grow", max_page_size=None, padding=2, allow_rotation=True, power_of_two=False, square=False) -> dict`
+
+Pack integer pixel rectangles into texture pages, with no mesh involved: sprite
+sheets, lightmaps, repacking the patches of an existing texture. It is the same
+two-tier skyline and shelf packer `unwrap()` runs on mesh charts, so it stays
+near-linear on 100k+ small rectangles.
+
+`sizes` is an `[N,2]` **integer** array of `(width, height)` pairs. A float array
+would be truncated and a boolean one read as 1s, so both raise `ValueError`, as
+do a negative size and one above `2**31 - 1`. A zero width or height is
+degenerate: that entry is left unpacked rather than raising.
+
+- `page_size` — an `int` for a square page or a `(width, height)` pair, `> 0`.
+  In `"grow"` mode it is the starting page; the fixed modes use it as is.
+- `mode`:
+  - `"grow"` repacks from scratch on a page doubled in size until every rect fits
+    one page, or until `max_page_size` is reached.
+  - `"single"` packs one fixed-size page; whatever does not fit comes back with
+    `packed == False`.
+  - `"multi"` opens as many fixed-size pages as needed.
+- `max_page_size` — `"grow"` only: an `int` or `(width, height)` growth cap,
+  `0` leaving that axis unbounded. Passing it with a fixed mode raises
+  `ValueError`, since those modes never resize the page and the cap would be
+  silently ignored.
+- `padding` — gutter texels kept on all four sides of every rect.
+- `allow_rotation` — let the packer turn a rect 90°.
+- `power_of_two` / `square` — round each page dimension up to a power of two,
+  or force square pages.
+
+Returns a `dict`:
+
+| Key | Meaning |
+|---|---|
+| `rects` | `int32 [N,4]`: `(x, y, w, h)` of each rect on its page, gutter excluded; `w`/`h` are swapped for a rotated rect, all zero for an unpacked one |
+| `page` | `uint32 [N]`: the page each rect landed on |
+| `rotated` | `bool [N]`: whether the rect was turned 90° |
+| `packed` | `bool [N]`: whether it was placed at all |
+| `pages` | number of pages used (0 when a multi-page run packed nothing; `"single"` always reports its one page) |
+| `n_packed` | number of rects placed |
+| `width`, `height` | page dimensions in texels, after growth and rounding |
+| `packed_area` | placed area **including** gutters |
+| `occupancy` | `packed_area / (width * height * pages)` |
+
+Every per-rect array is in input order, even though the packer sorts internally.
+
+```python
+sizes = np.array([[w, h] for w, h in sprite_shapes], dtype=np.int32)
+side = hm.estimate_square_texture_size(sizes, target_occupancy=0.85)
+out = hm.pack_rectangles(sizes, page_size=side, padding=1)
+x, y, w, h = out["rects"][i]  # where sprite i goes (w/h swapped if out["rotated"][i])
+```
+
+### `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9) -> int`
+
+Approximate the smallest square page side that holds `sizes` (same `[N,2]`
+integer `(width, height)` array as `pack_rectangles`) at `target_occupancy`, and
+never smaller than the longest rect side. The result is rounded up to a
+multiple of `multiple`, or to a power of two when `multiple` is `0`. It is an
+estimate from area, not a packing, so it makes a good starting `page_size` for
+`pack_rectangles`. Raises `ValueError` for `target_occupancy` outside `(0, 1]`
+or a negative `multiple`.
+
 ## Worked example
 
 Load a noisy scan, run the standard cleanup pipeline, and generate a UV
@@ -507,9 +569,6 @@ oversights:
   — not bound yet. It needs image-array marshalling and a
   Python-subclassable source resolver, and is planned as its own follow-up
   designed together with the texturing-stage consumer.
-- **Rectangle packing** (`RectPacking.h`: `PackRectangles`,
-  `EstimateSquareTextureSize`) — a mesh-independent utility for sprite sheets
-  and lightmaps. `unwrap()` already runs the same packer on mesh charts.
 - **Per-element attributes on `Mesh`** — vertex colors and normals, per-corner
   UVs and textures are carried through `load`/`save`, but `to_arrays` returns
   geometry only. The array ops take and return bare geometry.
