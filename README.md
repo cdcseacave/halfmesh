@@ -181,7 +181,7 @@ simplify, close holes, remove-vertices-and-fill, remesh) plus a `Mesh` facade,
 UV-atlas `unwrap` and the mesh-independent rectangle packer, all numpy in/out:
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.0/halfmesh-0.4.0-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.1/halfmesh-0.4.1-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 (replace `cp312-cp312` with your interpreter's tag — wheels are published for
