@@ -677,10 +677,12 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 				++mr->pairsBudgetRejected;
 			continue;
 		}
-		if (cur > e + 1e-12) { // stale (moments changed) → re-queue at true cost
-			pq.emplace(cur, std::min(ar, br), std::max(ar, br));
+		// Stale: the moments changed, and the merge that changed them pushed this pair
+		// again at its true cost (or rejected it for good), so the entry is dropped.
+		// Re-queueing it instead adds a copy per merge of either root, quadratic in
+		// the merges a large chart absorbs.
+		if (cur > e + 1e-12)
 			continue;
-		}
 		if (wouldEnclose(ar, br)) {
 			if (mr != nullptr)
 				++mr->pairsEncloseRejected;

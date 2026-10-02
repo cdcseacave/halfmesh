@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1]
+
+### Performance
+
+- **Chart segmentation no longer goes quadratic on a mesh with one dominant
+  chart.** `DevelopableMerge` re-queued every stale heap entry at its new cost,
+  though the merge that made it stale had already pushed the same pair fresh, so
+  each merge a large chart absorbed added another copy of every pair around it.
+  Stale entries are now dropped. Output is bit-identical (golden corpus
+  unchanged); on a 147k-face production block mesh the unwrap fell from 2,346 s
+  to 68 s, and heap pops per merge call from 60M to 0.47M.
+
 ## [0.4.0]
 
 ### Long-edge face filters
