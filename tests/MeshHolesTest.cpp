@@ -21,6 +21,9 @@
 //      count matches), face count increases.
 //   3. Watertight mesh has no holes: CloseHoles returns 0, mesh unchanged.
 //   4. maxHoleEdges cap: only holes at or below the requested size are closed.
+//   5. A loop that outlines its own component (an isolated or pinched triangle,
+//      a small flat fragment, the rim of a small grid) is left open; a small
+//      hole in a closed surface is still filled.
 
 #include <halfmesh/Mesh.h>
 #include <halfmesh/HalfMesh.h>
@@ -86,6 +89,26 @@ static unsigned CountDuplicateFaces(const Mesh& m)
 	std::map<std::array<Mesh::VIndex, 3>, int> seen;
 	for (const auto& f : m.faces) {
 		std::array<Mesh::VIndex, 3> key{f[0], f[1], f[2]};
+		std::sort(key.begin(), key.end());
+		++seen[key];
+	}
+	unsigned dup = 0;
+	for (const auto& kv : seen)
+		if (kv.second > 1)
+			dup += static_cast<unsigned>(kv.second - 1);
+	return dup;
+}
+
+// Number of faces whose three vertex POSITIONS repeat another face's: a cap laid
+// back to back on a fragment the build has split off by vertex duplication shares
+// no vertex index with it.
+static unsigned CountCoincidentFaces(const Mesh& m)
+{
+	std::map<std::array<std::array<float, 3>, 3>, int> seen;
+	for (const auto& f : m.faces) {
+		std::array<std::array<float, 3>, 3> key;
+		for (int k = 0; k < 3; ++k)
+			key[k] = {m.vertices[f[k]].x(), m.vertices[f[k]].y(), m.vertices[f[k]].z()};
 		std::sort(key.begin(), key.end());
 		++seen[key];
 	}
@@ -809,6 +832,88 @@ TEST(MeshHolesTest, RespectsHoleSizeLimit)
 }
 
 // ---------------------------------------------------------------------------
+// 5. Outlines are not holes
+// ---------------------------------------------------------------------------
+// Append a separate triangle fan: positions `fragment`, faces indexing into them.
+static void AppendFragment(Mesh& m, const std::vector<Mesh::Vertex>& fragment,
+                           const std::vector<Mesh::Face>& faces)
+{
+	const Mesh::VIndex offset = static_cast<Mesh::VIndex>(m.vertices.size());
+	m.vertices.insert(m.vertices.end(), fragment.begin(), fragment.end());
+	for (const Mesh::Face& f : faces)
+		m.faces.emplace_back(f[0] + offset, f[1] + offset, f[2] + offset);
+}
+
+// An isolated triangle's three edges are boundary edges, so the Liepa fill of its
+// 3-loop is the triangle reversed; the grid's 16-edge rim would get a coincident
+// cap. Only the interior hole is a hole.
+TEST(MeshHolesTest, CloseHolesLeavesIsolatedTriangleOpen)
+{
+	Mesh m = MakeGridWithInteriorHole(4, 4);
+	AppendFragment(m, {Mesh::Vertex(10, 0, 0), Mesh::Vertex(11, 0, 0), Mesh::Vertex(10, 1, 0)}, {Mesh::Face(0, 1, 2)});
+	ASSERT_EQ(CountBoundaryLoops(m), 3u);
+
+	EXPECT_EQ(m.CloseHoles(30), 1u);
+	EXPECT_EQ(CountBoundaryLoops(m), 2u);
+	EXPECT_EQ(CountCoincidentFaces(m), 0u);
+	EXPECT_TRUE(m.ValidateInvariants());
+}
+
+// A triangle sharing one vertex with the grid's rim is a non-manifold pinch; the
+// half-edge build splits the vertex, which leaves the triangle an isolated 3-loop.
+TEST(MeshHolesTest, CloseHolesLeavesPinchedTriangleOpen)
+{
+	Mesh m = MakeGridWithInteriorHole(4, 4);
+	const Mesh::VIndex corner = 0; // (0, 0, 0), on the outer rim
+	ASSERT_EQ(m.vertices[corner], Mesh::Vertex(0, 0, 0));
+	const Mesh::VIndex a = static_cast<Mesh::VIndex>(m.vertices.size());
+	m.vertices.emplace_back(0.f, -1.f, 0.f);
+	m.vertices.emplace_back(-1.f, 0.f, 0.f);
+	m.faces.emplace_back(corner, a + 1, a);
+
+	EXPECT_EQ(m.CloseHoles(30), 1u);
+	EXPECT_EQ(CountCoincidentFaces(m), 0u);
+	EXPECT_TRUE(m.ValidateInvariants());
+}
+
+// A 2x2 flat patch: an 8-edge outline whose Liepa fill re-triangulates the patch
+// on top of itself with different diagonals, which an index check would miss.
+TEST(MeshHolesTest, CloseHolesLeavesFlatFragmentOpen)
+{
+	Mesh m;
+	AppendFragment(m, {Mesh::Vertex(0, 0, 0), Mesh::Vertex(1, 0, 0), Mesh::Vertex(2, 0, 0), Mesh::Vertex(0, 1, 0), Mesh::Vertex(1, 1, 0), Mesh::Vertex(2, 1, 0), Mesh::Vertex(0, 2, 0), Mesh::Vertex(1, 2, 0), Mesh::Vertex(2, 2, 0)},
+	               {Mesh::Face(0, 1, 4), Mesh::Face(0, 4, 3), Mesh::Face(1, 2, 5), Mesh::Face(1, 5, 4), Mesh::Face(3, 4, 7), Mesh::Face(3, 7, 6), Mesh::Face(4, 5, 8), Mesh::Face(4, 8, 7)});
+	const size_t facesBefore = m.faces.size();
+
+	EXPECT_EQ(m.CloseHoles(30), 0u);
+	EXPECT_EQ(m.faces.size(), facesBefore);
+}
+
+// The other side of the rule: a closed surface missing one face has a 3-loop
+// that spans a small share of what is left, so it is a hole and gets its face back.
+TEST(MeshHolesTest, CloseHolesFillsSmallHoleInClosedSurface)
+{
+	Mesh m;
+	m.vertices = {
+	    Mesh::Vertex(0, 0, 0),
+	    Mesh::Vertex(1, 0, 0),
+	    Mesh::Vertex(0, 1, 0),
+	    Mesh::Vertex(0, 0, 1),
+	};
+	m.faces = {
+	    Mesh::Face(0, 1, 3),
+	    Mesh::Face(0, 3, 2),
+	    Mesh::Face(1, 2, 3),
+	};
+	ASSERT_EQ(CountBoundaryLoops(m), 1u);
+
+	EXPECT_EQ(m.CloseHoles(30), 1u);
+	EXPECT_EQ(CountBoundaryLoops(m), 0u);
+	EXPECT_EQ(CountDuplicateFaces(m), 0u);
+	EXPECT_TRUE(m.ValidateInvariants());
+}
+
+// ---------------------------------------------------------------------------
 // 4b. Parallel fill determinism: closing many holes in one call runs the fills
 // on a thread pool and harvests them in a fixed order, so two runs of the same
 // input must produce byte-identical output (no unordered-container / thread
@@ -1230,15 +1335,15 @@ TEST(MeshHolesTest, LargeHoleRefinementIsBudgeted)
 // vertices leave vertexNormals short of `vertices` and break the invariant.
 TEST(MeshHolesTest, RemoveVerticesAndFillDropsVertexNormals)
 {
-	Mesh m = MakeGridWithInteriorHole();
-	ASSERT_GT(m.CloseHoles(30), 0u); // start watertight-ish, with no open interior hole
+	Mesh m = MakeGridWithInteriorHole(6, 6);
+	ASSERT_GT(m.CloseHoles(30), 0u); // close the interior hole; the rim stays open
 	m.vertexNormals.assign(m.vertices.size(), Mesh::Normal(0.f, 0.f, 1.f));
 
-	// remove one interior vertex and span what its removal opens
+	// remove a vertex whose one-ring stays clear of the rim (a removal reaching
+	// the rim widens it instead of opening a hole) and span what its removal opens
 	std::vector<Mesh::VIndex> remove;
-	m.ListVertexFaces();
 	for (Mesh::VIndex v = 0; v < m.vertices.size() && remove.empty(); ++v)
-		if (m.vertexFaces[v].size() >= 5)
+		if (m.vertices[v] == Mesh::Vertex(2, 2, 0))
 			remove.push_back(v);
 	ASSERT_FALSE(remove.empty());
 	ASSERT_GT(m.RemoveVerticesAndFill(remove), 0u);

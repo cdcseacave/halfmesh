@@ -503,8 +503,11 @@ class Mesh
 	// smallest first, by Liepa minimum-weight triangulation followed by refining
 	// and fairing the patch, which appends interior vertices to match the
 	// surrounding density. Loops that repeat a vertex are not triangulable and
-	// are skipped. Filling invalidates the texture attributes (the new faces have
-	// no authored UVs), so they are cleared.
+	// are skipped, and so is a loop that outlines its own connected component
+	// (vector area >= 3/4 of the component's area: an isolated triangle, a flat
+	// fragment), whose fill would lay a copy of the component back to back on it.
+	// Filling invalidates the texture attributes (the new faces have no authored
+	// UVs), so they are cleared.
 	//  - maxHoleEdges: largest hole to fill, in boundary edges (0 is a no-op)
 	//  - holesFaces: optionally receives the new face indices, per successfully
 	//      filled hole; each list is the contiguous FAdd append range and remains

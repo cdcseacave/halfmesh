@@ -249,7 +249,7 @@ PYBIND11_MODULE(_halfmesh, m)
 
 	m.def("close_holes", [](const VertArray& v, const FaceArray& f, unsigned max_hole_edges) {
 		Mesh mesh = MeshFromArrays(v, f);
-		return ArraysWithCount(mesh, [=](Mesh& self) { return self.CloseHoles(max_hole_edges); }); }, py::arg("vertices"), py::arg("faces"), py::arg("max_hole_edges") = 30u, "Liepa hole filling (fill + refine + fair) of every hole spanned by at most max_hole_edges boundary edges. Returns (vertices, faces, closed).");
+		return ArraysWithCount(mesh, [=](Mesh& self) { return self.CloseHoles(max_hole_edges); }); }, py::arg("vertices"), py::arg("faces"), py::arg("max_hole_edges") = 30u, "Liepa hole filling (fill + refine + fair) of every hole spanned by at most max_hole_edges boundary edges; a loop that outlines its own connected component (an isolated triangle, a flat fragment) stays open. Returns (vertices, faces, closed).");
 
 	m.def("remove_vertices_and_fill", [](const VertArray& v, const FaceArray& f, const py::array& vertex_indices) {
 		const Int64Array indices = IntegerArray(vertex_indices, 1, "vertex_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
