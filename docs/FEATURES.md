@@ -385,12 +385,21 @@ The Liepa 2003 pipeline (structure follows the pmp-library implementation):
 spanned by at most that many edges is filled, so a scan's large open outer
 boundary stays open while its small gaps are patched (`0` is a no-op; pass a
 large cap to fill everything). Loops that repeat a vertex are not triangulable
-and are skipped. An internal patch budget (`max(16384, 8·n)` triangles) keeps
-degenerate giant boundaries from exploding the fill. Returns the number of
-holes closed; `holesFaces` optionally receives the new face indices per filled
-hole (each list is the contiguous append range and stays valid across the
-public-exit face sync). Patches are attached straight into the live half-edge
-via `HalfMesh::FAddDisk`, so filling costs no rebuild.
+and are skipped. A loop that outlines its own connected component — its vector
+area is at least 3/4 of the component's surface area — is not a hole and stays
+open: an isolated triangle's 3-loop would be filled with the triangle reversed,
+and a flat fragment's outline with a coincident copy of it. A hole in a surface
+scores the share of that surface it would add (a hemisphere's rim 1/2, a cube
+corner's 0.58). Components are taken after the build splits non-manifold
+vertices, so a triangle pinched to another rim by one vertex counts as
+isolated. The rule is by area, so a large hole in a thin sheet (a washer whose
+inner radius is over 0.65 of its outer one) stays open too, whatever the cap.
+An internal patch budget (`max(16384, 8·n)` triangles) keeps degenerate giant
+boundaries from exploding the fill. Returns the number of holes closed;
+`holesFaces` optionally receives the new face indices per filled hole (each
+list is the contiguous append range and stays valid across the public-exit face
+sync). Patches are attached straight into the live half-edge via
+`HalfMesh::FAddDisk`, so filling costs no rebuild.
 
 `RemoveVerticesAndFill` is the decimating counterpart: it drops the selected
 vertices with their incident faces and spans **only the boundary loops that

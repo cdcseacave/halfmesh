@@ -191,6 +191,17 @@ def test_close_holes_makes_an_open_cube_watertight():
     assert _euler_characteristic(rv, rf) == 2  # closed genus-0 surface
 
 
+def test_close_holes_leaves_an_isolated_triangle_open():
+    # its 3-loop outlines the triangle, and filling it would lay the triangle reversed on itself
+    v, f = _cube_mesh()
+    fv = np.array([[10, 10, 10], [11, 10, 10], [10, 11, 10]], dtype=np.float32)
+    v2 = np.concatenate([v, fv])
+    f2 = np.concatenate([f[:-1], np.array([[8, 9, 10]], dtype=np.uint32)])
+    rv, rf, closed = hm.close_holes(v2, f2, 4)
+    assert closed == 1
+    assert len(rf) == len(f2) + 1
+
+
 def test_remove_small_components_drops_a_floater():
     v, f = _cube_mesh()
     fv = np.array([[10, 10, 10], [11, 10, 10], [10, 11, 10]], dtype=np.float32)

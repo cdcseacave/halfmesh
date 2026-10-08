@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2]
+
+### Fixed
+
+- **`CloseHoles` no longer caps fragments back to back.** A loop that outlines
+  its own connected component was filled like a hole: an isolated triangle's
+  three edges are all boundary edges, so its 3-loop was triangulated with the
+  triangle reversed, and a flat fragment's outline got a coincident copy with
+  other diagonals. A loop whose vector area reaches 3/4 of its component's
+  surface area is now left open; holes in a surface score far less (a cube
+  corner 0.58, a hemisphere 0.5). On a 3.9M-face mesh extracted from Gaussian
+  splats of Tanks and Temples Barn (2026-10-05), with
+  ~4,000 small fragments, opposite-winding duplicate pairs fell from 1,747 to 0
+  and position-coincident faces from 1,756 to 4 (slivers between the two copies
+  of a split non-manifold vertex, unchanged by this fix); holes closed fell
+  from 10,111 to 7,387. `RemoveVerticesAndFill` is unchanged.
+- **Python:** `close_holes` follows; signature unchanged.
+
 ## [0.4.1]
 
 ### Performance

@@ -13,7 +13,7 @@ re-exports it.
 [GitHub Release](https://github.com/cdcseacave/halfmesh/releases):
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.1/halfmesh-0.4.1-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.2/halfmesh-0.4.2-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 Pick the `cpXY-cpXY` tag matching your interpreter (`cp310`, `cp311`, `cp312`,
@@ -69,7 +69,7 @@ any C++ work happens. The GIL is released around all native computation (see
 
 ### `version() -> str`
 
-The halfmesh library version string (`"0.4.1"`), single-sourced from
+The halfmesh library version string (`"0.4.2"`), single-sourced from
 `project(halfmesh VERSION …)` in `CMakeLists.txt`. Also exposed as
 `halfmesh.__version__`.
 
@@ -165,7 +165,9 @@ Liepa minimum-weight-triangulation hole filling (fill → refine → fair) of ev
 hole spanned by at most `max_hole_edges` boundary edges, so the big open
 boundary of a scanned surface stays open while its small gaps are patched.
 `closed` (an `int`) is the number of holes filled. Pass a large cap to fill
-every hole.
+every hole. A loop that outlines its own connected component (an isolated
+triangle, a small flat fragment) is not a hole and stays open; see
+`Mesh::CloseHoles` in `FEATURES.md`.
 
 ### `remove_vertices_and_fill(vertices, faces, vertex_indices) -> (v, f, filled)`
 

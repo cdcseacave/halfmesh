@@ -228,6 +228,9 @@ Every tolerance is named and justified in the test; no silent magic numbers.
   patch normals consistent with the neighbourhood.
 - **Boundary-size cap:** holes spanning more than `maxHoleEdges` edges are left
   open (exact behaviour).
+- **Outlines stay open:** an isolated triangle, a triangle pinched to a rim by one
+  vertex, and a flat fragment get no cap (no position-coincident faces), while a
+  closed surface missing one face gets it back.
 - **No rebuild:** filling runs on the live half-edge, so a call that fills
   nothing must report `HalfMesh::BuildCount() == 0`.
 - **Removal-only fill:** `RemoveVerticesAndFill` spans only the loops the removal

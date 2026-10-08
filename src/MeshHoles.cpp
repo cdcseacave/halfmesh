@@ -1110,11 +1110,13 @@ class HoleFilling
 // BoundaryLoop — a hole as discovered by walking boundary half-edges.
 //   verts:     ordered parent vertex indices (loop[k] -> loop[k+1] is an edge)
 //   oppNorms: normalized interior-face normal across boundary edge k
+//   oppFace:  the interior face across boundary edge 0 (names the loop's component)
 // ---------------------------------------------------------------------------
 struct BoundaryLoop
 {
 	std::vector<Mesh::VIndex> verts;
 	std::vector<HoleFilling::Point> oppNorms;
+	Mesh::FIndex oppFace{math::NO_ID};
 };
 
 // Trace every boundary loop of `hm` (one per connected boundary), recording for
@@ -1140,6 +1142,8 @@ static void EnumerateBoundaryLoops(const HalfMesh& hm,
 			const HalfMesh::HIndex twin = hm.HeTwin(it);
 			const Mesh::FIndex f = hm.HeFace(twin);
 			HoleFilling::Point n(0, 0, 1);
+			if (loop.oppFace == math::NO_ID)
+				loop.oppFace = f;
 			if (f != math::NO_ID) {
 				const HalfMesh::Face face = hm.F(f);
 				const Mesh::Vertex& a = vertices[face[0]];
@@ -1272,6 +1276,59 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 	return closed;
 }
 
+// A loop whose vector area reaches this share of its component's surface outlines
+// the component rather than perforating it. An isolated triangle or a flat
+// fragment scores ~1 and its cap would retrace it back to back (the triangle's
+// cap is the triangle reversed); a hole scores the share of the surface it would
+// add: small on a closed surface, 0.58 for a cube corner, 0.5 for a hemisphere.
+// The rule is by area, so a large hole in a thin sheet (a washer whose inner
+// radius is over 0.65 of its outer one) also stays open.
+constexpr double OUTLINE_AREA_SHARE = 0.75;
+
+// Per loop of 3..maxHoleEdges vertices: does it outline its component (see
+// OUTLINE_AREA_SHARE)? Other loops are never filled and come back false.
+static std::vector<char> OutlineLoops(const HalfMesh& hm,
+                                      const std::vector<Mesh::Vertex>& vertices,
+                                      const std::vector<BoundaryLoop>& loops,
+                                      unsigned maxHoleEdges)
+{
+	std::vector<char> outline(loops.size(), 0);
+	const auto fillable = [maxHoleEdges](const BoundaryLoop& loop) {
+		return loop.verts.size() >= 3 && loop.verts.size() <= maxHoleEdges && loop.oppFace != math::NO_ID;
+	};
+	if (std::none_of(loops.begin(), loops.end(), fillable))
+		return outline;
+	std::vector<Mesh::FIndex> components;
+	const Mesh::FIndex numComponents = hm.ConnectedComponents(components);
+	std::vector<double> componentArea(numComponents, 0.0);
+	for (Mesh::FIndex f = 0; f < hm.FSize(); ++f) {
+		const HalfMesh::Face face = hm.F(f);
+		const Eigen::Vector3d a = vertices[face[0]].cast<double>();
+		const Eigen::Vector3d b = vertices[face[1]].cast<double>();
+		const Eigen::Vector3d c = vertices[face[2]].cast<double>();
+		componentArea[components[f]] += 0.5 * (b - a).cross(c - a).norm();
+	}
+	for (std::size_t idxLoop = 0; idxLoop < loops.size(); ++idxLoop) {
+		const BoundaryLoop& loop = loops[idxLoop];
+		if (!fillable(loop))
+			continue;
+		// measured about the loop centroid so far-from-origin loops keep precision
+		Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+		for (const Mesh::VIndex vertex : loop.verts)
+			centroid += vertices[vertex].cast<double>();
+		centroid /= double(loop.verts.size());
+		Eigen::Vector3d vectorArea = Eigen::Vector3d::Zero();
+		for (std::size_t k = 0; k < loop.verts.size(); ++k) {
+			const Eigen::Vector3d p = vertices[loop.verts[k]].cast<double>() - centroid;
+			const Eigen::Vector3d q = vertices[loop.verts[(k + 1) % loop.verts.size()]].cast<double>() - centroid;
+			vectorArea += 0.5 * p.cross(q);
+		}
+		const double area = componentArea[components[loop.oppFace]];
+		outline[idxLoop] = area > 0 && vectorArea.norm() >= OUTLINE_AREA_SHARE * area;
+	}
+	return outline;
+}
+
 // A boundary loop that visits a vertex twice pinches the surface there and has no
 // triangulation, so every filler has to reject it. Tested with one reusable stamp
 // array per enumeration instead of a hash set per loop.
@@ -1302,7 +1359,8 @@ class LoopSimplicity
 // Mesh::CloseHoles
 //
 // Enumerate the mesh's boundary loops (holes) and fill every one spanned by at
-// most `maxHoleEdges` boundary edges, by Liepa minimum-weight triangulation
+// most `maxHoleEdges` boundary edges that does not outline its own connected
+// component (OUTLINE_AREA_SHARE), by Liepa minimum-weight triangulation
 // followed by refining and fairing the patch (PMP pipeline). New patch triangles
 // are appended to `faces` and the interior vertices added by refine/fairing are
 // appended to `vertices`. If `holesFaces` is non-null it receives, per filled
@@ -1333,13 +1391,16 @@ unsigned Mesh::CloseHoles(unsigned maxHoleEdges,
 
 	// Collect the simple, triangulable loops small enough to fill: a closed loop
 	// spans as many edges as it has vertices, needs at least 3 to be triangulable,
-	// and must not repeat a vertex.
+	// and must not repeat a vertex. Components are labelled after the build has
+	// split non-manifold vertices, so a triangle pinched to another rim by one
+	// vertex is an isolated component.
+	const std::vector<char> outline = OutlineLoops(halfMesh, vertices, loops, maxHoleEdges);
 	std::vector<unsigned> candidates;
 	candidates.reserve(loops.size());
 	LoopSimplicity simplicity(vertices.size());
 	for (unsigned idxLoop = 0; idxLoop < loops.size(); ++idxLoop) {
 		const BoundaryLoop& loop = loops[idxLoop];
-		if (loop.verts.size() < 3 || loop.verts.size() > maxHoleEdges)
+		if (loop.verts.size() < 3 || loop.verts.size() > maxHoleEdges || outline[idxLoop])
 			continue;
 		if (simplicity.IsSimple(loop.verts))
 			candidates.push_back(idxLoop);
