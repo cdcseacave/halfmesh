@@ -467,7 +467,7 @@ inline float ChartPad(const AtlasParams& params, float w, float h, unsigned face
 	return ((params.tinyChartSide > 0.f && std::max(w, h) <= params.tinyChartSide)
 	        || (params.debrisChartFaces > 0 && faces <= params.debrisChartFaces))
 	           ? std::min(1.f, static_cast<float>(pad))
-			   : static_cast<float>(pad);
+	           : static_cast<float>(pad);
 }
 
 // Pack the chart extents as floats: fit-to-resolution rescales the UVs and repacks
