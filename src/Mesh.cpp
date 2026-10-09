@@ -13,12 +13,18 @@
 #include <halfmesh/Util/Assert.h>
 #include <halfmesh/Util/Log.h>
 #include <halfmesh/Util/Maths.h>
+#include <halfmesh/Util/Sampler.h>
 
 #include <algorithm>
+#include <atomic>
+#include <bit>
 #include <unordered_set>
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <numeric>
+#include <random>
+#include <span>
 #include <vector>
 #include <BS_thread_pool.hpp>
 
@@ -393,6 +399,388 @@ Eigen::AlignedBox<Mesh::Type, 3> Mesh::ComputeAABBox() const
 	for (const Vertex& vert : vertices)
 		bbox.extend(vert);
 	return bbox;
+}
+
+bool Mesh::IsWatertight() const
+{
+	if (!halfMesh.Empty()) {
+		// a half-edge structure is manifold and consistently oriented by
+		// construction, so only a border half-edge can open it
+		return halfMesh.FSize() != 0 && std::find(halfMesh.heFaces.begin(), halfMesh.heFaces.end(), math::NO_ID) == halfMesh.heFaces.end();
+	}
+	if (faces.empty())
+		return false;
+	// Bucket every directed edge under its smaller endpoint, as the larger one
+	// shifted left with the direction in the low bit: a watertight edge is then
+	// a pair of entries in its bucket, one each way, and nothing else. The
+	// entries and offsets are 32-bit unless the mesh is too large for them.
+	const auto check = [this]<typename Index>() -> bool {
+		std::vector<Index> offsets(vertices.size() + 2, 0);
+		for (const Face& face : faces) {
+			for (int k = 0; k < 3; ++k) {
+				const VIndex a = face[k], b = face[(k + 1) % 3];
+				if (a == b)
+					return false;
+				++offsets[std::min(a, b) + 2];
+			}
+		}
+		// shifted by one, so the fill can use offsets[v+1] as the cursor of bucket
+		// v and leave bucket v spanning [offsets[v], offsets[v+1])
+		std::partial_sum(offsets.begin() + 2, offsets.end(), offsets.begin() + 2);
+		std::vector<Index> entries(faces.size() * 3);
+		for (const Face& face : faces) {
+			for (int k = 0; k < 3; ++k) {
+				const VIndex a = face[k], b = face[(k + 1) % 3];
+				entries[offsets[std::min(a, b) + 1]++] = (static_cast<Index>(std::max(a, b)) << 1) | static_cast<Index>(a > b);
+			}
+		}
+		std::atomic<bool> watertight{true};
+		const auto checkBuckets = [&](size_t begin, size_t end) {
+			for (size_t v = begin; v < end && watertight.load(std::memory_order_relaxed); ++v) {
+				Index* const first = entries.data() + offsets[v];
+				Index* const last = entries.data() + offsets[v + 1];
+				if ((last - first) & 1) {
+					watertight = false;
+					return;
+				}
+				std::sort(first, last);
+				for (const Index* e = first; e != last; e += 2) {
+					if ((e[0] & 1) != 0 || e[1] != (e[0] | 1) || (e + 2 != last && (e[2] >> 1) == (e[0] >> 1))) {
+						watertight = false;
+						return;
+					}
+				}
+			}
+		};
+		if (faces.size() < (1u << 16)) {
+			checkBuckets(0, vertices.size());
+		} else {
+			BS::light_thread_pool pool;
+			pool.detach_blocks(size_t(0), vertices.size(), checkBuckets);
+			pool.wait();
+		}
+		return watertight;
+	};
+	if (vertices.size() < (size_t(1) << 31) && faces.size() * 3 < (size_t(1) << 32))
+		return check.template operator()<uint32_t>();
+	return check.template operator()<uint64_t>();
+}
+
+namespace {
+// The volume sums run over blocks of this many faces, each summed in order and
+// the block sums added in order, so the result depends on the block size only,
+// never on the thread count.
+constexpr size_t VOLUME_BLOCK_FACES = size_t(1) << 16;
+
+template <typename Sum, typename BlockFn>
+std::vector<Sum> SumFaceBlocks(size_t numFaces, BlockFn&& sumBlock)
+{
+	std::vector<Sum> sums((numFaces + VOLUME_BLOCK_FACES - 1) / VOLUME_BLOCK_FACES);
+	const auto run = [&](size_t block) {
+		sums[block] = sumBlock(block * VOLUME_BLOCK_FACES, std::min(numFaces, (block + 1) * VOLUME_BLOCK_FACES));
+	};
+	if (sums.size() < 2) {
+		if (!sums.empty())
+			run(0);
+	} else {
+		BS::light_thread_pool pool;
+		ParallelForPool(pool, sums.size(), run);
+	}
+	return sums;
+}
+} // anonymous namespace
+
+real Mesh::ComputeVolume() const
+{
+	SyncFacesConst();
+	if (faces.empty())
+		return 0;
+	// the tetrahedra span the faces with the bounding-box center, so every term
+	// stays at the scale of the mesh, not of its distance to the origin; the edges
+	// are differences of floats, exact in double
+	const Eigen::Vector3d center = ComputeAABBox().center().cast<double>();
+	const std::vector<double> sums = SumFaceBlocks<double>(faces.size(), [&](size_t begin, size_t end) {
+		double sum = 0;
+		for (size_t f = begin; f < end; ++f) {
+			const Face& face = faces[f];
+			const Eigen::Vector3d p0 = vertices[face[0]].cast<double>();
+			const Eigen::Vector3d e1 = vertices[face[1]].cast<double>() - p0;
+			const Eigen::Vector3d e2 = vertices[face[2]].cast<double>() - p0;
+			sum += (p0 - center).dot(e1.cross(e2));
+		}
+		return sum;
+	});
+	return std::accumulate(sums.begin(), sums.end(), 0.0) / 6;
+}
+
+Mesh::PlaneVolume Mesh::ComputeVolume(const Plane& plane) const
+{
+	ASSERT(std::abs(plane.normal().norm() - 1) < 1e-6);
+	SyncFacesConst();
+	const std::vector<PlaneVolume> sums = SumFaceBlocks<PlaneVolume>(faces.size(), [&](size_t begin, size_t end) {
+		PlaneVolume sum;
+		for (size_t f = begin; f < end; ++f) {
+			const Face& face = faces[f];
+			const Eigen::Vector3d p[3] = {vertices[face[0]].cast<double>(), vertices[face[1]].cast<double>(), vertices[face[2]].cast<double>()};
+			const double h[3] = {plane.signedDistance(p[0]), plane.signedDistance(p[1]), plane.signedDistance(p[2])};
+			// the prism between the face and its projection: twice the signed
+			// projected area times the mean height, over 2 (the height is linear)
+			const double area2 = plane.normal().dot((p[1] - p[0]).cross(p[2] - p[0]));
+			const double prism = area2 * (h[0] + h[1] + h[2]) / 6;
+			const int numAbove = (h[0] > 0) + (h[1] > 0) + (h[2] > 0);
+			const int numBelow = (h[0] < 0) + (h[1] < 0) + (h[2] < 0);
+			if (numBelow == 0) {
+				sum.above += prism;
+			} else if (numAbove == 0) {
+				sum.below += prism;
+			} else {
+				// the vertex alone on its side and the two points where its edges
+				// cross the plane bound a corner triangle of t1*t2 the projected
+				// area, at height h there and zero at the crossings; the height
+				// being linear, the rest of the prism is the difference (a vertex
+				// on the plane makes its crossing parameter 1)
+				int lone = 0;
+				while (numAbove == 1 ? !(h[lone] > 0) : !(h[lone] < 0))
+					++lone;
+				const int j = (lone + 1) % 3, k = (lone + 2) % 3;
+				const double t1 = h[lone] / (h[lone] - h[j]);
+				const double t2 = h[lone] / (h[lone] - h[k]);
+				const double corner = area2 * t1 * t2 * h[lone] / 6;
+				(numAbove == 1 ? sum.above : sum.below) += corner;
+				(numAbove == 1 ? sum.below : sum.above) += prism - corner;
+			}
+		}
+		return sum;
+	});
+	PlaneVolume volume;
+	for (const PlaneVolume& sum : sums) {
+		volume.above += sum.above;
+		volume.below += sum.below;
+	}
+	return volume;
+}
+
+void Mesh::Join(const Mesh& other)
+{
+	SyncFaces();
+	other.SyncFacesConst();
+	if (other.vertices.empty())
+		return;
+	if (vertices.empty()) {
+		*this = other;
+		vertexFaces.clear();
+		return;
+	}
+	const VIndex offsetV = static_cast<VIndex>(vertices.size());
+	const FIndex offsetF = static_cast<FIndex>(faces.size());
+	ASSERT(size_t(offsetV) + other.vertices.size() < math::NO_ID && size_t(offsetF) + other.faces.size() < math::NO_ID);
+	// an attribute only one side carries would leave the array partial
+	const auto joinAttribute = [](auto& array, const auto& otherArray) {
+		if (array.empty() || otherArray.empty())
+			array.clear();
+		else
+			array.insert(array.end(), otherArray.begin(), otherArray.end());
+	};
+	vertices.insert(vertices.end(), other.vertices.begin(), other.vertices.end());
+	joinAttribute(vertexColors, other.vertexColors);
+	joinAttribute(vertexNormals, other.vertexNormals);
+	const bool hasTexcoords = !faceTexcoords.empty() && faceTexcoords.size() == faces.size() * 3;
+	const bool otherHasTexcoords = !other.faceTexcoords.empty() && other.faceTexcoords.size() == other.faces.size() * 3;
+	const size_t numTextures = texturesDiffuse.size();
+	if (hasTexcoords && otherHasTexcoords && texturesDiffuse.empty() == other.texturesDiffuse.empty() && numTextures + other.texturesDiffuse.size() <= MAX_TEXBLOBS) {
+		faceTexcoords.insert(faceTexcoords.end(), other.faceTexcoords.begin(), other.faceTexcoords.end());
+		if (numTextures == 0) {
+			joinAttribute(faceTexblobs, other.faceTexblobs);
+		} else {
+			if (faceTexblobs.empty())
+				faceTexblobs.assign(offsetF, 0);
+			if (other.faceTexblobs.empty())
+				faceTexblobs.insert(faceTexblobs.end(), other.faces.size(), static_cast<TexIndex>(numTextures));
+			else
+				for (const TexIndex idxTexblob : other.faceTexblobs)
+					faceTexblobs.push_back(static_cast<TexIndex>(idxTexblob + numTextures));
+			texturesDiffuse.insert(texturesDiffuse.end(), other.texturesDiffuse.begin(), other.texturesDiffuse.end());
+		}
+	} else {
+		if (hasTexcoords || otherHasTexcoords)
+			REPORT_WARNING("Join: texture coordinates dropped, the two meshes do not carry compatible textures");
+		faceTexcoords.clear();
+		faceTexblobs.clear();
+		texturesDiffuse.clear();
+	}
+	faces.reserve(faces.size() + other.faces.size());
+	for (const Face& face : other.faces)
+		faces.emplace_back(face[0] + offsetV, face[1] + offsetV, face[2] + offsetV);
+	joinAttribute(faceNormals, other.faceNormals);
+	vertexFaces.clear();
+	if (halfMesh.Empty() || other.halfMesh.Empty()) {
+		halfMesh.Clear();
+		return;
+	}
+	// the half-edge count is even, so the shift keeps twins paired (h^1) and
+	// every representative's parity
+	const HIndex offsetH = static_cast<HIndex>(halfMesh.heNexts.size());
+	ASSERT((offsetH & 1u) == 0);
+	const auto appendShifted = [](std::vector<uint32_t>& array, const std::vector<uint32_t>& otherArray, uint32_t offset) {
+		array.reserve(array.size() + otherArray.size());
+		for (const uint32_t idx : otherArray)
+			array.push_back(idx == math::NO_ID ? idx : idx + offset);
+	};
+	appendShifted(halfMesh.vHalfedges, other.halfMesh.vHalfedges, offsetH);
+	appendShifted(halfMesh.fHalfedges, other.halfMesh.fHalfedges, offsetH);
+	appendShifted(halfMesh.heNexts, other.halfMesh.heNexts, offsetH);
+	appendShifted(halfMesh.heVertices, other.halfMesh.heVertices, offsetV);
+	appendShifted(halfMesh.heFaces, other.halfMesh.heFaces, offsetF);
+	halfMesh.alwaysEven = halfMesh.alwaysEven && other.halfMesh.alwaysEven;
+	ASSERT(ValidateInvariants());
+}
+
+Mesh Mesh::SubMesh(std::span<const FIndex> faceIndices, std::vector<VIndex>* vertexMap) const
+{
+	SyncFacesConst();
+	Mesh mesh;
+	// the source vertex of each new one, in order of first reference
+	std::vector<VIndex> sources;
+	sources.reserve(std::min(faceIndices.size() * 3, vertices.size()));
+	const size_t numCorners = faceIndices.size() * 3;
+	std::vector<VIndex> denseMap, hashKeys, hashValues;
+	int hashShift = 0;
+	if (numCorners * 8 >= vertices.size()) {
+		denseMap.assign(vertices.size(), math::NO_ID);
+	} else {
+		// open addressing at load factor <= 1/2, Fibonacci hashing, linear probing
+		const size_t capacity = std::bit_ceil(std::max<size_t>(numCorners * 2, 16));
+		hashShift = 64 - std::countr_zero(capacity);
+		hashKeys.assign(capacity, math::NO_ID);
+		hashValues.resize(capacity);
+	}
+	const auto mapVertex = [&](VIndex idxVertex) -> VIndex {
+		ASSERT(idxVertex < vertices.size());
+		if (!denseMap.empty()) {
+			VIndex& idxNew = denseMap[idxVertex];
+			if (idxNew == math::NO_ID) {
+				idxNew = static_cast<VIndex>(sources.size());
+				sources.push_back(idxVertex);
+			}
+			return idxNew;
+		}
+		const size_t mask = hashKeys.size() - 1;
+		for (size_t slot = static_cast<size_t>((uint64_t(idxVertex) * 0x9E3779B97F4A7C15ull) >> hashShift);; slot = (slot + 1) & mask) {
+			if (hashKeys[slot] == idxVertex)
+				return hashValues[slot];
+			if (hashKeys[slot] == math::NO_ID) {
+				hashKeys[slot] = idxVertex;
+				hashValues[slot] = static_cast<VIndex>(sources.size());
+				sources.push_back(idxVertex);
+				return hashValues[slot];
+			}
+		}
+	};
+	mesh.faces.reserve(faceIndices.size());
+	for (const FIndex idxFace : faceIndices) {
+		ASSERT(idxFace < faces.size());
+		const Face& face = faces[idxFace];
+		Face& newFace = mesh.faces.emplace_back();
+		for (int k = 0; k < 3; ++k)
+			newFace[k] = mapVertex(face[k]);
+	}
+	mesh.vertices.reserve(sources.size());
+	for (const VIndex idxVertex : sources)
+		mesh.vertices.push_back(vertices[idxVertex]);
+	if (!vertexColors.empty()) {
+		mesh.vertexColors.reserve(sources.size());
+		for (const VIndex idxVertex : sources)
+			mesh.vertexColors.push_back(vertexColors[idxVertex]);
+	}
+	if (!vertexNormals.empty()) {
+		mesh.vertexNormals.reserve(sources.size());
+		for (const VIndex idxVertex : sources)
+			mesh.vertexNormals.push_back(vertexNormals[idxVertex]);
+	}
+	if (!faceNormals.empty() && faceNormals.size() == faces.size()) {
+		mesh.faceNormals.reserve(faceIndices.size());
+		for (const FIndex idxFace : faceIndices)
+			mesh.faceNormals.push_back(faceNormals[idxFace]);
+	}
+	if (!faceIndices.empty() && !faceTexcoords.empty() && faceTexcoords.size() == faces.size() * 3) {
+		mesh.faceTexcoords.reserve(numCorners);
+		for (const FIndex idxFace : faceIndices)
+			mesh.faceTexcoords.insert(mesh.faceTexcoords.end(), faceTexcoords.begin() + size_t(idxFace) * 3, faceTexcoords.begin() + size_t(idxFace) * 3 + 3);
+		if (texturesDiffuse.empty()) {
+			if (faceTexblobs.size() == faces.size())
+				for (const FIndex idxFace : faceIndices)
+					mesh.faceTexblobs.push_back(faceTexblobs[idxFace]);
+		} else if (faceTexblobs.empty()) {
+			mesh.texturesDiffuse.push_back(texturesDiffuse.front());
+		} else {
+			// keep only the textures the faces use, in order of first use
+			std::vector<int> mapTexblobs(texturesDiffuse.size(), -1);
+			mesh.faceTexblobs.reserve(faceIndices.size());
+			for (const FIndex idxFace : faceIndices) {
+				const TexIndex idxTexblob = faceTexblobs[idxFace];
+				ASSERT(idxTexblob < texturesDiffuse.size());
+				int& idxNew = mapTexblobs[idxTexblob];
+				if (idxNew < 0) {
+					idxNew = static_cast<int>(mesh.texturesDiffuse.size());
+					mesh.texturesDiffuse.push_back(texturesDiffuse[idxTexblob]);
+				}
+				mesh.faceTexblobs.push_back(static_cast<TexIndex>(idxNew));
+			}
+			if (mesh.texturesDiffuse.size() == 1)
+				mesh.faceTexblobs.clear();
+		}
+	}
+	if (vertexMap)
+		*vertexMap = std::move(sources);
+	return mesh;
+}
+
+void Mesh::SamplePoints(double density, uint32_t seed, std::vector<Vertex>& points, std::vector<Pixel>* colors) const
+{
+	ASSERT(density >= 0);
+	SyncFacesConst();
+	points.clear();
+	const bool textured = colors != nullptr && faceTexcoords.size() == faces.size() * 3 && !texturesDiffuse.empty();
+	if (colors)
+		colors->clear();
+	const size_t expected = static_cast<size_t>(std::ceil(ComputeArea() * density));
+	points.reserve(expected);
+	if (textured)
+		colors->reserve(expected);
+	std::mt19937 rnd(seed);
+	std::uniform_real_distribution<double> dist(0, 1);
+	for (FIndex idxFace = 0; idxFace < static_cast<FIndex>(faces.size()); ++idxFace) {
+		const Face& face = faces[idxFace];
+		// the triangle as O + x*u + y*v
+		const Vertex& O = vertices[face[0]];
+		const Vertex u = vertices[face[1]] - O;
+		const Vertex v = vertices[face[2]] - O;
+		const Vertex n = u.cross(v);
+		const double area = static_cast<double>(std::sqrt(n.x() * n.x() + n.y() * n.y() + n.z() * n.z())) * 0.5;
+		// the points this face takes, the fraction left with its probability
+		const double toAdd = area * density;
+		unsigned numPoints = static_cast<unsigned>(toAdd);
+		if (dist(rnd) <= toAdd - static_cast<double>(numPoints))
+			++numPoints;
+		for (unsigned i = 0; i < numPoints; ++i) {
+			double x = dist(rnd), y = dist(rnd);
+			// fold the half of the unit square outside the triangle back in
+			if (x + y > 1.0) {
+				x = 1.0 - x;
+				y = 1.0 - y;
+			}
+			points.emplace_back(O + static_cast<Type>(x) * u + static_cast<Type>(y) * v);
+			if (textured) {
+				const TexCoord* tc = &faceTexcoords[static_cast<size_t>(idxFace) * 3];
+				const TexCoord t = tc[0] + static_cast<TexCoord::Scalar>(x) * (tc[1] - tc[0]) + static_cast<TexCoord::Scalar>(y) * (tc[2] - tc[0]);
+				const Image3u& texture = texturesDiffuse[FTexblob(idxFace)];
+				const auto color = SampleImage<LinearInterp<float>>(texture, Eigen::Vector2f(t.x(), t.y()));
+				colors->emplace_back(Pixel(static_cast<uint8_t>(std::clamp(std::lround(color.x()), 0l, 255l)),
+				                           static_cast<uint8_t>(std::clamp(std::lround(color.y()), 0l, 255l)),
+				                           static_cast<uint8_t>(std::clamp(std::lround(color.z()), 0l, 255l))));
+			}
+		}
+	}
 }
 
 void Mesh::ListVertexFaces()

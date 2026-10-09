@@ -150,6 +150,28 @@ class Mesh
 	// split a textured mesh in multiple meshes, one per texture
 	std::vector<Mesh> ToOneMeshPerTexblob() const;
 
+	// append a copy of `other`: its vertices after this mesh's and its faces after
+	// this mesh's, their indices shifted (nothing is welded: RemoveDuplicateVertices
+	// merges a shared seam). An attribute survives when both meshes carry it, or
+	// when this mesh is empty, and is dropped otherwise, so no array is ever left
+	// partial. Texture coordinates (per corner) survive when both meshes have them
+	// and both or neither have textures: the textures are concatenated and
+	// `other`'s blob ids shifted past this mesh's, unless together they exceed
+	// MAX_TEXBLOBS, which drops the texture. When both meshes hold a live half-edge
+	// structure it is appended in place (O(V+F), no rebuild); otherwise it is
+	// dropped, as are the vertex-face lists.
+	void Join(const Mesh& other);
+	// copy of the given faces, in that order, and of the vertices they reference,
+	// in order of first reference, with every attribute: vertex colors and normals,
+	// face normals, per-corner texture coordinates and the textures those faces use
+	// (blob ids renumbered in order of first use; one texture left needs no ids).
+	// The vertex renumbering is a dense table when the faces reference a fair share
+	// of the vertices and a hash table sized to the selection otherwise, so cutting
+	// many small pieces out of a large mesh does not cost O(V) each. The result holds
+	// arrays only and may be non-manifold where the selection pinches a vertex.
+	//  - vertexMap: if given, receives the source index of each new vertex
+	Mesh SubMesh(std::span<const FIndex> faceIndices, std::vector<VIndex>* vertexMap = nullptr) const;
+
 	// Image encoding SaveGLTF uses for the diffuse textures. tinygltf selects
 	// its encoder from the image's file extension, which it derives from the
 	// glTF mimeType -- so this maps directly onto that mimeType.
@@ -158,8 +180,9 @@ class Mesh
 		PNG, // lossless, several times larger
 	};
 
-	// import/export PLY/GLTF mesh
-	// Load dispatches on the file extension: .ply -> LoadPLY, .glb/.gltf -> LoadGLTF
+	// import/export PLY/GLTF/OBJ mesh
+	// Load and Save dispatch on the file extension: .ply -> PLY, .glb/.gltf ->
+	// glTF, .obj -> OBJ (Load reads any other extension as PLY)
 	//
 	// Coordinate frame. halfmesh is z-up in memory, everywhere, always. glTF is
 	// y-up by specification, so the conversion happens at the glTF boundary and
@@ -185,6 +208,29 @@ class Mesh
 	// <stem>_diffuse<NN>.<ext> and referenced by relative URI.
 	bool SaveGLTF(const std::string& fileName, bool binary = true,
 	              ImageFormat imageFormat = ImageFormat::JPG, bool embedImages = true) const;
+	// Wavefront OBJ, read in streamed blocks parsed in parallel, with exact
+	// (correctly rounded) float parsing. Reads v (with the x y z r g b color
+	// extension, in 0..1 or 0..255), vt, vn and f in every index form (v, v/vt,
+	// v//vn, v/vt/vn; negative = relative), polygons (a quad is split along the
+	// diagonal that keeps both halves facing the polygon's way, the shorter one
+	// when both do; larger polygons are ear-clipped in their best-fit plane), line
+	// continuations, usemtl, and mtllib with Kd and map_Kd (options skipped, paths
+	// may hold spaces). Once any material the faces use has a map, each of those
+	// materials becomes one texture blob: its image, or a 1x1 image of its Kd when
+	// it has no map or the image does not load, so every face keeps its color; a
+	// face without vt then samples the middle of its texture. Without any map the
+	// UVs load alone (normalized, as an atlas has them) when every face has them.
+	// A vertex whose corners reference different vn takes their normalized mean;
+	// colors and normals load only when every vertex / corner carries them.
+	// Points, lines, groups and smoothing groups are ignored; a malformed line or
+	// an index out of range fails the load.
+	bool LoadOBJ(const std::string& fileName);
+	// OBJ in the shortest decimal text that reads back to the same float, so
+	// positions, normals and normalized UVs round-trip bit-exact; colors as
+	// x y z r g b; one vt per distinct UV of a vertex; one usemtl group per texture
+	// blob, the textures written beside the file as <stem>_material_NN_map_Kd.<ext>
+	// and listed in <stem>.mtl. Formatted in parallel blocks.
+	bool SaveOBJ(const std::string& fileName, ImageFormat imageFormat = ImageFormat::JPG) const;
 	bool ExportSeamEdges(std::vector<std::pair<VIndex, VIndex>> seamEdges, const std::string& fileName, bool binary = true) const;
 	bool ExportSeamEdges(const std::string& fileName, bool binary = true) const;
 
@@ -242,6 +288,49 @@ class Mesh
 	Type ComputeMeanEdgeLength();
 	// compute the axis-aligned bounding box of the mesh vertices
 	Eigen::AlignedBox<Type, 3> ComputeAABBox() const;
+	// true if every edge is shared by exactly two faces that traverse it in
+	// opposite directions: the surface is closed, edge-manifold and consistently
+	// oriented, so it bounds a volume (ComputeVolume is exact, inside and outside
+	// are defined). Two shells touching at a vertex qualify; a boundary edge, an
+	// edge shared by three or more faces, two faces winding an edge the same way or
+	// a face repeating a vertex do not. Unreferenced vertices are ignored and an
+	// empty mesh is not watertight. Read-only: on the arrays it buckets the directed
+	// edges by their smaller endpoint (O(F), no hashing), on a live half-edge
+	// structure it looks for a border half-edge.
+	bool IsWatertight() const;
+	// signed volume enclosed by the surface, by the divergence theorem: the sum of
+	// the tetrahedra the faces span with a reference point. Exact for a watertight
+	// surface, where the reference point drops out: positive when the faces wind
+	// counter-clockwise seen from outside, and a region a self-intersecting or
+	// nested surface winds around k times counts k times. The reference point is
+	// the bounding-box center and the sum runs in double over fixed blocks, so a
+	// mesh far from the origin (geo-referenced coordinates) loses no digits to
+	// cancellation and the result does not depend on the thread count. On an open
+	// surface the result depends on that point: measure against a plane instead.
+	real ComputeVolume() const;
+	// volume between the surface and a plane (unit normal), measured along the
+	// normal: every face contributes the prism between it and its projection onto
+	// the plane, signed by the side it faces, and a face crossing the plane is split
+	// on it. `above` sums the parts on the side the normal points to, `below` the
+	// rest. For a watertight surface above + below is the enclosed volume whatever
+	// the plane, each term the part on its side. For an open surface whose boundary
+	// lies on the plane (a stockpile on its ground, a terrain over a datum) it is
+	// the volume the surface closes against the plane, or with a boundary off the
+	// plane, the volume closed by walls dropped along the normal; there `above` is
+	// the fill and -`below` the cut, a pit below the plane counting negative.
+	typedef Eigen::Hyperplane<real, 3> Plane;
+	struct PlaneVolume
+	{
+		real above{0};
+		real below{0};
+	};
+	PlaneVolume ComputeVolume(const Plane& plane) const;
+	// area-uniform random sampling of the surface (Turk, "Generating random points
+	// in triangles", Graphics Gems 1990): each face gets floor(area*density) points
+	// plus one more with the probability of the fraction left, each uniform in the
+	// triangle; `colors`, if given and the mesh is textured, receives each point's
+	// bilinear texture color. Deterministic for a given seed (std::mt19937).
+	void SamplePoints(double density, uint32_t seed, std::vector<Vertex>& points, std::vector<Pixel>* colors = nullptr) const;
 
 	// enumerate the array of triangles incident to each vertex;
 	// the list of faces per vertex is stored in increasing index order
@@ -699,6 +788,15 @@ class Mesh
 	// the input mesh should be manifold and have no duplicate or zero area faces.
 	// If stats is non-null it receives per-operation counts.
 	void RemeshIsotropic(RemeshParams params, RemeshStats* stats = nullptr);
+
+	// selective 1-to-4 subdivision: every face flagged in `selected` (one flag
+	// per face) is split at its edge midpoints into four, and every unflagged
+	// face that shares a split edge into two or three (red-green closure), so
+	// the mesh stays conforming. Midpoint vertices are appended (colors
+	// interpolated, authored normals cleared); the split faces are replaced in
+	// place by swap-pop with the new ones, and face-keyed attributes are dropped.
+	// Returns the number of vertices added.
+	VIndex SubdivideFaces(const std::vector<bool>& selected);
 };
 
 } // namespace halfmesh

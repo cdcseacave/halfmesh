@@ -17,6 +17,11 @@
 #include <halfmesh/RectPacking.h>
 #include <halfmesh/Util/Assert.h>
 #include <halfmesh/Util/Log.h>
+#include <halfmesh/Util/Raster.h>
+
+#include <opencv2/imgproc.hpp>
+
+#include "ParallelFor.h"
 
 #include <Eigen/Dense>
 
@@ -519,6 +524,63 @@ void PackRects(const std::vector<ChartRect>& crects, unsigned numCharts,
 		*outPads = std::move(pads);
 }
 
+// The footprint of every chart at UV scale `scale` (texels): the texels its UV
+// triangles touch (conservative raster) grown by its gutter (ChartPad, rounded
+// up to whole texels), in a mask whose origin is the chart's bbox min less the
+// gutter; a degenerate chart is its 1-texel slot plus the gutter. `gutters`
+// returns the offset of the chart inside its mask.
+void ChartFootprints(BS::light_thread_pool& pool, const Mesh& mesh, const std::vector<std::vector<FIndex>>& chartFaceList,
+                     const std::vector<ChartRect>& crects, float scale, const AtlasParams& params,
+                     unsigned pad, const std::vector<unsigned>& chartFaces,
+                     std::vector<cv::Mat>& masks, std::vector<int>& gutters)
+{
+	const size_t numCharts = crects.size();
+	masks.assign(numCharts, cv::Mat());
+	gutters.assign(numCharts, 0);
+	detail::ParallelForPool(pool, numCharts, [&](size_t c) {
+		const ChartRect& cr = crects[c];
+		const float w = cr.degenerate ? cr.w : cr.w * scale, h = cr.degenerate ? cr.h : cr.h * scale;
+		const int g = static_cast<int>(std::ceil(ChartPad(params, w, h, chartFaces[c], pad)));
+		gutters[c] = g;
+		cv::Mat mask(static_cast<int>(std::ceil(h)) + 2 * g, static_cast<int>(std::ceil(w)) + 2 * g, CV_8UC1, cv::Scalar(0));
+		if (cr.degenerate) {
+			mask.setTo(255);
+			masks[c] = mask;
+			return;
+		}
+		const auto local = [&](const TexCoord& uv) {
+			return Eigen::Vector2f((uv.x() - cr.uvMinX) * scale + static_cast<float>(g), (uv.y() - cr.uvMinY) * scale + static_cast<float>(g));
+		};
+		for (const FIndex fi : chartFaceList[c]) {
+			const TexCoord* uv = &mesh.faceTexcoords[static_cast<size_t>(fi) * 3];
+			RasterizeTriangleBary<float>(local(uv[0]), local(uv[1]), local(uv[2]), mask.cols, mask.rows, [&mask](int x, int y, const Eigen::Vector3f&) { mask.at<uint8_t>(y, x) = 255; }, false, 0, std::numeric_limits<int>::max(), true);
+		}
+		if (g > 0)
+			cv::dilate(mask, mask, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2 * g + 1, 2 * g + 1)));
+		if (cv::countNonZero(mask) == 0)
+			mask.at<uint8_t>(g, g) = 255; // a sliver no texel centre came near still holds a slot
+		masks[c] = mask;
+	});
+}
+
+// Footprint pack into square pages of `page` texels; returns the page count, or
+// 0 if some chart did not fit a page.
+unsigned PackChartFootprints(const std::vector<cv::Mat>& masks, int page, bool allowRotation,
+                             std::vector<FootprintPlacement>& placements, uint64_t& footprintArea)
+{
+	FootprintPackParams fparams;
+	// one texel up to 2048-texel pages, then page/2048: on a 200k-face Truck at 4096
+	// the 2-texel grid packs 63.7% coverage in 13 s, 4 texels 59.3% in 3 s, 1 texel
+	// 65.7% in 71 s
+	fparams.blockSize = static_cast<unsigned>(std::max(1, page / 2048));
+	fparams.maxPageSize = page;
+	fparams.sizeMultiple = 1;
+	fparams.allowRotation = allowRotation;
+	const FootprintPackResult result = PackFootprints(masks, fparams, placements);
+	footprintArea = result.footprintArea;
+	return result.numPacked == masks.size() ? static_cast<unsigned>(result.pageSizes.size()) : 0u;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -813,6 +875,19 @@ AtlasResult PackAtlas(Mesh& mesh,
 			if (faceChart[fi] < numCharts)
 				++chartFaces[faceChart[fi]];
 
+	// Footprint packing rasterizes every chart's faces at each scale it packs.
+	std::vector<std::vector<FIndex>> chartFaceList;
+	std::vector<cv::Mat> masks;
+	std::vector<int> gutters;
+	std::vector<FootprintPlacement> footprintPlacements;
+	BS::light_thread_pool pool(params.packFootprints ? 0 : 1);
+	if (params.packFootprints) {
+		chartFaceList.resize(numCharts);
+		for (size_t fi = 0; fi < nf; ++fi)
+			if (faceChart[fi] < numCharts)
+				chartFaceList[faceChart[fi]].push_back(static_cast<FIndex>(fi));
+	}
+
 	// ------------------------------------------------------------------
 	// 1.5. Fit-to-resolution: globally rescale so the total PADDED chart area
 	//      is ≈ one page, so the atlas fills a single `resolution`² page at high
@@ -922,6 +997,14 @@ AtlasResult PackAtlas(Mesh& mesh,
 					trial[c].h = crects[c].h * kk;
 				}
 				++attempts;
+				if (params.packFootprints) {
+					// the footprints at this scale, in one page of the resolution
+					uint64_t area = 0;
+					ChartFootprints(pool, mesh, chartFaceList, crects, kk, params, pad, chartFaces, masks, gutters);
+					probePages = PackChartFootprints(masks, static_cast<int>(params.resolution), params.allowRotation, footprintPlacements, area);
+					probeArea = static_cast<float>(area);
+					return probePages == 1;
+				}
 				PackRects(trial, numCharts, params, pad, chartFaces, probe, probePages, probePw, probePh, probeArea);
 				// Page COUNT is not enough: PackRects grows a page to swallow an
 				// oversized rect, so the dimensions have to be checked too.
@@ -1006,7 +1089,37 @@ AtlasResult PackAtlas(Mesh& mesh,
 	unsigned numPages = 0, pageW = 0, pageH = 0;
 	float packedAreaTotal = 0.f;
 	std::vector<float> pads;
-	PackRects(crects, numCharts, params, pad, chartFaces, placements, numPages, pageW, pageH, packedAreaTotal, &pads);
+	if (params.packFootprints) {
+		// square pages of the resolution, grown to the largest footprint
+		ChartFootprints(pool, mesh, chartFaceList, crects, 1.f, params, pad, chartFaces, masks, gutters);
+		int page = static_cast<int>(params.resolution);
+		for (const cv::Mat& mask : masks)
+			page = std::max({page, mask.cols, mask.rows});
+		if (params.powerOfTwo)
+			page = static_cast<int>(NextPow2(static_cast<unsigned>(page)));
+		uint64_t area = 0;
+		numPages = PackChartFootprints(masks, page, params.allowRotation, footprintPlacements, area);
+		ASSERT(numPages > 0); // every footprint fits a page alone
+		pageW = pageH = static_cast<unsigned>(page);
+		packedAreaTotal = static_cast<float>(area);
+		// expressed as the rect packer's placements of the chart's bbox, so the UV
+		// rewrite below serves both: the chart sits `gutter` texels into its mask,
+		// and a rotated mask is W = ceil(w) + 2*gutter texels wide
+		placements.assign(numCharts, Placement{});
+		pads.resize(numCharts);
+		for (unsigned c = 0; c < numCharts; ++c) {
+			const FootprintPlacement& fp = footprintPlacements[c];
+			const float g = static_cast<float>(gutters[c]);
+			Placement& pl = placements[c];
+			pl.rotated = fp.rotated;
+			pl.page = fp.page;
+			pl.x = static_cast<float>(fp.rect.x) + g;
+			pl.y = static_cast<float>(fp.rect.y) + g + (fp.rotated ? std::ceil(crects[c].w) - crects[c].w : 0.f);
+			pads[c] = g;
+		}
+	} else {
+		PackRects(crects, numCharts, params, pad, chartFaces, placements, numPages, pageW, pageH, packedAreaTotal, &pads);
+	}
 	for (unsigned c = 0; c < numCharts; ++c)
 		result.chartPage[c] = placements[c].page;
 

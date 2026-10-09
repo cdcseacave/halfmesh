@@ -251,6 +251,83 @@ PYBIND11_MODULE(_halfmesh, m)
 		Mesh mesh = MeshFromArrays(v, f);
 		return ArraysWithCount(mesh, [=](Mesh& self) { return self.CloseHoles(max_hole_edges); }); }, py::arg("vertices"), py::arg("faces"), py::arg("max_hole_edges") = 30u, "Liepa hole filling (fill + refine + fair) of every hole spanned by at most max_hole_edges boundary edges; a loop that outlines its own connected component (an isolated triangle, a flat fragment) stays open. Returns (vertices, faces, closed).");
 
+	m.def("subdivide_faces", [](const VertArray& v, const FaceArray& f, const py::array& selected) {
+		Mesh mesh = MeshFromArrays(v, f);
+		const py::array_t<bool, py::array::c_style | py::array::forcecast> flags(selected);
+		if (flags.ndim() != 1 || static_cast<size_t>(flags.shape(0)) != mesh.faces.size())
+			throw py::value_error("selected must be a 1-D boolean array with one entry per face");
+		std::vector<bool> mask(mesh.faces.size());
+		for (size_t i = 0; i < mask.size(); ++i)
+			mask[i] = flags.data()[i];
+		RequireIndexStableBuild(mesh, "selected");
+		return ArraysWithCount(mesh, [&mask](Mesh& self) { return self.SubdivideFaces(mask); }); }, py::arg("vertices"), py::arg("faces"), py::arg("selected"), "Split every selected face 1-to-4 at its edge midpoints and every neighbour sharing a split edge into 2 or 3 (red-green closure), so the mesh stays conforming. Returns (vertices, faces, added vertices).");
+
+	m.def("sample_points", [](const VertArray& v, const FaceArray& f, double density, uint32_t seed) {
+		if (!(density >= 0))
+			throw py::value_error("density must be >= 0");
+		const Mesh mesh = MeshFromArrays(v, f);
+		std::vector<Mesh::Vertex> points;
+		{
+			py::gil_scoped_release release;
+			mesh.SamplePoints(density, seed, points);
+		}
+		py::array_t<float> out({static_cast<py::ssize_t>(points.size()), py::ssize_t(3)});
+		if (!points.empty())
+			std::memcpy(out.mutable_data(), points.data(), sizeof(Mesh::Vertex) * points.size());
+		return out; }, py::arg("vertices"), py::arg("faces"), py::arg("density"), py::arg("seed") = 0u, "Area-uniform random points on the surface (Turk): each face gets floor(area*density) points plus one more with the probability of the fraction left. Deterministic for a given seed. Returns [N,3] float32 points.");
+
+	m.def("is_watertight", [](const VertArray& v, const FaceArray& f) {
+		const Mesh mesh = MeshFromArrays(v, f);
+		py::gil_scoped_release release;
+		return mesh.IsWatertight(); }, py::arg("vertices"), py::arg("faces"), "True if every edge is shared by exactly two faces traversing it in opposite directions: closed, edge-manifold and consistently oriented, so the surface bounds a volume. Two shells touching at a vertex qualify; unreferenced vertices are ignored; an empty mesh is not watertight.");
+
+	m.def("compute_volume", [](const VertArray& v, const FaceArray& f, std::optional<py::array_t<double, py::array::c_style | py::array::forcecast>> plane) -> py::object {
+		const Mesh mesh = MeshFromArrays(v, f);
+		if (!plane) {
+			double volume;
+			{
+				py::gil_scoped_release release;
+				volume = mesh.ComputeVolume();
+			}
+			return py::float_(volume);
+		}
+		if (plane->ndim() != 1 || plane->shape(0) != 4)
+			throw py::value_error("plane must be (a, b, c, d) with a*x + b*y + c*z + d = 0");
+		const double* abcd = plane->data();
+		const Eigen::Vector3d normal(abcd[0], abcd[1], abcd[2]);
+		const double norm = normal.norm();
+		if (!(norm > 0) || !std::isfinite(norm) || !std::isfinite(abcd[3]))
+			throw py::value_error("plane needs a finite, non-zero normal (a, b, c) and a finite d");
+		Mesh::PlaneVolume volume;
+		{
+			py::gil_scoped_release release;
+			volume = mesh.ComputeVolume(Mesh::Plane(normal / norm, abcd[3] / norm));
+		}
+		return py::make_tuple(volume.above, volume.below); }, py::arg("vertices"), py::arg("faces"), py::arg("plane") = py::none(), "Volume by the divergence theorem, in double, exact for a watertight surface (positive when the faces wind counter-clockwise seen from outside), referenced to the bounding-box center so coordinates far from the origin lose no digits. Returns a float.\n\nplane: optional (a, b, c, d), a*x + b*y + c*z + d = 0 (normalized here). Every face then contributes the prism between it and its projection onto the plane, split where it crosses it; returns (above, below), the parts on the side the normal points to and on the other. For a watertight surface above + below is the enclosed volume; for an open one whose boundary lies on the plane (a stockpile on its ground) it is the volume it closes against the plane, above being the fill and -below the cut.");
+
+	m.def("sub_mesh", [](const VertArray& v, const FaceArray& f, const py::array& face_indices) {
+		const Int64Array indices = IntegerArray(face_indices, 1, "face_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
+		const Mesh mesh = MeshFromArrays(v, f);
+		const auto numFaces = static_cast<int64_t>(mesh.faces.size());
+		std::vector<Mesh::FIndex> selection;
+		selection.reserve(static_cast<size_t>(indices.shape(0)));
+		for (const int64_t idx : std::span(indices.data(), static_cast<size_t>(indices.shape(0)))) {
+			if (idx < 0 || idx >= numFaces)
+				throw py::value_error("face index " + std::to_string(idx) + " is out of range for " + std::to_string(numFaces) + " faces");
+			selection.push_back(static_cast<Mesh::FIndex>(idx));
+		}
+		Mesh sub;
+		std::vector<Mesh::VIndex> vertexMap;
+		{
+			py::gil_scoped_release release;
+			sub = mesh.SubMesh(selection, &vertexMap);
+		}
+		py::tuple vf = ArraysFromMesh(sub);
+		py::array_t<uint32_t> map(static_cast<py::ssize_t>(vertexMap.size()));
+		if (!vertexMap.empty())
+			std::memcpy(map.mutable_data(), vertexMap.data(), sizeof(uint32_t) * vertexMap.size());
+		return py::make_tuple(vf[0], vf[1], std::move(map)); }, py::arg("vertices"), py::arg("faces"), py::arg("face_indices"), "Copy the given faces, in that order, and the vertices they reference, in order of first reference. Returns (vertices, faces, vertex_map), vertex_map holding the source index of each new vertex.");
+
 	m.def("remove_vertices_and_fill", [](const VertArray& v, const FaceArray& f, const py::array& vertex_indices) {
 		const Int64Array indices = IntegerArray(vertex_indices, 1, "vertex_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
 		Mesh mesh = MeshFromArrays(v, f);
@@ -357,7 +434,7 @@ PYBIND11_MODULE(_halfmesh, m)
 		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("edge_length"), py::arg("iterations") = 3, py::arg("vertex_sizing") = py::none(), py::arg("adapt") = false, py::arg("approx_error") = 0.f, py::arg("min_adaptive_mult") = 0.25f, py::arg("max_adaptive_mult") = 4.f, "Isotropic remeshing toward a uniform target edge length (world units).\n\nvertex_sizing: optional [N] float32 per-vertex TARGET edge length (world units, one entry per input vertex) replacing the uniform target, so the split, collapse and smoothing passes grade the mesh where the caller asks. Every entry must be finite and > 0. Unlike simplify's vertex_max_error it is read-only, so the return stays (vertices, faces). Being per vertex is what makes a target stated in image pixels expressible (target_edge_px / footprint_v). edge_length is still required (the passes that never consult the field read it); the field's own mean is the natural value.\n\nadapt: curvature-adaptive sizing -- high-curvature regions get shorter edges, flat ones longer, for the same fidelity at fewer triangles. approx_error is the target geometric deviation (0 derives it from edge_length) and min/max_adaptive_mult clamp the per-vertex target to that multiple of the base length. Combined with vertex_sizing the two fields INTERSECT per vertex (the finer target wins), so a caller can ask for no face coarser than its own field allows and none so coarse it leaves the surface.");
 
 	py::class_<Mesh>(m, "Mesh",
-	                 "Triangle mesh facade over halfmesh::Mesh (PLY / glTF / GLB I/O).")
+	                 "Triangle mesh facade over halfmesh::Mesh (PLY / glTF / GLB / OBJ I/O).")
 	    .def(py::init<>())
 	    .def_static("from_arrays", [](const VertArray& v, const FaceArray& f) { return MeshFromArrays(v, f); }, py::arg("vertices"), py::arg("faces"))
 	    .def("to_arrays", [](Mesh& self) { return ArraysFromMesh(self); }, "Return (vertices float32 [N,3], faces uint32 [M,3]) copies.")
@@ -368,7 +445,7 @@ PYBIND11_MODULE(_halfmesh, m)
 			    ok = self.Load(path);
 		    }
 		    if (!ok)
-			    throw std::runtime_error("Mesh.load: failed to load '" + path + "'"); }, py::arg("path"), "Load a .ply / .gltf / .glb mesh (format from extension).")
+			    throw std::runtime_error("Mesh.load: failed to load '" + path + "'"); }, py::arg("path"), "Load a .ply / .gltf / .glb / .obj mesh (format from extension).")
 	    .def("save", [](const Mesh& self, const std::string& path, bool binary) {
 		    bool ok;
 		    {
@@ -376,13 +453,16 @@ PYBIND11_MODULE(_halfmesh, m)
 			    ok = self.Save(path, binary);
 		    }
 		    if (!ok)
-			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb (format from extension).")
+			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb / .obj (format from extension; binary applies to PLY and glTF).")
+	    .def("join", [](Mesh& self, const Mesh& other) {
+		    py::gil_scoped_release release;
+		    self.Join(other); }, py::arg("other"), "Append a copy of other: its vertices and faces after this mesh's, indices shifted, nothing welded. An attribute (colors, normals, texture) survives only when both meshes carry it; textures are concatenated and other's blob ids shifted.")
 	    .def_property_readonly("n_vertices", [](const Mesh& self) { return self.vertices.size(); })
 	    .def_property_readonly("n_faces", [](Mesh& self) { self.SyncFaces(); return self.faces.size(); })
 	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)
 	    .def("__repr__", [](Mesh& self) { self.SyncFaces(); return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
 
-	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion, unsigned repair_carve_rings, unsigned fold_rescue_slits, float tiny_chart_side, unsigned debris_chart_faces) {
+	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion, unsigned repair_carve_rings, unsigned fold_rescue_slits, float tiny_chart_side, unsigned debris_chart_faces, bool pack_footprints) {
 		if (resolution == 0u)
 			throw py::value_error("unwrap resolution must be > 0");
 		if (2u * padding >= resolution)
@@ -432,6 +512,7 @@ PYBIND11_MODULE(_halfmesh, m)
 			aparams.allowRotation = allow_rotation;
 			aparams.tinyChartSide = tiny_chart_side;
 			aparams.debrisChartFaces = debris_chart_faces;
+			aparams.packFootprints = pack_footprints;
 			result = halfmesh::GenerateAtlas(mesh, pparams, aparams);
 			charts = static_cast<unsigned>(result.chartPage.size());
 
@@ -455,7 +536,7 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["padding_applied"] = padding_applied;
 		meta["vertices"] = mesh.vertices.size();
 		meta["faces"] = mesh.faces.size();
-		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("max_cone_error") = 0.05f, py::arg("cut_to_disk") = false, py::arg("max_uv_distortion") = 0.f, py::arg("repair_carve_rings") = 0u, py::arg("fold_rescue_slits") = 0u, py::arg("tiny_chart_side") = 0.f, py::arg("debris_chart_faces") = 0u, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. Returns {charts, pages, width, height, occupancy, coverage, fit_attempts, fit_scale, max_chart_extent, padding_applied{nominal,min,n_charts_reduced}, vertices, faces}.");
+		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("max_cone_error") = 0.05f, py::arg("cut_to_disk") = false, py::arg("max_uv_distortion") = 0.f, py::arg("repair_carve_rings") = 0u, py::arg("fold_rescue_slits") = 0u, py::arg("tiny_chart_side") = 0.f, py::arg("debris_chart_faces") = 0u, py::arg("pack_footprints") = true, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. Returns {charts, pages, width, height, occupancy, coverage, fit_attempts, fit_scale, max_chart_extent, padding_applied{nominal,min,n_charts_reduced}, vertices, faces}.");
 
 	m.def("pack_rectangles", [](const py::array& sizes, const PageSizeArg& page_size, const std::string& mode, const std::optional<PageSizeArg>& max_page_size, unsigned padding, bool allow_rotation, bool power_of_two, bool square) {
 		halfmesh::RectPackParams params;
@@ -521,6 +602,69 @@ PYBIND11_MODULE(_halfmesh, m)
 		out["packed_area"] = result.packedArea;
 		out["occupancy"] = pageArea > 0. ? static_cast<double>(result.packedArea) / pageArea : 0.;
 		return out; }, py::arg("sizes"), py::arg("page_size") = PageSizeArg(1024), py::arg("mode") = "grow", py::arg("max_page_size") = py::none(), py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("power_of_two") = false, py::arg("square") = false, "Pack integer (width, height) rectangles into texture pages, no mesh involved (sprite sheets, lightmaps, texture repacking); the packer unwrap() uses for charts. mode: 'grow' doubles one page until everything fits (up to max_page_size), 'single' uses one fixed page and leaves what does not fit unpacked, 'multi' opens as many fixed pages as needed. Returns {rects [N,4] int32 (x, y, w, h), page [N], rotated [N], packed [N], pages, n_packed, width, height, packed_area, occupancy}, each per-rect array in input order.");
+
+	m.def("pack_footprints", [](const std::vector<py::array>& masks, int max_page_size, int size_multiple, unsigned block_size, bool allow_rotation) {
+		if (max_page_size < 0 || size_multiple < 0)
+			throw py::value_error("max_page_size and size_multiple must be >= 0");
+		if (block_size == 0)
+			throw py::value_error("block_size must be > 0");
+		std::vector<cv::Mat> mats;
+		mats.reserve(masks.size());
+		for (const py::array& mask : masks) {
+			// copied: the packer never aliases the caller's buffers
+			const py::array_t<uint8_t, py::array::c_style | py::array::forcecast> m(mask);
+			if (m.ndim() != 2)
+				throw py::value_error("every mask must be a 2-D array (rows, cols)");
+			cv::Mat mat(static_cast<int>(m.shape(0)), static_cast<int>(m.shape(1)), CV_8UC1);
+			std::memcpy(mat.data, m.data(), static_cast<size_t>(m.size()));
+			mats.push_back(mat);
+		}
+		halfmesh::FootprintPackParams params;
+		params.maxPageSize = max_page_size;
+		params.sizeMultiple = size_multiple;
+		params.blockSize = block_size;
+		params.allowRotation = allow_rotation;
+		std::vector<halfmesh::FootprintPlacement> placements;
+		halfmesh::FootprintPackResult result;
+		{
+			py::gil_scoped_release release;
+			result = halfmesh::PackFootprints(mats, params, placements);
+		}
+		const auto n = static_cast<py::ssize_t>(placements.size());
+		py::array_t<int32_t> outRects({n, py::ssize_t(4)});
+		py::array_t<uint32_t> outPage(n);
+		py::array_t<bool> outRotated(n);
+		py::array_t<bool> outPacked(n);
+		auto r = outRects.mutable_unchecked<2>();
+		auto pg = outPage.mutable_unchecked<1>();
+		auto rot = outRotated.mutable_unchecked<1>();
+		auto pk = outPacked.mutable_unchecked<1>();
+		for (py::ssize_t i = 0; i < n; ++i) {
+			const halfmesh::FootprintPlacement& p = placements[static_cast<size_t>(i)];
+			r(i, 0) = p.rect.x;
+			r(i, 1) = p.rect.y;
+			r(i, 2) = p.rect.width;
+			r(i, 3) = p.rect.height;
+			pg(i) = p.page;
+			rot(i) = p.rotated;
+			pk(i) = p.packed;
+		}
+		py::list sizes;
+		double pageArea = 0;
+		for (const cv::Size& size : result.pageSizes) {
+			sizes.append(py::make_tuple(size.width, size.height));
+			pageArea += static_cast<double>(size.area());
+		}
+		py::dict out;
+		out["rects"] = std::move(outRects);
+		out["page"] = std::move(outPage);
+		out["rotated"] = std::move(outRotated);
+		out["packed"] = std::move(outPacked);
+		out["page_sizes"] = sizes;
+		out["n_packed"] = result.numPacked;
+		out["footprint_area"] = result.footprintArea;
+		out["occupancy"] = pageArea > 0. ? static_cast<double>(result.footprintArea) / pageArea : 0.;
+		return out; }, py::arg("masks"), py::arg("max_page_size") = 0, py::arg("size_multiple") = 0, py::arg("block_size") = 4u, py::arg("allow_rotation") = true, "Pack binary masks (2-D uint8 arrays, non-zero = footprint) into texture pages by their footprints, not their bounding rectangles, so irregular shapes nest into each other's empty corners; any gutter must be part of the masks. max_page_size bounds the page side (0: unbounded), each page is cropped to its content and rounded up to size_multiple (0: a power of two). A rotated mask is placed as np.rot90(mask) (counter-clockwise). Returns {rects [N,4] int32 (x, y, w, h), page [N], rotated [N], packed [N], page_sizes [(w, h)], n_packed, footprint_area, occupancy}, each per-mask array in input order.");
 
 	m.def("estimate_square_texture_size", [](const py::array& sizes, int multiple, float target_occupancy) {
 		if (multiple < 0)

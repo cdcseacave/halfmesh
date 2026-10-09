@@ -65,7 +65,7 @@ constexpr double SEAM_RATCHET_REL = 1.15;
 // the documented Simplify collapse-order lottery (GoldenSpecs.h). Arch was
 // independently verified to reproduce the exact same 4ch/30.186381 value.
 constexpr double TORUS_SEAM_RATCHET_REL = 1.50;
-constexpr double OCCUPANCY_RATCHET_ABS = 0.05;
+constexpr double COVERAGE_RATCHET_ABS = 0.05;
 
 // Helper: path to tests/data/mesh.ply (committed under tests/data) — same
 // pattern as ParametrizeTest.cpp's TestMeshPath (Parametrize.RealMeshSanity).
@@ -79,29 +79,28 @@ struct NamedMesh
 	const char* name;
 	Mesh mesh;
 	double seamBaseline; // reference-box seam length, shipped defaults (beta=0)
-	double occupancyBaseline; // reference-box packed occupancy, shipped defaults
+	double coverageBaseline; // reference-box atlas triangle coverage, shipped defaults
 	double seamHeadroomRel; // per-mesh seam ratchet headroom (SEAM_RATCHET_REL or TORUS_SEAM_RATCHET_REL)
 };
 
 // The measurement corpus: every developable archetype the distance term is
 // expected to affect (cylinder/cone: exact-fit ties; sphere/torus: near-tie
 // curvature) plus the flat control (plane: hop-Voronoi already optimal).
-// seamBaseline/occupancyBaseline are the reference-box [segment-quality]
+// seamBaseline/coverageBaseline are the reference-box [segment-quality]
 // values at shipped defaults (2026-07-16) — see SEAM_RATCHET_REL /
-// OCCUPANCY_RATCHET_ABS above for how they are used.
+// COVERAGE_RATCHET_ABS above for how they are used.
 std::vector<NamedMesh> QualityCorpus()
 {
 	std::vector<NamedMesh> v;
-	// OpenCylinder occupancy recalibrated 0.726 -> 0.644 (2026-08): the old
-	// value was measured on a page fitToResolution let grow WIDER than the
-	// requested resolution to accommodate the unrolled cylinder's long side;
-	// PackAtlas now honors the one resolution^2-page contract (max-chart-side
-	// clamp in AtlasPacking.cpp), and 0.644 is the honest one-page occupancy.
-	v.push_back({"OpenCylinder", hmtest::corpus::OpenCylinder(24, 8), 14.530515, 0.644, SEAM_RATCHET_REL});
-	v.push_back({"Cone", hmtest::corpus::Cone(24), 9.093684, 0.741, SEAM_RATCHET_REL});
-	v.push_back({"UVSphere", hmtest::corpus::UVSphere(16, 24), 8.333542, 0.493, SEAM_RATCHET_REL});
-	v.push_back({"Torus", hmtest::corpus::TorusMesh(24, 16), 21.917217, 0.493, TORUS_SEAM_RATCHET_REL});
-	v.push_back({"GridPlane", hmtest::corpus::GridPlane(8), 32.000000, 0.820, SEAM_RATCHET_REL});
+	// The ratchet is on the triangle coverage (AtlasResult::coverage, the texel
+	// budget under geometry), which footprint packing (the default) and rect
+	// packing share; the padded-rect occupancy measured bbox waste as filled.
+	// Rect-packing coverage for reference: 0.633 / 0.548 / 0.353 / 0.352 / 0.986.
+	v.push_back({"OpenCylinder", hmtest::corpus::OpenCylinder(24, 8), 14.530515, 0.633, SEAM_RATCHET_REL});
+	v.push_back({"Cone", hmtest::corpus::Cone(24), 9.093684, 0.552, SEAM_RATCHET_REL});
+	v.push_back({"UVSphere", hmtest::corpus::UVSphere(16, 24), 8.333542, 0.503, SEAM_RATCHET_REL});
+	v.push_back({"Torus", hmtest::corpus::TorusMesh(24, 16), 21.917217, 0.455, TORUS_SEAM_RATCHET_REL});
+	v.push_back({"GridPlane", hmtest::corpus::GridPlane(8), 32.000000, 0.986, SEAM_RATCHET_REL});
 	return v;
 }
 
@@ -111,6 +110,7 @@ struct QualityRow
 	double seam = 0.0; // ComputeBoundaryCutLength (3-D, borders count)
 	double compactMean = 0.0; // mean per-chart perimeter^2/(4*pi*area)
 	double occupancy = 0.0; // packed page fill from GenerateAtlas
+	double coverage = 0.0; // triangle coverage from GenerateAtlas
 	unsigned pages = 0;
 };
 
@@ -140,12 +140,13 @@ QualityRow Measure(const char* name, const Mesh& input,
 		m.ComputeFaceNormals();
 		const halfmesh::AtlasResult atlas = halfmesh::GenerateAtlas(m, pp);
 		row.occupancy = static_cast<double>(atlas.occupancy);
+		row.coverage = static_cast<double>(atlas.coverage);
 		row.pages = atlas.numPages;
 	}
 	std::printf("[segment-quality] mesh=%s charts=%u seam=%.6f compact=%.3f "
-	            "occupancy=%.3f pages=%u\n",
+	            "occupancy=%.3f coverage=%.3f pages=%u\n",
 	            name, row.charts, row.seam, row.compactMean, row.occupancy,
-	            row.pages);
+	            row.coverage, row.pages);
 	return row;
 }
 
@@ -177,7 +178,7 @@ TEST(SegmentQuality, CorpusTableAndFloors)
 		EXPECT_LE(r.occupancy, 1.0) << nm.name;
 		EXPECT_GE(r.pages, 1u) << nm.name;
 		EXPECT_LT(r.seam, nm.seamBaseline * nm.seamHeadroomRel) << nm.name;
-		EXPECT_GT(r.occupancy, nm.occupancyBaseline - OCCUPANCY_RATCHET_ABS) << nm.name;
+		EXPECT_GT(r.coverage, nm.coverageBaseline - COVERAGE_RATCHET_ABS) << nm.name;
 	}
 }
 

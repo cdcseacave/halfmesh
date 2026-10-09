@@ -328,16 +328,62 @@ array ops above.
   out-of-range face index raises `ValueError`).
 - `to_arrays() -> (v, f)` — `(float32[N,3], uint32[M,3])` copies of the
   current geometry.
-- `load(path)` — load `.ply` / `.gltf` / `.glb` (format from the extension).
-  Raises `RuntimeError` on failure (missing file, malformed data).
-- `save(path, binary=True)` — save as `.ply` / `.gltf` / `.glb` (format from
-  the extension). `binary=False` writes ASCII PLY. Raises `RuntimeError` on
-  failure.
+- `load(path)` — load `.ply` / `.gltf` / `.glb` / `.obj` (format from the
+  extension). Raises `RuntimeError` on failure (missing file, malformed data).
+- `save(path, binary=True)` — save as `.ply` / `.gltf` / `.glb` / `.obj`
+  (format from the extension). `binary=False` writes ASCII PLY; OBJ is always
+  text. Raises `RuntimeError` on failure.
+- `join(other)` — append a copy of `other`: its vertices and faces after this
+  mesh's, indices shifted, nothing welded. An attribute (colors, normals,
+  texture) survives only when both meshes carry it; textures are concatenated
+  and `other`'s blob ids shifted.
 - `n_vertices: int`, `n_faces: int` — read-only counts.
 - `has_texcoords: bool` — whether the mesh carries per-face-corner UVs
   (read-only).
 
-### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0, repair_carve_rings=0, fold_rescue_slits=0, tiny_chart_side=0.0, debris_chart_faces=0) -> dict`
+### `sample_points(vertices, faces, density, seed=0) -> points`
+
+Area-uniform random points on the surface (Turk, Graphics Gems 1990): each face
+gets `floor(area * density)` points plus one more with the probability of the
+fraction left, each uniform in its triangle. Deterministic for a given `seed`.
+Returns `[N,3] float32` points. Raises `ValueError` for a negative density.
+
+### `is_watertight(vertices, faces) -> bool`
+
+True if every edge is shared by exactly two faces traversing it in opposite
+directions: closed, edge-manifold and consistently oriented, so the surface
+bounds a volume. Two shells touching at a vertex qualify; unreferenced vertices
+are ignored; an empty mesh is not watertight. Read-only (no repair).
+
+### `compute_volume(vertices, faces, plane=None) -> float | (above, below)`
+
+The enclosed volume by the divergence theorem, in double, exact for a
+watertight surface (positive when the faces wind counter-clockwise seen from
+outside), referenced to the bounding-box center so coordinates far from the
+origin lose no digits. With `plane = (a, b, c, d)` (`a*x + b*y + c*z + d = 0`,
+normalized here) each face contributes the prism between it and its projection
+onto the plane, split where it crosses it, and the call returns
+`(above, below)`: for a watertight surface their sum is the enclosed volume;
+for an open one whose boundary lies on the plane (a stockpile on its ground)
+it is the volume it closes against the plane, `above` the fill and `-below`
+the cut. Raises `ValueError` for a zero or non-finite plane.
+
+### `sub_mesh(vertices, faces, face_indices) -> (v, f, vertex_map)`
+
+Copy the given faces, in that order, and the vertices they reference, in order
+of first reference; `vertex_map` holds each new vertex's source index
+(`v == vertices[vertex_map]`). Raises `ValueError` for an out-of-range index.
+
+### `subdivide_faces(vertices, faces, selected) -> (v, f, added)`
+
+Split every face flagged in `selected` (a boolean array, one entry per face)
+1-to-4 at its edge midpoints, and every neighbour sharing a split edge into 2
+or 3 (red-green closure), so the mesh stays conforming. Returns the new arrays
+and the number of vertices added. Raises `ValueError` if `selected` is not one
+flag per face, or if the input needs topology repair (the flags are indexed by
+input face).
+
+### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0, repair_carve_rings=0, fold_rescue_slits=0, tiny_chart_side=0.0, debris_chart_faces=0, pack_footprints=True) -> dict`
 
 File-based UV-atlas generation: load `input_path` → weld/clean prelude
 (`RemoveDuplicateVertices` + `RemoveDegenerateFaces` +
@@ -442,6 +488,10 @@ gutter bleeds between charts at a lower mip level than you asked for.
 Raises `RuntimeError` if `input_path` fails to load or `output_path` fails
 to save.
 
+`pack_footprints` (default `True`) packs the charts' footprints instead of
+their bounding rectangles (`AtlasParams::packFootprints`); compare `coverage`
+across the two, `occupancy` measures different things in each.
+
 ### `pack_rectangles(sizes, page_size=1024, mode="grow", max_page_size=None, padding=2, allow_rotation=True, power_of_two=False, square=False) -> dict`
 
 Pack integer pixel rectangles into texture pages, with no mesh involved: sprite
@@ -493,6 +543,18 @@ side = hm.estimate_square_texture_size(sizes, target_occupancy=0.85)
 out = hm.pack_rectangles(sizes, page_size=side, padding=1)
 x, y, w, h = out["rects"][i]  # where sprite i goes (w/h swapped if out["rotated"][i])
 ```
+
+### `pack_footprints(masks, max_page_size=0, size_multiple=0, block_size=4, allow_rotation=True) -> dict`
+
+Pack a list of binary masks (2-D `uint8` arrays, non-zero = footprint) by their
+footprints instead of their bounding rectangles, so irregular shapes nest into
+each other's empty corners; any gutter must be part of the masks.
+`max_page_size` bounds the page side (0: unbounded); each page is cropped to
+its content and rounded up to `size_multiple` (0: a power of two). A rotated
+mask is placed as `np.rot90(mask)`. Returns `{rects [N,4] int32 (x, y, w, h),
+page [N], rotated [N], packed [N], page_sizes [(w, h)], n_packed,
+footprint_area, occupancy}`, each per-mask array in input order. Raises
+`ValueError` for a mask that is not 2-D, `block_size` 0 or a negative bound.
 
 ### `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9) -> int`
 
@@ -571,6 +633,10 @@ oversights:
   — not bound yet. It needs image-array marshalling and a
   Python-subclassable source resolver, and is planned as its own follow-up
   designed together with the texturing-stage consumer.
+- **Image utilities** (`Util/Raster.h`: `RasterizeTriangleBary`, `Dilate`,
+  `PushPullFill`; `Util/Sampler.h`) — numpy and OpenCV already cover raster
+  and image work in Python; these are the C++ building blocks of baking and
+  texturing.
 - **Per-element attributes on `Mesh`** — vertex colors and normals, per-corner
   UVs and textures are carried through `load`/`save`, but `to_arrays` returns
   geometry only. The array ops take and return bare geometry.

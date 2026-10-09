@@ -149,9 +149,22 @@ completeness.
 
 Single-page rectangle occupancy is on par with xatlas (82.0% vs 82.6% on roi;
 halfmesh *higher* on mesh.ply and ours128k) at **~30× the packing speed**.
-xatlas's *triangle* occupancy is higher (it packs silhouettes, not bounding
-rects) — the one place halfmesh trails, addressed by the rasterized-silhouette
-future-work item (§6).
+
+**Footprint packing (default since 0.5.0).** Rectangle occupancy counts every
+bounding box's empty corners as filled; the number that matters is the
+*triangle* occupancy (coverage: the page under geometry), where xatlas led
+because it packs silhouettes. `PackAtlas` now packs chart footprints
+(`AtlasParams::packFootprints`, §Atlas packing in FEATURES.md); `atlasbench
+--pack-footprints 0/1`, halfmesh engine, Windows, 2026-10-09:
+
+| mesh @ resolution | rects: occ (tri) / pack time | footprints: occ (tri) / pack time | xatlas: occ (tri) / total time |
+|---|---|---|---|
+| mesh.ply (120 k F) @ 1024 | 29.1% / 0.03 s | **50.2%** / 1.36 s | 41.5% / 48 s |
+| truck.ply → 200 k F @ 4096 | 38.7% / 0.06 s | **63.7%** / 13.3 s | 61.4% / 318 s |
+
+On the Truck mesh the footprint grid trades texels for time: 4-texel blocks
+59.3% in 2.8 s, 2-texel (the default at 4096) 63.7% in 13.3 s, 1-texel 65.7% in
+71 s.
 
 ### 3d. Verdict
 
@@ -590,15 +603,12 @@ does not.**
 |---|---|
 | Segmentation | **At/above SOTA**: fewest charts of any engine, always flip-free; ~35× faster than xatlas on roi100k, ~170× on noisy ours128k. |
 | Parametrization | **Above SOTA**: lowest symmetric-Dirichlet of all 7 flatteners on every mesh, 0 flips, always finite; the only engine that stays finite+low-distortion on noisy input. |
-| Packing | **At/above SOTA**: rect occupancy on par with xatlas in a single page, ~30× faster (triangle occupancy still trails — see §6). |
+| Packing | **Above SOTA**: footprint packing puts more of the page under geometry than xatlas (50.2% vs 41.5% on mesh.ply, 63.7% vs 61.4% on Truck 200k), 20-35× faster end to end. |
 | Robustness | manifoldness auto-checked+repaired before any half-edge build; weld reconnects glTF sub-meshes; graceful malformed-input handling. |
 | Scalability | segmentation merge O(E·log) + skyline packing → no O(n²) blowups; end-to-end 30–130× faster than xatlas on large meshes. |
 
 ## 6. Future work
 
-- **Rasterized-silhouette packing**: pack chart bitmaps rather than bounding
-  rects, to push triangle occupancy higher (xatlas's triangle occupancy is
-  higher because it packs silhouettes, not just bboxes).
 - **Lower-overhead half-edge** (perf, not correctness): a struct-of-arrays,
   32-bit-indexed layout with CSR vertex adjacency and derived (not stored)
   twins would cut the per-element cost and the many tiny heap allocations;

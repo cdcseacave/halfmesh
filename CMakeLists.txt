@@ -84,7 +84,7 @@ endif()
 # so an absolute path works on all CMake versions >= 3.21.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
-project(halfmesh VERSION 0.4.2 LANGUAGES CXX)
+project(halfmesh VERSION 0.5.0 LANGUAGES CXX)
 
 # vcpkg.json cannot read the version above, so it carries a manual copy —
 # fail the configure the moment the two drift apart (a version bump must
@@ -180,6 +180,9 @@ find_path(TINYGLTF_INCLUDE_DIR tiny_gltf.h REQUIRED)
 # (no CMake config target), like tinygltf. PRIVATE: used by the parallel setup in
 # MeshRemesh.cpp and MeshSimplify.cpp.
 find_path(BS_THREAD_POOL_INCLUDE_DIR BS_thread_pool.hpp REQUIRED)
+# fast_float is header-only and read by src/MeshIOOBJ.cpp alone (correctly
+# rounded float parsing); PRIVATE, so the installed package does not need it.
+find_path(FAST_FLOAT_INCLUDE_DIR fast_float/fast_float.h REQUIRED)
 
 # -----------------------------------------------------------------------
 # Library target
@@ -192,6 +195,7 @@ add_library(halfmesh
 	src/TriangleBVH.cpp
 	src/Mesh.cpp
 	src/MeshIO.cpp
+	src/MeshIOOBJ.cpp
 	src/MeshRepair.cpp
 	src/MeshSimplify.cpp
 	src/MeshRemesh.cpp
@@ -201,6 +205,7 @@ add_library(halfmesh
 	src/Parametrize.cpp
 	src/AtlasCharting.cpp
 	src/AtlasPacking.cpp
+	src/FootprintPacking.cpp
 	src/TextureBake.cpp
 	src/GltfImageCodec.cpp
 )
@@ -265,7 +270,7 @@ target_compile_definitions(halfmesh PRIVATE
 	TINYGLTF_NOEXCEPTION
 	JSON_NOEXCEPTION
 )
-target_include_directories(halfmesh PRIVATE ${BS_THREAD_POOL_INCLUDE_DIR})
+target_include_directories(halfmesh PRIVATE ${BS_THREAD_POOL_INCLUDE_DIR} ${FAST_FLOAT_INCLUDE_DIR})
 
 halfmesh_set_warnings(halfmesh)
 

@@ -17,7 +17,8 @@ Quick index:
 |---|---|---|---|
 | [Half-edge core](#half-edge-core) | `HalfMesh` | `HalfMesh.h` | — |
 | [Mesh container](#mesh-container) | `Mesh` | `Mesh.h` | all |
-| [PLY / glTF I/O](#ply--gltf-io) | `Mesh::Load` / `Mesh::Save` | `Mesh.h` | all |
+| [Volume, watertightness, join, extraction](#volume-watertightness-join-and-extraction) | `Mesh::ComputeVolume`, `IsWatertight`, `Join`, `SubMesh` | `Mesh.h` | — |
+| [PLY / glTF / OBJ I/O](#ply--gltf--obj-io) | `Mesh::Load` / `Mesh::Save` | `Mesh.h` | all |
 | [Repair & cleaning](#repair--cleaning) | `Mesh::RemoveDuplicateVertices`, `FixNonManifold`, … | `Mesh.h` | `Decimate.cpp` preamble |
 | [QEM decimation](#qem-decimation) | `Mesh::Simplify` | `Mesh.h` | `Decimate.cpp` |
 | [Isotropic remeshing](#isotropic-remeshing) | `Mesh::RemeshIsotropic` | `Mesh.h` | `Remesh.cpp` |
@@ -96,7 +97,11 @@ Vertices, faces and UVs are contiguous and memcpy-compatible
 (`static_assert`ed in `src/MeshIO.cpp`) — bulk import/export from external
 buffers is a single copy in each direction. Geometry helpers include
 `ComputeFaceNormals`, `ComputeSmoothFaceNormals`, `ComputeVertexNormals`,
-`ComputeArea`, `ComputeAABBox`, and per-face/per-edge queries. Texture-layout
+`ComputeArea`, `ComputeAABBox`, and per-face/per-edge queries.
+`SamplePoints(density, seed, points, colors)` draws area-uniform random
+points on the surface (Turk), one more per face with the probability of its
+fractional count, colored from the texture when asked (openMVS samples meshes
+for view selection and `DensifyPointCloud --sample-mesh` with it). Texture-layout
 conversions: `ToTexCoordPerVertex()`, `ToTexCoordPerVertexUVOnly()`,
 `ToOneMeshPerTexblob()`.
 
@@ -139,11 +144,69 @@ ordinary callers between Begin/End: `faces.empty()` is intentional there.
 
 Header: [`Mesh.h`](../include/halfmesh/Mesh.h).
 
-## PLY / glTF I/O
+### Volume, watertightness, join and extraction
+
+```cpp
+bool        Mesh::IsWatertight() const;
+real        Mesh::ComputeVolume() const;
+PlaneVolume Mesh::ComputeVolume(const Plane& plane) const; // {above, below}
+void        Mesh::Join(const Mesh& other);
+Mesh        Mesh::SubMesh(std::span<const FIndex> faces, std::vector<VIndex>* vertexMap = nullptr) const;
+```
+
+- **`IsWatertight`** — every edge shared by exactly two faces that traverse it
+  in opposite directions: closed, edge-manifold and consistently oriented, the
+  condition under which the surface bounds a volume. Two shells touching at a
+  vertex qualify (they still bound a volume); a boundary edge, a third face on
+  an edge, two faces winding an edge the same way or a face repeating a vertex
+  do not. Read-only and repair-free: on the arrays it buckets the directed
+  edges under their smaller endpoint (counting sort, 32-bit entries packing the
+  other endpoint and the direction; buckets checked in parallel), O(F) with no
+  hashing; on a live half-edge structure, which is oriented by construction, it
+  looks for a border half-edge.
+- **`ComputeVolume()`** — the signed enclosed volume by the divergence theorem,
+  exact for a watertight surface: positive for faces wound counter-clockwise
+  seen from outside, and a region a nested or self-intersecting surface winds
+  around k times counts k times. The tetrahedra are spanned with the bounding-
+  box center rather than the origin and summed in double over fixed blocks of
+  faces: the terms stay at the mesh's own scale (a sphere 4·10⁶ units from the
+  origin: under 10⁻¹⁴ relative error, against 10⁻⁹ origin-referenced), and the result
+  does not depend on the thread count.
+- **`ComputeVolume(plane)`** — the volume between the surface and a plane
+  (unit normal), along the normal: each face contributes the prism between it
+  and its projection, signed by the side it faces, a face crossing the plane
+  split on it in closed form (the height is linear over the face). `above` and
+  `below` are the parts on either side. For a watertight surface their sum is
+  the enclosed volume whatever the plane; for an open surface whose boundary
+  lies on the plane — a stockpile on its ground, a terrain over a datum — it is
+  the volume the surface closes against the plane, `above` the fill and
+  `-below` the cut (a pit counts negative). openMVS's `TransformScene
+  --compute-volume` measures open meshes this way against their estimated
+  ground plane.
+- **`Join`** — appends another mesh, indices shifted, nothing welded
+  (`RemoveDuplicateVertices` merges a shared seam). An attribute survives only
+  when both meshes carry it, so no array is left partial; textures are
+  concatenated with the other mesh's blob ids shifted (dropped past
+  `MAX_TEXBLOBS`). When both meshes hold a live half-edge structure it is
+  appended in place, O(V+F), instead of being rebuilt.
+- **`SubMesh`** — copies the given faces in order and the vertices they
+  reference in order of first reference, with every attribute and only the
+  textures those faces use (renumbered in order of first use). The renumbering
+  is a dense table when the faces reference a fair share of the vertices and an
+  open-addressing table sized to the selection otherwise, so cutting many small
+  pieces out of a large mesh does not pay O(V) each. `vertexMap` returns each
+  new vertex's source index, for callers carrying attributes of their own. The
+  result is array-only and may be non-manifold where the selection pinches a
+  vertex.
+
+Implementation: `src/Mesh.cpp`.
+
+## PLY / glTF / OBJ I/O
 
 `Mesh::Load(path)` / `Mesh::Save(path, binary = true)` dispatch on the file
-extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
-(via tinyply). Both binary and ASCII variants are supported for each format.
+extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), `.obj` → Wavefront OBJ,
+everything else → PLY (via tinyply). PLY and glTF come in binary and ASCII
+variants; OBJ is text only.
 
 - **PLY** reads positions (any scalar type, narrowed with a warning), vertex
   colors, per-face texture coordinates (`face/texcoord`, 6 floats) and texture
@@ -156,6 +219,40 @@ extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
   primitive per texture blob, `KHR_materials_unlit`, and a z-up → y-up root
   rotation. `SaveGLTF`'s `imageFormat` / `embedImages` choose JPEG or PNG and
   whether textures ride inside the file or sit beside it.
+- **OBJ** is read the way the fastest parser measured, rapidobj, reads it: the
+  file streams in 32 MB blocks, the next one read while the current one parses,
+  and every block is parsed in parallel over 1 MB newline-aligned chunks. Each
+  block takes two passes so every element lands straight in its final slot: a
+  counting pass sizes each chunk, a prefix sum places it, and the parsing pass
+  resolves relative indices against the exact global counts. Floats are parsed
+  correctly rounded by fast_float and written by `std::to_chars` in their
+  shortest round-trip form, so positions, normals and normalized UVs survive a
+  save → load cycle bit-exact. It reads `v` (with the `x y z r g b` color
+  extension, 0..1 or 0..255), `vt`, `vn`, `f` in every index form (`v`,
+  `v/vt`, `v//vn`, `v/vt/vn`, negative = relative), line continuations,
+  `usemtl`, and `mtllib` with `Kd` and `map_Kd` (options skipped, paths with
+  spaces, Windows separators). Polygons are triangulated: a quad along the
+  diagonal that keeps both halves facing the polygon's Newell normal (the
+  shorter one when both do), larger polygons by ear clipping in their best-fit
+  plane. Each material the faces use becomes a texture blob as soon as any of
+  them has a map — its image, or a one-texel image of its `Kd` when it has none
+  or the file does not load, so no face loses its color; without any map the
+  UVs load alone, as an untextured atlas. A vertex whose corners reference
+  different `vn` takes their normalized mean. A malformed line or an index out
+  of range fails the load with its line number. On save, a vertex writes one
+  `vt` per distinct UV among its corners, the faces are grouped by blob under
+  one `usemtl` each, the textures go beside the file as
+  `<stem>_material_NN_map_Kd.<jpg|png>` listed in `<stem>.mtl`, and the text
+  is formatted in parallel blocks.
+
+  | OBJ, vs openMVS's previous codec (i7-13700KF) | save | load | file |
+  |---|---:|---:|---:|
+  | 2.68 M faces, untextured | 2.98 s → 0.086 s | 3.05 s → 0.13 s | 112 → 109 MB |
+  | 465 k faces, textured, one 8 K texture | 1.85 s → 0.83 s (PNG, was JPEG) | 1.88 s → 0.18 s | 59 → 34 MB |
+  | 26.0 M faces, untextured | 29.8 s → 0.82 s | 30.2 s → 0.99 s | 1154 → 1055 MB |
+
+  The previous codec printed six decimals, which lost up to 10⁻⁶ of every
+  coordinate, and could not read back its own untextured output.
 - **Coordinate frame** — **halfmesh is z-up in memory; glTF files are y-up**,
   and the conversion happens at this boundary and nowhere else. `SaveGLTF`
   writes the vertex buffer in halfmesh's own frame and declares the
@@ -176,8 +273,8 @@ extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
   nothing in such a file distinguishes it from a conformant one, so it has to
   be fixed by its producer.
 - **UV conventions** (worth reading twice): in-memory textured meshes store
-  *absolute pixel* UVs with no Y flip; PLY on disk stores normalized+Y-flipped;
-  glTF stores `(pixel + 0.5)/size`. The `FTexcoords{Normalize,UnNormalize}[FlipY]`
+  *absolute pixel* UVs with no Y flip; PLY and OBJ on disk store
+  normalized+Y-flipped; glTF stores `(pixel + 0.5)/size`. The `FTexcoords{Normalize,UnNormalize}[FlipY]`
   helpers convert, and `UVBlobsAreNormalized()` (in `TextureBake.h`) classifies
   a loaded mesh at runtime.
 - glTF (and some PLY) input arrives *unwelded* — one vertex per corner. Run
@@ -185,7 +282,7 @@ extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
   `RemoveDegenerateFaces(0.f)` → `RemoveUnreferencedVertices()`) before any
   half-edge algorithm, or every edge counts as a boundary.
 
-Implementation: `src/MeshIO.cpp`.
+Implementation: `src/MeshIO.cpp` (PLY, glTF), `src/MeshIOOBJ.cpp` (OBJ).
 
 ## Repair & cleaning
 
@@ -337,6 +434,20 @@ regularizes edge lengths and triangle aspect ratios. Key knobs:
 Changes vertex/face counts; UVs are not preserved (rebake afterwards).
 Implementation: `src/MeshRemesh.cpp` · example: `examples/Remesh.cpp`.
 
+### Selective subdivision
+
+```cpp
+VIndex Mesh::SubdivideFaces(const std::vector<bool>& selected);
+```
+
+Splits every selected face 1-to-4 at its edge midpoints and closes the
+neighbours that share a split edge with 2- or 3-way splits (red-green), so the
+result stays conforming (no T-junction). The midpoints are appended (vertex
+colors interpolated, authored normals cleared), the split faces are replaced by
+swap-pop, and face-keyed attributes are dropped. openMVS's mesh refinement uses
+it every scale on the faces whose projection exceeds its area cap. From Python:
+`halfmesh.subdivide_faces`.
+
 ## Smoothing
 
 ```cpp
@@ -477,7 +588,7 @@ method write-up lives in its header comment).
 ```cpp
 struct AtlasParams { texelsPerUnit, resolution, padding, allowRotation,
                      powerOfTwo, square, orientCharts, fitToResolution,
-                     tinyChartSide, debrisChartFaces };
+                     tinyChartSide, debrisChartFaces, packFootprints };
 AtlasResult GenerateAtlas(Mesh&, const ParametrizeParams&, const AtlasParams& = {});
 AtlasResult PackAtlas(Mesh&, const std::vector<unsigned>& faceChart,
                       unsigned numCharts, const AtlasParams& = {});
@@ -491,15 +602,29 @@ float NormalizeChartDensity(Mesh&, const std::vector<unsigned>& faceChart,
   dimensions, page count, occupancy and true triangle `coverage`, plus layout
   diagnostics (`fitScale`, `maxChartExtent`, `minPadding`); leaves normalized
   `[0,1]` UVs in `mesh.faceTexcoords`.
-- `PackAtlas` is the packer alone: skyline bottom-left min-waste placement
-  (xatlas-inspired) with per-chart minimum-area-rectangle pre-orientation
-  (rotating calipers), optional 90° rotations (true rotations — winding
-  survives), gutter `padding` (opt-in per-size narrowing to a 1-texel gutter
-  for tiny/debris charts via `tinyChartSide`/`debrisChartFaces`), and
-  multi-page overflow. For multi-page results, per-face pages come from
-  `AtlasResult::chartPage[faceChart[f]]`.
+- `PackAtlas` is the packer alone. By default (`packFootprints`) it packs
+  each chart's **footprint** — the texels its UV triangles touch
+  (conservative raster) grown by its gutter — with `PackFootprints` (below),
+  so charts nest into each other's empty bounding-box corners; under
+  `fitToResolution` the scale search probes with footprints too, so the
+  denser layout becomes texel density. The grid is one texel up to 2048-texel
+  pages, page/2048 above. With `packFootprints = false` it packs bounding
+  rectangles: skyline bottom-left min-waste placement (xatlas-inspired). Both
+  keep the per-chart minimum-area-rectangle pre-orientation (rotating
+  calipers), optional 90° rotations (true rotations — winding survives),
+  gutter `padding` (opt-in per-size narrowing to a 1-texel gutter for
+  tiny/debris charts via `tinyChartSide`/`debrisChartFaces`), and multi-page
+  overflow. For multi-page results, per-face pages come from
+  `AtlasResult::chartPage[faceChart[f]]`. With footprints, `occupancy` is the
+  footprint area over the page area; `coverage` (triangle area) is the number
+  to compare across modes and engines.
 
-Packing is **two-tier**: rects whose padded long side reaches `pageW/32` go
+Footprints put far more of the page under geometry (`coverage`): 0.291 →
+0.502 on `mesh.ply` at 1024 (xatlas 0.415), 0.387 → 0.637 on a 200k-face
+Truck at 4096 (xatlas 0.614), for 1.4 s and 13 s of packing against 0.03 s
+and 0.06 s for rectangles (xatlas: 48 s and 318 s end to end).
+
+Rectangle packing is **two-tier**: rects whose padded long side reaches `pageW/32` go
 through the full min-waste skyline scan, everything smaller lands on
 height-sorted shelves allocated through that same skyline. The skyline probe
 is `O(#segments)` per rect, so the shelf tier is what removes the quadratic
@@ -530,9 +655,31 @@ degenerate, oversized, and cap-limited entries come back with
 `halfmesh.pack_rectangles` / `halfmesh.estimate_square_texture_size`
 ([`PYTHON.md`](PYTHON.md)).
 
+### Footprint packing (mesh-independent)
+
+```cpp
+FootprintPackResult PackFootprints(const std::vector<cv::Mat>& masks,
+                                   const FootprintPackParams&,
+                                   std::vector<FootprintPlacement>& placements);
+```
+
+Packs binary masks (CV_8UC1, non-zero = footprint) by their footprints, not
+their rectangles: two items may share texels of their rectangles wherever
+neither mask is set, so irregular shapes — texture patches, UV charts — nest
+into each other's corners. The masks are quantized to `blockSize` texel blocks,
+each block row described by the one span it covers; bottom-left first fit
+over per-row free intervals, largest first, in whichever orientation sits
+lower (a rotated mask is placed as `cv::rotate(mask,
+cv::ROTATE_90_COUNTERCLOCKWISE)`, winding preserved). Each page is tried at
+three widths around the square root of the footprint area and cropped to its
+content (rounded to `sizeMultiple`, or a power of two); what a page cannot take
+opens the next, bounded by `maxPageSize` (0: unbounded). Any gutter must be
+part of the masks. openMVS's texturing packs its texture patches with it.
+From Python: `halfmesh.pack_footprints`.
+
 Header: [`RectPacking.h`](../include/halfmesh/RectPacking.h) ·
-implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp` ·
-example: `examples/Unwrap.cpp`.
+implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp`,
+`src/FootprintPacking.cpp` · example: `examples/Unwrap.cpp`.
 
 ## Texture bake / rebake / defrag
 
@@ -605,7 +752,10 @@ caches and octree are derived data and are not copied.
 - `Util/Geometry.h` — angles/cotangents, point–segment and point–triangle
   distances, Möller–Trumbore ray-triangle intersection, barycentric helpers.
 - `Util/Raster.h` — `RasterizeTriangleBary` (top-left-rule triangle traversal
-  with barycentric callback) and mask-guided `Dilate` (the bake gutter fill).
+  with barycentric callback), mask-guided `Dilate` (the bake gutter fill) and
+  `PushPullFill` (fills every texel a mask leaves out by push-pull over a box
+  pyramid, so mipmapped lookups near a chart average its own surroundings;
+  openMVS's texturing fills its atlas pages with it).
 - `Util/Sampler.h` — bilinear/bicubic image sampling with texel-center
   convention (`uv*size − 0.5`).
 - `Util/Accumulator.h`, `Util/PixelTraits.h` — weighted accumulation over

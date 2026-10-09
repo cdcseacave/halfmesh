@@ -134,3 +134,37 @@ def test_estimate_square_texture_size_rejects_bad_arguments():
             hm.estimate_square_texture_size(sizes, target_occupancy=occupancy)
     with pytest.raises(ValueError, match="multiple"):
         hm.estimate_square_texture_size(sizes, multiple=-8)
+
+
+def _triangle_masks(n=150, seed=0):
+    rng = np.random.default_rng(seed)
+    masks = []
+    for _ in range(n):
+        h, w = rng.integers(3, 50, size=2)
+        yy, xx = np.mgrid[0:h, 0:w]
+        masks.append(((xx / w + yy / h) <= 1.0).astype(np.uint8))  # a right triangle
+    return masks
+
+
+def test_pack_footprints_places_every_mask_without_overlap():
+    masks = _triangle_masks()
+    result = hm.pack_footprints(masks)
+    assert result["n_packed"] == len(masks) and result["packed"].all()
+    pages = [np.zeros((h, w), np.uint8) for w, h in result["page_sizes"]]
+    for mask, (x, y, w, h), page, rotated in zip(masks, result["rects"], result["page"], result["rotated"]):
+        placed = np.rot90(mask) if rotated else mask
+        assert placed.shape == (h, w)
+        region = pages[page][y:y + h, x:x + w]
+        assert not (region[placed > 0] > 0).any()
+        region[placed > 0] = 1
+    # the triangles nest: a smaller page than their bounding rectangles need
+    sizes = np.array([(m.shape[1], m.shape[0]) for m in masks])
+    rects = hm.pack_rectangles(sizes, padding=0, power_of_two=True)
+    assert sum(w * h for w, h in result["page_sizes"]) < rects["width"] * rects["height"] * rects["pages"]
+
+
+def test_pack_footprints_rejects_bad_input():
+    with pytest.raises(ValueError):
+        hm.pack_footprints([np.ones(5, np.uint8)])
+    with pytest.raises(ValueError):
+        hm.pack_footprints([np.ones((2, 2), np.uint8)], block_size=0)

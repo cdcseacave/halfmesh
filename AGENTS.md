@@ -5,7 +5,7 @@ dependency-light.
 
 ## What it does
 Half-edge connectivity + mesh repair, QEM decimation, isotropic remeshing,
-HC-Laplacian and Taubin smoothing, Liepa hole-filling, a triangle KD-tree, PLY/glTF I/O,
+HC-Laplacian and Taubin smoothing, Liepa hole-filling, a triangle KD-tree, PLY/glTF/OBJ I/O, volume/watertightness queries,
 and a UV pipeline (D-Charts chart
 segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed texture atlas).
 
@@ -79,7 +79,7 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 ## Build & test
 Set `$VCPKG_ROOT` (the toolchain auto-loads). Deps: eigen3, bshoshany-thread-pool,
 opencv4 (no default features — only core/imgproc/imgcodecs are used), tinyply,
-tinygltf.
+tinygltf, fast-float (header-only, OBJ parsing).
 ```sh
 cmake -S . -B make -DHALFMESH_BUILD_TESTS=ON -DHALFMESH_BUILD_TOOLS=ON
 cmake --build make -j

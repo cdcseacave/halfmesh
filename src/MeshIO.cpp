@@ -272,6 +272,8 @@ bool Mesh::Load(const std::string& fileName)
 	               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 	if (ext == ".glb" || ext == ".gltf")
 		return LoadGLTF(fileName);
+	if (ext == ".obj")
+		return LoadOBJ(fileName);
 	// default to PLY (also handles .ply and the extension-less case)
 	return LoadPLY(fileName);
 }
@@ -1385,7 +1387,9 @@ bool Mesh::Save(const std::string& fileName, bool binary) const
 {
 	SyncFacesConst();
 	const std::string::size_type extPos = fileName.rfind('.');
-	const std::string ext(extPos != fileName.npos ? fileName.substr(extPos) : "");
+	std::string ext(extPos != fileName.npos ? fileName.substr(extPos) : "");
+	std::transform(ext.begin(), ext.end(), ext.begin(),
+	               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 	if (ext == ".ply") {
 		// save in PLY format
 		if (!SavePLY(fileName, binary))
@@ -1397,6 +1401,10 @@ bool Mesh::Save(const std::string& fileName, bool binary) const
 	} else if (ext == ".gltf") {
 		// save in GLTF format
 		if (!SaveGLTF(fileName, false))
+			return false;
+	} else if (ext == ".obj") {
+		// save in OBJ format (text only)
+		if (!SaveOBJ(fileName))
 			return false;
 	} else {
 		return false;
