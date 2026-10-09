@@ -699,6 +699,15 @@ class Mesh
 	// the input mesh should be manifold and have no duplicate or zero area faces.
 	// If stats is non-null it receives per-operation counts.
 	void RemeshIsotropic(RemeshParams params, RemeshStats* stats = nullptr);
+
+	// selective 1-to-4 subdivision: every face flagged in `selected` (one flag
+	// per face) is split at its edge midpoints into four, and every unflagged
+	// face that shares a split edge into two or three (red-green closure), so
+	// the mesh stays conforming. Midpoint vertices are appended (colors
+	// interpolated, authored normals cleared); the split faces are replaced in
+	// place by swap-pop with the new ones, and face-keyed attributes are dropped.
+	// Returns the number of vertices added.
+	VIndex SubdivideFaces(const std::vector<bool>& selected);
 };
 
 } // namespace halfmesh

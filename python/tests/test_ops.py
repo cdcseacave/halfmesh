@@ -525,3 +525,18 @@ def test_remove_long_edge_faces_capped_refuses_unusable_parameters(bad):
     v, f, _ = _two_sheets()
     with pytest.raises(ValueError):
         hm.remove_long_edge_faces_capped(v, f, **bad)
+
+
+def test_subdivide_faces_splits_selected_faces_conforming():
+    v, f = _grid_mesh(n=8, noise=0.0)
+    selected = np.zeros(len(f), bool)
+    selected[::3] = True
+    v2, f2, added = hm.subdivide_faces(v, f, selected)
+    assert added > 0 and len(v2) == len(v) + added
+    assert len(f2) >= len(f) + 3 * selected.sum()
+    # conforming: every interior edge is shared by exactly two faces
+    edges = np.sort(np.concatenate([f2[:, [0, 1]], f2[:, [1, 2]], f2[:, [2, 0]]]), axis=1)
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    assert counts.max() <= 2
+    with pytest.raises(ValueError):
+        hm.subdivide_faces(v, f, selected[:-1])

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+### Added
+
+- **Footprint packing.** `PackFootprints` (`RectPacking.h`) packs binary masks
+  by their footprints instead of their bounding rectangles: bottom-left first
+  fit on a block grid over per-row free intervals, both orientations
+  (winding-preserving rotation), pages cropped to their content. openMVS's
+  texturing packs its patches with it.
+- **`PackAtlas` packs chart footprints by default**
+  (`AtlasParams::packFootprints`, also driving the fit-to-resolution search):
+  triangle coverage 0.291 → 0.502 on `mesh.ply` at 1024 (xatlas 0.415), 0.387
+  → 0.637 on a 200k-face Truck at 4096 (xatlas 0.614), at 1.4 s and 13 s of
+  packing. `occupancy` is then footprint area over page area. The segment
+  quality ratchet now tracks `coverage`.
+- **`Mesh::SubdivideFaces`**: selective 1-to-4 midpoint subdivision with
+  red-green closure (moved from openMVS's mesh refinement, which now calls it).
+- `atlasbench --pack-footprints`, and the bench builds on Windows (peak RSS
+  through `GetProcessMemoryInfo`).
+- **Python:** `pack_footprints`, `subdivide_faces`, and `unwrap(...,
+  pack_footprints=True)`.
+
 ## [0.4.2]
 
 ### Fixed

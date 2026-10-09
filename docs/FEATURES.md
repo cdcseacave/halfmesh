@@ -337,6 +337,20 @@ regularizes edge lengths and triangle aspect ratios. Key knobs:
 Changes vertex/face counts; UVs are not preserved (rebake afterwards).
 Implementation: `src/MeshRemesh.cpp` · example: `examples/Remesh.cpp`.
 
+### Selective subdivision
+
+```cpp
+VIndex Mesh::SubdivideFaces(const std::vector<bool>& selected);
+```
+
+Splits every selected face 1-to-4 at its edge midpoints and closes the
+neighbours that share a split edge with 2- or 3-way splits (red-green), so the
+result stays conforming (no T-junction). The midpoints are appended (vertex
+colors interpolated, authored normals cleared), the split faces are replaced by
+swap-pop, and face-keyed attributes are dropped. openMVS's mesh refinement uses
+it every scale on the faces whose projection exceeds its area cap. From Python:
+`halfmesh.subdivide_faces`.
+
 ## Smoothing
 
 ```cpp
@@ -544,20 +558,6 @@ degenerate, oversized, and cap-limited entries come back with
 `halfmesh.pack_rectangles` / `halfmesh.estimate_square_texture_size`
 ([`PYTHON.md`](PYTHON.md)).
 
-Header: [`RectPacking.h`](../include/halfmesh/RectPacking.h) ·
-implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp`,
-`src/FootprintPacking.cpp` · example: `examples/Unwrap.cpp`.
-
-## Texture bake / rebake / defrag
-
-```cpp
-struct BakeParams { resolution, maxResolution, multiPage, padding, supersample,
-                    interp, correspondence, raySearchDist, numThreads,
-                    accelerator, faceMask, maxDefragPatches };
-BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
-                     const SourceResolver&, const BakeParams&);
-BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams&);
-BakeResult BakeOntoAtlas(const Mesh& source, Mesh& target, const BakeParams&);
 ### Footprint packing (mesh-independent)
 
 ```cpp
@@ -580,6 +580,20 @@ opens the next, bounded by `maxPageSize` (0: unbounded). Any gutter must be
 part of the masks. openMVS's texturing packs its texture patches with it.
 From Python: `halfmesh.pack_footprints`.
 
+Header: [`RectPacking.h`](../include/halfmesh/RectPacking.h) ·
+implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp`,
+`src/FootprintPacking.cpp` · example: `examples/Unwrap.cpp`.
+
+## Texture bake / rebake / defrag
+
+```cpp
+struct BakeParams { resolution, maxResolution, multiPage, padding, supersample,
+                    interp, correspondence, raySearchDist, numThreads,
+                    accelerator, faceMask, maxDefragPatches };
+BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
+                     const SourceResolver&, const BakeParams&);
+BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams&);
+BakeResult BakeOntoAtlas(const Mesh& source, Mesh& target, const BakeParams&);
 BakeResult DefragmentTexture(Mesh& mesh, const BakeParams&);
 unsigned   AutoAtlasResolution(const Mesh& source, unsigned maxResolution = 8192);
 ```

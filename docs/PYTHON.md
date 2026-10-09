@@ -337,7 +337,16 @@ array ops above.
 - `has_texcoords: bool` — whether the mesh carries per-face-corner UVs
   (read-only).
 
-### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0, repair_carve_rings=0, fold_rescue_slits=0, tiny_chart_side=0.0, debris_chart_faces=0) -> dict`
+### `subdivide_faces(vertices, faces, selected) -> (v, f, added)`
+
+Split every face flagged in `selected` (a boolean array, one entry per face)
+1-to-4 at its edge midpoints, and every neighbour sharing a split edge into 2
+or 3 (red-green closure), so the mesh stays conforming. Returns the new arrays
+and the number of vertices added. Raises `ValueError` if `selected` is not one
+flag per face, or if the input needs topology repair (the flags are indexed by
+input face).
+
+### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0, repair_carve_rings=0, fold_rescue_slits=0, tiny_chart_side=0.0, debris_chart_faces=0, pack_footprints=True) -> dict`
 
 File-based UV-atlas generation: load `input_path` → weld/clean prelude
 (`RemoveDuplicateVertices` + `RemoveDegenerateFaces` +
@@ -442,6 +451,10 @@ gutter bleeds between charts at a lower mip level than you asked for.
 Raises `RuntimeError` if `input_path` fails to load or `output_path` fails
 to save.
 
+`pack_footprints` (default `True`) packs the charts' footprints instead of
+their bounding rectangles (`AtlasParams::packFootprints`); compare `coverage`
+across the two, `occupancy` measures different things in each.
+
 ### `pack_rectangles(sizes, page_size=1024, mode="grow", max_page_size=None, padding=2, allow_rotation=True, power_of_two=False, square=False) -> dict`
 
 Pack integer pixel rectangles into texture pages, with no mesh involved: sprite
@@ -451,10 +464,6 @@ near-linear on 100k+ small rectangles.
 
 `sizes` is an `[N,2]` **integer** array of `(width, height)` pairs. A float array
 would be truncated and a boolean one read as 1s, so both raise `ValueError`, as
-`pack_footprints` (default `True`) packs the charts' footprints instead of
-their bounding rectangles (`AtlasParams::packFootprints`); compare `coverage`
-across the two, `occupancy` measures different things in each.
-
 do a negative size and one above `2**31 - 1`. A zero width or height is
 degenerate: that entry is left unpacked rather than raising.
 
@@ -498,15 +507,6 @@ out = hm.pack_rectangles(sizes, page_size=side, padding=1)
 x, y, w, h = out["rects"][i]  # where sprite i goes (w/h swapped if out["rotated"][i])
 ```
 
-### `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9) -> int`
-
-Approximate the smallest square page side that holds `sizes` (same `[N,2]`
-integer `(width, height)` array as `pack_rectangles`) at `target_occupancy`, and
-never smaller than the longest rect side. The result is rounded up to a
-multiple of `multiple`, or to a power of two when `multiple` is `0`. It is an
-estimate from area, not a packing, so it makes a good starting `page_size` for
-`pack_rectangles`. Raises `ValueError` for `target_occupancy` outside `(0, 1]`
-or a negative `multiple`.
 ### `pack_footprints(masks, max_page_size=0, size_multiple=0, block_size=4, allow_rotation=True) -> dict`
 
 Pack a list of binary masks (2-D `uint8` arrays, non-zero = footprint) by their
@@ -519,6 +519,15 @@ page [N], rotated [N], packed [N], page_sizes [(w, h)], n_packed,
 footprint_area, occupancy}`, each per-mask array in input order. Raises
 `ValueError` for a mask that is not 2-D, `block_size` 0 or a negative bound.
 
+### `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9) -> int`
+
+Approximate the smallest square page side that holds `sizes` (same `[N,2]`
+integer `(width, height)` array as `pack_rectangles`) at `target_occupancy`, and
+never smaller than the longest rect side. The result is rounded up to a
+multiple of `multiple`, or to a power of two when `multiple` is `0`. It is an
+estimate from area, not a packing, so it makes a good starting `page_size` for
+`pack_rectangles`. Raises `ValueError` for `target_occupancy` outside `(0, 1]`
+or a negative `multiple`.
 
 ## Worked example
 

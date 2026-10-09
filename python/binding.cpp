@@ -251,6 +251,17 @@ PYBIND11_MODULE(_halfmesh, m)
 		Mesh mesh = MeshFromArrays(v, f);
 		return ArraysWithCount(mesh, [=](Mesh& self) { return self.CloseHoles(max_hole_edges); }); }, py::arg("vertices"), py::arg("faces"), py::arg("max_hole_edges") = 30u, "Liepa hole filling (fill + refine + fair) of every hole spanned by at most max_hole_edges boundary edges; a loop that outlines its own connected component (an isolated triangle, a flat fragment) stays open. Returns (vertices, faces, closed).");
 
+	m.def("subdivide_faces", [](const VertArray& v, const FaceArray& f, const py::array& selected) {
+		Mesh mesh = MeshFromArrays(v, f);
+		const py::array_t<bool, py::array::c_style | py::array::forcecast> flags(selected);
+		if (flags.ndim() != 1 || static_cast<size_t>(flags.shape(0)) != mesh.faces.size())
+			throw py::value_error("selected must be a 1-D boolean array with one entry per face");
+		std::vector<bool> mask(mesh.faces.size());
+		for (size_t i = 0; i < mask.size(); ++i)
+			mask[i] = flags.data()[i];
+		RequireIndexStableBuild(mesh, "selected");
+		return ArraysWithCount(mesh, [&mask](Mesh& self) { return self.SubdivideFaces(mask); }); }, py::arg("vertices"), py::arg("faces"), py::arg("selected"), "Split every selected face 1-to-4 at its edge midpoints and every neighbour sharing a split edge into 2 or 3 (red-green closure), so the mesh stays conforming. Returns (vertices, faces, added vertices).");
+
 	m.def("remove_vertices_and_fill", [](const VertArray& v, const FaceArray& f, const py::array& vertex_indices) {
 		const Int64Array indices = IntegerArray(vertex_indices, 1, "vertex_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
 		Mesh mesh = MeshFromArrays(v, f);
@@ -432,6 +443,7 @@ PYBIND11_MODULE(_halfmesh, m)
 			aparams.allowRotation = allow_rotation;
 			aparams.tinyChartSide = tiny_chart_side;
 			aparams.debrisChartFaces = debris_chart_faces;
+			aparams.packFootprints = pack_footprints;
 			result = halfmesh::GenerateAtlas(mesh, pparams, aparams);
 			charts = static_cast<unsigned>(result.chartPage.size());
 
@@ -443,7 +455,6 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["pages"] = result.numPages;
 		meta["width"] = result.width;
 		meta["height"] = result.height;
-			aparams.packFootprints = pack_footprints;
 		meta["occupancy"] = result.occupancy;
 		meta["coverage"] = result.coverage;
 		meta["fit_attempts"] = result.fitAttempts;
@@ -523,15 +534,6 @@ PYBIND11_MODULE(_halfmesh, m)
 		out["occupancy"] = pageArea > 0. ? static_cast<double>(result.packedArea) / pageArea : 0.;
 		return out; }, py::arg("sizes"), py::arg("page_size") = PageSizeArg(1024), py::arg("mode") = "grow", py::arg("max_page_size") = py::none(), py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("power_of_two") = false, py::arg("square") = false, "Pack integer (width, height) rectangles into texture pages, no mesh involved (sprite sheets, lightmaps, texture repacking); the packer unwrap() uses for charts. mode: 'grow' doubles one page until everything fits (up to max_page_size), 'single' uses one fixed page and leaves what does not fit unpacked, 'multi' opens as many fixed pages as needed. Returns {rects [N,4] int32 (x, y, w, h), page [N], rotated [N], packed [N], pages, n_packed, width, height, packed_area, occupancy}, each per-rect array in input order.");
 
-	m.def("estimate_square_texture_size", [](const py::array& sizes, int multiple, float target_occupancy) {
-		if (multiple < 0)
-			throw py::value_error("multiple must be >= 0 (0 rounds up to a power of two)");
-		if (!(target_occupancy > 0.f && target_occupancy <= 1.f))
-			throw py::value_error("target_occupancy must lie in (0, 1]");
-		const std::vector<cv::Rect> rects = RectsFromSizes(sizes);
-		py::gil_scoped_release release;
-		return halfmesh::EstimateSquareTextureSize(rects, multiple, target_occupancy); }, py::arg("sizes"), py::arg("multiple") = 0, py::arg("target_occupancy") = 0.9f, "Approximate the smallest square page side holding these (width, height) rectangles at target_occupancy, rounded up to a multiple of `multiple`, or to a power of two when it is 0. A starting page_size for pack_rectangles.");
-}
 	m.def("pack_footprints", [](const std::vector<py::array>& masks, int max_page_size, int size_multiple, unsigned block_size, bool allow_rotation) {
 		if (max_page_size < 0 || size_multiple < 0)
 			throw py::value_error("max_page_size and size_multiple must be >= 0");
@@ -595,3 +597,12 @@ PYBIND11_MODULE(_halfmesh, m)
 		out["occupancy"] = pageArea > 0. ? static_cast<double>(result.footprintArea) / pageArea : 0.;
 		return out; }, py::arg("masks"), py::arg("max_page_size") = 0, py::arg("size_multiple") = 0, py::arg("block_size") = 4u, py::arg("allow_rotation") = true, "Pack binary masks (2-D uint8 arrays, non-zero = footprint) into texture pages by their footprints, not their bounding rectangles, so irregular shapes nest into each other's empty corners; any gutter must be part of the masks. max_page_size bounds the page side (0: unbounded), each page is cropped to its content and rounded up to size_multiple (0: a power of two). A rotated mask is placed as np.rot90(mask) (counter-clockwise). Returns {rects [N,4] int32 (x, y, w, h), page [N], rotated [N], packed [N], page_sizes [(w, h)], n_packed, footprint_area, occupancy}, each per-mask array in input order.");
 
+	m.def("estimate_square_texture_size", [](const py::array& sizes, int multiple, float target_occupancy) {
+		if (multiple < 0)
+			throw py::value_error("multiple must be >= 0 (0 rounds up to a power of two)");
+		if (!(target_occupancy > 0.f && target_occupancy <= 1.f))
+			throw py::value_error("target_occupancy must lie in (0, 1]");
+		const std::vector<cv::Rect> rects = RectsFromSizes(sizes);
+		py::gil_scoped_release release;
+		return halfmesh::EstimateSquareTextureSize(rects, multiple, target_occupancy); }, py::arg("sizes"), py::arg("multiple") = 0, py::arg("target_occupancy") = 0.9f, "Approximate the smallest square page side holding these (width, height) rectangles at target_occupancy, rounded up to a multiple of `multiple`, or to a power of two when it is 0. A starting page_size for pack_rectangles.");
+}

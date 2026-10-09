@@ -1305,4 +1305,149 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 	ASSERT(ValidateInvariants());
 }
 
+Mesh::VIndex Mesh::SubdivideFaces(const std::vector<bool>& selected)
+{
+	SyncFaces();
+	ASSERT(selected.size() == faces.size());
+	halfMesh.Clear();
+	if (!faceTexcoords.empty() || !faceTexblobs.empty() || !texturesDiffuse.empty())
+		REPORT_WARNING("SubdivideFaces: texture attributes dropped: processing methods expect untextured meshes");
+	faceTexcoords.clear();
+	faceTexblobs.clear();
+	texturesDiffuse.clear();
+	faceNormals.clear();
+	vertexNormals.clear();
+	ListVertexFaces();
+
+	// per face touched by a split, the midpoint vertex of each of its edges
+	// (edge i is the one opposite corner i), and whether it is split in four
+	struct SplitFace
+	{
+		VIndex idxVert[3] = {math::NO_ID, math::NO_ID, math::NO_ID};
+		bool split = false;
+	};
+	// the corner of f that a (sharing an edge with f) does not have: the edge of f
+	// opposite it is the shared one
+	const auto sharedEdge = [](const Face& f, const Face& a) {
+		for (int i = 0; i < 2; ++i) {
+			const VIndex v = f[i];
+			if (v != a[0] && v != a[1] && v != a[2])
+				return i;
+		}
+		ASSERT(f[2] != a[0] && f[2] != a[1] && f[2] != a[2]);
+		return 2;
+	};
+	std::unordered_map<FIndex, SplitFace> splits;
+	splits.reserve(faces.size());
+	std::unordered_map<FIndex, unsigned> counts;
+	counts.reserve(12 * 3);
+	const VIndex numVerticesOld = static_cast<VIndex>(vertices.size());
+	const FIndex numFacesOld = static_cast<FIndex>(faces.size());
+	vertices.reserve(vertices.size() * 2);
+	faces.reserve(faces.size() * 3);
+	const auto addVertex = [this](VIndex a, VIndex b) {
+		const VIndex idx = static_cast<VIndex>(vertices.size());
+		vertices.emplace_back((vertices[a] + vertices[b]) * Type(0.5));
+		if (!vertexColors.empty())
+			vertexColors.emplace_back(((vertexColors[a].cast<int>() + vertexColors[b].cast<int>()) / 2).cast<uint8_t>());
+		return idx;
+	};
+	for (FIndex f = 0; f < numFacesOld; ++f) {
+		if (!selected[f])
+			continue;
+		// split the face in four by a vertex at the middle of each edge
+		const Face face = faces[f];
+		SplitFace& split = splits[f];
+		Face newface;
+		for (int i = 0; i < 3; ++i) {
+			// an edge a neighbour split already has its vertex
+			if (split.idxVert[i] == math::NO_ID)
+				split.idxVert[i] = addVertex(face[(i + 1) % 3], face[(i + 2) % 3]);
+			newface[i] = split.idxVert[i];
+		}
+		faces.emplace_back(newface);
+		for (int i = 0; i < 3; ++i)
+			faces.emplace_back(face[i], newface[(i + 2) % 3], newface[(i + 1) % 3]);
+		split.split = true;
+		// tell the three edge-adjacent faces about their split edge
+		ASSERT(counts.empty());
+		for (int i = 0; i < 3; ++i)
+			for (const FIndex g : vertexFaces[face[i]])
+				++counts[g];
+		for (const auto& gc : counts) {
+			ASSERT(gc.second <= 2 || (gc.second == 3 && gc.first == f));
+			if (gc.second != 2)
+				continue;
+			if (gc.first < f && selected[gc.first]) {
+				// already split in four, and it gave this edge its vertex
+				ASSERT(splits[gc.first].idxVert[sharedEdge(faces[gc.first], face)] == newface[sharedEdge(face, faces[gc.first])]);
+				continue;
+			}
+			const VIndex idxVertex = newface[sharedEdge(face, faces[gc.first])];
+			VIndex& idxSplit = splits[gc.first].idxVert[sharedEdge(faces[gc.first], face)];
+			ASSERT(idxSplit == math::NO_ID || idxSplit == idxVertex);
+			idxSplit = idxVertex;
+		}
+		counts.clear();
+	}
+
+	// the faces split on some edges only: two or three faces, or four if a
+	// neighbour split every edge
+	for (const auto& s : splits) {
+		const SplitFace& split = s.second;
+		if (split.split)
+			continue;
+		int indices[3], count = 0;
+		for (int i = 0; i < 3; ++i)
+			if (split.idxVert[i] != math::NO_ID)
+				indices[count++] = i;
+		ASSERT(count > 0);
+		const Face face = faces[s.first];
+		const VIndex* m = split.idxVert;
+		switch (count) {
+		case 1: {
+			const int i = indices[0];
+			faces.emplace_back(m[i], face[(i + 2) % 3], face[i]);
+			faces.emplace_back(m[i], face[i], face[(i + 1) % 3]);
+			break;
+		}
+		case 2:
+			if (indices[0] == 0) {
+				if (indices[1] == 1) {
+					faces.emplace_back(m[1], m[0], face[2]);
+					faces.emplace_back(face[0], face[1], m[0]);
+					faces.emplace_back(face[0], m[0], m[1]);
+				} else {
+					faces.emplace_back(m[2], face[1], m[0]);
+					faces.emplace_back(face[0], m[2], face[2]);
+					faces.emplace_back(m[2], m[0], face[2]);
+				}
+			} else {
+				ASSERT(indices[0] == 1 && indices[1] == 2);
+				faces.emplace_back(face[0], m[2], m[1]);
+				faces.emplace_back(m[1], face[1], face[2]);
+				faces.emplace_back(m[2], face[1], m[1]);
+			}
+			break;
+		case 3:
+			faces.emplace_back(m[0], m[1], m[2]);
+			for (int i = 0; i < 3; ++i)
+				faces.emplace_back(face[i], m[(i + 2) % 3], m[(i + 1) % 3]);
+			break;
+		}
+	}
+
+	// drop the faces that were split: swap-pop is safe while every face swapped
+	// in is a new one, i.e. while more faces were added than are removed (each
+	// split face adds at least two)
+	ASSERT(splits.empty() || faces.size() - numFacesOld > splits.size());
+	for (const auto& s : splits) {
+		faces[s.first] = faces.back();
+		faces.pop_back();
+	}
+	vertexFaces.clear();
+	ASSERT(ValidateInvariants());
+	return static_cast<VIndex>(vertices.size()) - numVerticesOld;
+}
+
 } // namespace halfmesh

@@ -144,6 +144,45 @@ static void PrintRemeshQuality(const char* tag, const RemeshQuality& q)
 // ---------------------------------------------------------------------------
 // Test 1: validity after remeshing
 // ---------------------------------------------------------------------------
+// Selective 1-to-4 subdivision with red-green closure: the area and the
+// boundary are unchanged, the result is a conforming manifold (no T-junction:
+// the half-edge build needs no repair), every flagged face became four and every
+// split edge got exactly one midpoint.
+TEST(MeshSubdivide, SelectedFacesSplitConforming)
+{
+	Mesh mesh = hmtest::corpus::GridPlane(8);
+	mesh.vertexColors.assign(mesh.vertices.size(), Pixel(10, 20, 30));
+	const size_t numFaces = mesh.faces.size(), numVertices = mesh.vertices.size();
+	const double area = mesh.ComputeArea();
+	std::vector<bool> selected(numFaces, false);
+	for (size_t f = 0; f < numFaces; f += 3)
+		selected[f] = true;
+	// the edges of the flagged faces: each gets one midpoint
+	std::set<std::pair<Mesh::VIndex, Mesh::VIndex>> splitEdges;
+	size_t numSelected = 0;
+	for (size_t f = 0; f < numFaces; ++f) {
+		if (!selected[f])
+			continue;
+		++numSelected;
+		for (int i = 0; i < 3; ++i) {
+			const Mesh::VIndex a = mesh.faces[f][(i + 1) % 3], b = mesh.faces[f][(i + 2) % 3];
+			splitEdges.emplace(std::min(a, b), std::max(a, b));
+		}
+	}
+	const Mesh::VIndex added = mesh.SubdivideFaces(selected);
+	EXPECT_EQ(added, splitEdges.size());
+	EXPECT_EQ(mesh.vertices.size(), numVertices + splitEdges.size());
+	EXPECT_EQ(mesh.vertexColors.size(), mesh.vertices.size());
+	EXPECT_EQ(mesh.vertexColors.back(), Pixel(10, 20, 30));
+	EXPECT_GE(mesh.faces.size(), numFaces + 3 * numSelected);
+	EXPECT_NEAR(mesh.ComputeArea(), area, 1e-9 * std::max(1.0, area));
+	HalfMesh hm;
+	EXPECT_TRUE(hm.Build(mesh)) << "the subdivided mesh is not a conforming manifold";
+	// no face is degenerate
+	for (const Mesh::Face& face : mesh.faces)
+		EXPECT_GT(mesh.ComputeFaceDoubleArea(face), 0.f);
+}
+
 TEST(MeshRemesh, ValidityAfterRemesh)
 {
 	Mesh m;
