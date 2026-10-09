@@ -7,7 +7,7 @@ no origin references).
 
 ## Header map
 - `Mesh.h` — the main user-facing class `halfmesh::Mesh`: vertex/face/texcoord/texture
-  containers + a `HalfMesh halfMesh` member; Load/Save (PLY/glTF), IsWatertight,
+  containers + a `HalfMesh halfMesh` member; Load/Save (PLY/glTF/OBJ), IsWatertight,
   ComputeVolume (closed / against a plane), Join, SubMesh, Simplify, RemeshIsotropic,
   SmoothHCLaplacian, SmoothTaubin, Smooth (unified dispatcher), CloseHoles,
   RemoveVerticesAndFill, FixNonManifold, Remove*/repair, normals/area/AABB, adjacency

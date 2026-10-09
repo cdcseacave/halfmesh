@@ -26,6 +26,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   colored from the texture (moved from openMVS).
 - **`PushPullFill`** (`Util/Raster.h`): fills every texel a mask leaves out by
   push-pull over a box pyramid (moved from openMVS's texturing).
+- **Wavefront OBJ I/O** (`Mesh::LoadOBJ` / `Mesh::SaveOBJ`, and `.obj` through
+  `Load` / `Save`): streamed blocks parsed in parallel in two passes (count,
+  place, parse), correctly rounded floats (fast_float) written in their shortest
+  round-trip form, so a save → load cycle is bit-exact; every index form,
+  polygons triangulated facing their normal, line continuations, xyzrgb vertex
+  colors, MTL materials with `Kd` and `map_Kd` (a material without a loadable
+  map keeps its color as a one-texel texture), one `vt` per distinct UV of a
+  vertex on save. Against openMVS's previous codec, which it replaces: 26 M
+  faces saved in 0.82 s instead of 29.8 s and loaded in 0.99 s instead of 30.2
+  s. New dependency: `fast-float` (header-only, private).
 - **`Mesh::IsWatertight`**: closed, edge-manifold, consistently oriented, by an
   O(F) bucket pass over the directed edges, read-only (moved from openMVS, which
   only checked for boundary vertices).
@@ -41,8 +51,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `atlasbench --pack-footprints`, and the bench builds on Windows (peak RSS
   through `GetProcessMemoryInfo`).
 - **Python:** `pack_footprints`, `subdivide_faces`, `sample_points`,
-  `is_watertight`, `compute_volume`, `sub_mesh`, `Mesh.join`, and
-  `unwrap(..., pack_footprints=True)`.
+  `is_watertight`, `compute_volume`, `sub_mesh`, `Mesh.join`, `.obj` in
+  `Mesh.load` / `Mesh.save`, and `unwrap(..., pack_footprints=True)`.
 
 ## [0.4.2]
 

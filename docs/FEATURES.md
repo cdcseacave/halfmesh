@@ -18,7 +18,7 @@ Quick index:
 | [Half-edge core](#half-edge-core) | `HalfMesh` | `HalfMesh.h` | — |
 | [Mesh container](#mesh-container) | `Mesh` | `Mesh.h` | all |
 | [Volume, watertightness, join, extraction](#volume-watertightness-join-and-extraction) | `Mesh::ComputeVolume`, `IsWatertight`, `Join`, `SubMesh` | `Mesh.h` | — |
-| [PLY / glTF I/O](#ply--gltf-io) | `Mesh::Load` / `Mesh::Save` | `Mesh.h` | all |
+| [PLY / glTF / OBJ I/O](#ply--gltf--obj-io) | `Mesh::Load` / `Mesh::Save` | `Mesh.h` | all |
 | [Repair & cleaning](#repair--cleaning) | `Mesh::RemoveDuplicateVertices`, `FixNonManifold`, … | `Mesh.h` | `Decimate.cpp` preamble |
 | [QEM decimation](#qem-decimation) | `Mesh::Simplify` | `Mesh.h` | `Decimate.cpp` |
 | [Isotropic remeshing](#isotropic-remeshing) | `Mesh::RemeshIsotropic` | `Mesh.h` | `Remesh.cpp` |
@@ -201,11 +201,12 @@ Mesh        Mesh::SubMesh(std::span<const FIndex> faces, std::vector<VIndex>* ve
 
 Implementation: `src/Mesh.cpp`.
 
-## PLY / glTF I/O
+## PLY / glTF / OBJ I/O
 
 `Mesh::Load(path)` / `Mesh::Save(path, binary = true)` dispatch on the file
-extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
-(via tinyply). Both binary and ASCII variants are supported for each format.
+extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), `.obj` → Wavefront OBJ,
+everything else → PLY (via tinyply). PLY and glTF come in binary and ASCII
+variants; OBJ is text only.
 
 - **PLY** reads positions (any scalar type, narrowed with a warning), vertex
   colors, per-face texture coordinates (`face/texcoord`, 6 floats) and texture
@@ -218,6 +219,40 @@ extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
   primitive per texture blob, `KHR_materials_unlit`, and a z-up → y-up root
   rotation. `SaveGLTF`'s `imageFormat` / `embedImages` choose JPEG or PNG and
   whether textures ride inside the file or sit beside it.
+- **OBJ** is read the way the fastest parser measured, rapidobj, reads it: the
+  file streams in 32 MB blocks, the next one read while the current one parses,
+  and every block is parsed in parallel over 1 MB newline-aligned chunks. Each
+  block takes two passes so every element lands straight in its final slot: a
+  counting pass sizes each chunk, a prefix sum places it, and the parsing pass
+  resolves relative indices against the exact global counts. Floats are parsed
+  correctly rounded by fast_float and written by `std::to_chars` in their
+  shortest round-trip form, so positions, normals and normalized UVs survive a
+  save → load cycle bit-exact. It reads `v` (with the `x y z r g b` color
+  extension, 0..1 or 0..255), `vt`, `vn`, `f` in every index form (`v`,
+  `v/vt`, `v//vn`, `v/vt/vn`, negative = relative), line continuations,
+  `usemtl`, and `mtllib` with `Kd` and `map_Kd` (options skipped, paths with
+  spaces, Windows separators). Polygons are triangulated: a quad along the
+  diagonal that keeps both halves facing the polygon's Newell normal (the
+  shorter one when both do), larger polygons by ear clipping in their best-fit
+  plane. Each material the faces use becomes a texture blob as soon as any of
+  them has a map — its image, or a one-texel image of its `Kd` when it has none
+  or the file does not load, so no face loses its color; without any map the
+  UVs load alone, as an untextured atlas. A vertex whose corners reference
+  different `vn` takes their normalized mean. A malformed line or an index out
+  of range fails the load with its line number. On save, a vertex writes one
+  `vt` per distinct UV among its corners, the faces are grouped by blob under
+  one `usemtl` each, the textures go beside the file as
+  `<stem>_material_NN_map_Kd.<jpg|png>` listed in `<stem>.mtl`, and the text
+  is formatted in parallel blocks.
+
+  | OBJ, vs openMVS's previous codec (i7-13700KF) | save | load | file |
+  |---|---:|---:|---:|
+  | 2.68 M faces, untextured | 2.98 s → 0.086 s | 3.05 s → 0.13 s | 112 → 109 MB |
+  | 465 k faces, textured, one 8 K texture | 1.85 s → 0.83 s (PNG, was JPEG) | 1.88 s → 0.18 s | 59 → 34 MB |
+  | 26.0 M faces, untextured | 29.8 s → 0.82 s | 30.2 s → 0.99 s | 1154 → 1055 MB |
+
+  The previous codec printed six decimals, which lost up to 10⁻⁶ of every
+  coordinate, and could not read back its own untextured output.
 - **Coordinate frame** — **halfmesh is z-up in memory; glTF files are y-up**,
   and the conversion happens at this boundary and nowhere else. `SaveGLTF`
   writes the vertex buffer in halfmesh's own frame and declares the
@@ -238,8 +273,8 @@ extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
   nothing in such a file distinguishes it from a conformant one, so it has to
   be fixed by its producer.
 - **UV conventions** (worth reading twice): in-memory textured meshes store
-  *absolute pixel* UVs with no Y flip; PLY on disk stores normalized+Y-flipped;
-  glTF stores `(pixel + 0.5)/size`. The `FTexcoords{Normalize,UnNormalize}[FlipY]`
+  *absolute pixel* UVs with no Y flip; PLY and OBJ on disk store
+  normalized+Y-flipped; glTF stores `(pixel + 0.5)/size`. The `FTexcoords{Normalize,UnNormalize}[FlipY]`
   helpers convert, and `UVBlobsAreNormalized()` (in `TextureBake.h`) classifies
   a loaded mesh at runtime.
 - glTF (and some PLY) input arrives *unwelded* — one vertex per corner. Run
@@ -247,7 +282,7 @@ extension: `.glb`/`.gltf` → glTF 2.0 (via tinygltf), everything else → PLY
   `RemoveDegenerateFaces(0.f)` → `RemoveUnreferencedVertices()`) before any
   half-edge algorithm, or every edge counts as a boundary.
 
-Implementation: `src/MeshIO.cpp`.
+Implementation: `src/MeshIO.cpp` (PLY, glTF), `src/MeshIOOBJ.cpp` (OBJ).
 
 ## Repair & cleaning
 

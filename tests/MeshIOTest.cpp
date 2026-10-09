@@ -8,8 +8,8 @@
 */
 
 // Mesh I/O tests: PLY round-trip (Mesh::Load / Mesh::SavePLY), glTF
-// save + load round-trip (Mesh::SaveGLTF / Mesh::LoadGLTF), and mesh.ply-based
-// TriangleKdTree tests.
+// save + load round-trip (Mesh::SaveGLTF / Mesh::LoadGLTF), OBJ (Mesh::LoadOBJ /
+// Mesh::SaveOBJ), and mesh.ply-based TriangleKdTree tests.
 
 #include <gtest/gtest.h>
 
@@ -18,6 +18,7 @@
 #include <halfmesh/Util/Geometry.h>
 #include <halfmesh/Util/Assert.h>
 
+#include <opencv2/imgcodecs.hpp>
 #include <tiny_gltf.h>
 
 // tinygltf is built with TINYGLTF_NO_STB_IMAGE[_WRITE] (see the top-level
@@ -1376,4 +1377,224 @@ TEST(MeshIoTest, SavePLYEmptyTextureDegradesGracefully)
 	ASSERT_TRUE(reloaded.LoadPLY(ply)) << "geometry must round-trip";
 	EXPECT_EQ(reloaded.faces.size(), 1u);
 	EXPECT_EQ(reloaded.faceTexcoords.size(), 3u);
+}
+
+// ---------------------------------------------------------------------------
+// OBJ
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::filesystem::path ObjTestDir(const char* name)
+{
+	const std::filesystem::path dir = std::filesystem::temp_directory_path() / name;
+	std::filesystem::remove_all(dir);
+	std::filesystem::create_directories(dir);
+	return dir;
+}
+void WriteText(const std::filesystem::path& path, const std::string& text)
+{
+	std::ofstream(path, std::ios::binary) << text;
+}
+
+} // namespace
+
+TEST(MeshIoObj, RoundTripIsBitExact)
+{
+	const std::filesystem::path dir = ObjTestDir("halfmesh_obj_roundtrip");
+	halfmesh::Mesh m;
+	for (int i = 0; i < 6; ++i)
+		m.vertices.emplace_back(0.1f * static_cast<float>(i) + 1.f / 3.f, std::sqrt(static_cast<float>(i) + 2.f), -1e5f / 7.f + static_cast<float>(i));
+	// faces grouped by blob, as SaveOBJ writes them
+	m.faces = {{0, 1, 2}, {0, 2, 3}, {1, 4, 5}, {1, 5, 2}};
+	for (int i = 0; i < 6; ++i) {
+		m.vertexColors.emplace_back(static_cast<uint8_t>(40 * i), static_cast<uint8_t>(255 - 7 * i), static_cast<uint8_t>(13 * i));
+		m.vertexNormals.push_back(halfmesh::Mesh::Normal(1.f, 2.f * static_cast<float>(i), 3.f).normalized());
+	}
+	for (const int size : {16, 8}) {
+		halfmesh::Image3u texture(size, size * 2);
+		for (int r = 0; r < texture.rows; ++r)
+			for (int c = 0; c < texture.cols; ++c)
+				texture(r, c) = halfmesh::Pixel(static_cast<uint8_t>(r * 7), static_cast<uint8_t>(c * 5), static_cast<uint8_t>(size));
+		m.texturesDiffuse.push_back(texture);
+	}
+	m.faceTexblobs = {0, 0, 1, 1};
+	for (size_t c = 0; c < m.faces.size() * 3; ++c)
+		m.faceTexcoords.emplace_back(0.37f * static_cast<float>(c), 0.71f * static_cast<float>(c % 5));
+	const std::string path = (dir / "mesh.obj").string();
+	ASSERT_TRUE(m.SaveOBJ(path, halfmesh::Mesh::ImageFormat::PNG));
+	ASSERT_TRUE(std::filesystem::exists(dir / "mesh.mtl"));
+	ASSERT_TRUE(std::filesystem::exists(dir / "mesh_material_01_map_Kd.png"));
+	halfmesh::Mesh loaded;
+	ASSERT_TRUE(loaded.Load(path));
+	EXPECT_EQ(loaded.vertices, m.vertices);
+	EXPECT_EQ(loaded.faces, m.faces);
+	EXPECT_EQ(loaded.vertexColors, m.vertexColors);
+	EXPECT_EQ(loaded.vertexNormals, m.vertexNormals);
+	EXPECT_EQ(loaded.faceTexblobs, m.faceTexblobs);
+	ASSERT_EQ(loaded.texturesDiffuse.size(), 2u);
+	for (size_t i = 0; i < 2; ++i)
+		EXPECT_EQ(cv::norm(loaded.texturesDiffuse[i], m.texturesDiffuse[i], cv::NORM_INF), 0.0);
+	ASSERT_EQ(loaded.faceTexcoords.size(), m.faceTexcoords.size());
+	for (size_t c = 0; c < m.faceTexcoords.size(); ++c)
+		EXPECT_LT((loaded.faceTexcoords[c] - m.faceTexcoords[c]).norm(), 1e-4f);
+	// the normalized UVs, the file's own values, survive bit-exact
+	EXPECT_EQ(loaded.FTexcoordsNormalizeFlipY(), m.FTexcoordsNormalizeFlipY());
+	// one vt per distinct UV of a vertex: a shared UV is written once
+	halfmesh::Mesh shared = m;
+	shared.faceTexcoords.assign(shared.faces.size() * 3, halfmesh::Mesh::TexCoord(3, 3));
+	shared.faceTexblobs.clear();
+	shared.texturesDiffuse.resize(1);
+	ASSERT_TRUE(shared.SaveOBJ(path));
+	std::ifstream file(path);
+	size_t numVT = 0;
+	for (std::string line; std::getline(file, line);)
+		numVT += line.rfind("vt ", 0) == 0;
+	EXPECT_EQ(numVT, shared.vertices.size());
+}
+
+TEST(MeshIoObj, IndexFormsMaterialsAndContinuations)
+{
+	const std::filesystem::path dir = ObjTestDir("halfmesh_obj_forms");
+	halfmesh::Image3u texture(4, 8);
+	texture.setTo(cv::Scalar(10, 20, 30));
+	ASSERT_TRUE(cv::imwrite((dir / "my texture.png").string(), texture));
+	WriteText(dir / "scene.mtl",
+	          "newmtl red\nKd 1 0 0\n"
+	          "newmtl tex\nKd 0 1 0\nmap_Kd -s 1 1 1 -o 0 0 0 -clamp on my texture.png\n");
+	WriteText(dir / "scene.obj",
+	          "# comment\r\n"
+	          "mtllib scene.mtl\r\n"
+	          "v 0 0 0\nv 2 0 0\nv 2 2 0\nv 0 2 0\nv 1 1 +1e0 # trailing comment\n"
+	          "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n"
+	          "vn 0 0 1\n"
+	          "o object\ng group\ns 1\nl 1 2\n"
+	          "usemtl red\n"
+	          "f 1 2 3\n"
+	          "usemtl tex\n"
+	          "f 1/1/1 3/3/1 4/4/1\n"
+	          "f -5//-1 -4//-1 -1//-1\n"
+	          "f 2/2 3/3 \\\n   5/1"); // continued, and no final newline
+	halfmesh::Mesh m;
+	ASSERT_TRUE(m.Load((dir / "scene.obj").string()));
+	ASSERT_EQ(m.vertices.size(), 5u);
+	EXPECT_EQ(m.vertices[4], halfmesh::Mesh::Vertex(1, 1, 1));
+	ASSERT_EQ(m.faces.size(), 4u);
+	EXPECT_EQ(m.faces[2], halfmesh::Mesh::Face(0, 1, 4));
+	EXPECT_EQ(m.faces[3], halfmesh::Mesh::Face(1, 2, 4));
+	// not every corner has a normal
+	EXPECT_TRUE(m.vertexNormals.empty());
+	// the materials in order of use: red without a map becomes its one-texel color
+	ASSERT_EQ(m.texturesDiffuse.size(), 2u);
+	ASSERT_EQ(m.texturesDiffuse[0].size(), cv::Size(1, 1));
+	EXPECT_EQ(m.texturesDiffuse[0](0, 0), halfmesh::Pixel(0, 0, 255));
+	EXPECT_EQ(m.texturesDiffuse[1].size(), texture.size());
+	EXPECT_EQ(m.faceTexblobs, (std::vector<halfmesh::Mesh::TexIndex>{0, 1, 1, 1}));
+	// a face without vt samples the middle of its texture
+	const std::vector<halfmesh::Mesh::TexCoord> uv = m.FTexcoordsNormalizeFlipY();
+	EXPECT_EQ(uv[0], halfmesh::Mesh::TexCoord(0.5f, 0.5f));
+	EXPECT_EQ(uv[4], halfmesh::Mesh::TexCoord(1, 1));
+	EXPECT_EQ(uv[9], halfmesh::Mesh::TexCoord(1, 0));
+	EXPECT_EQ(uv[11], halfmesh::Mesh::TexCoord(0, 0));
+	EXPECT_EQ(uv[6], halfmesh::Mesh::TexCoord(0.5f, 0.5f)); // f -5//-1: no vt
+
+	// a texture that does not load keeps its material's color
+	WriteText(dir / "scene.mtl", "newmtl red\nKd 1 0 0\nnewmtl tex\nKd 0 1 0\nmap_Kd missing.png\n");
+	ASSERT_TRUE(m.Load((dir / "scene.obj").string()));
+	ASSERT_EQ(m.texturesDiffuse.size(), 2u);
+	EXPECT_EQ(m.texturesDiffuse[1](0, 0), halfmesh::Pixel(0, 255, 0));
+
+	// colors in 0..255, a w coordinate, every corner with a normal
+	WriteText(dir / "colors.obj",
+	          "v 0 0 0 255 0 0\nv 1 0 0 1 0 128 0\nv 0 1 0 0 0 255\n"
+	          "vn 0 0 1\nvn 0 0 2\n"
+	          "f 1//1 2//1 3//2\n");
+	ASSERT_TRUE(m.Load((dir / "colors.obj").string()));
+	EXPECT_EQ(m.vertexColors, (std::vector<halfmesh::Pixel>{{0, 0, 255}, {0, 128, 0}, {255, 0, 0}}));
+	ASSERT_EQ(m.vertexNormals.size(), 3u);
+	EXPECT_EQ(m.vertexNormals[2], halfmesh::Mesh::Normal(0, 0, 2));
+	EXPECT_TRUE(m.texturesDiffuse.empty() && m.faceTexcoords.empty());
+}
+
+TEST(MeshIoObj, PolygonsAreSplitFacingTheirNormal)
+{
+	const std::filesystem::path dir = ObjTestDir("halfmesh_obj_polygons");
+	// a quad whose shorter diagonal is 1-3; a dart whose only inner diagonal, 1-3,
+	// is the longer one; a U whose ear clipping must stay inside the outline
+	WriteText(dir / "polygons.obj",
+	          "v 0 0 0\nv 4 0 0\nv 5 1 0\nv 0 1 0\n"
+	          "v 0 0 1\nv 2 0.5 1\nv 4 0 1\nv 2 5 1\n"
+	          "v 0 0 2\nv 3 0 2\nv 3 3 2\nv 2 3 2\nv 2 1 2\nv 1 1 2\nv 1 3 2\nv 0 3 2\n"
+	          "f 1 2 3 4\nf 5 6 7 8\nf 9 10 11 12 13 14 15 16\n");
+	halfmesh::Mesh m;
+	ASSERT_TRUE(m.Load((dir / "polygons.obj").string()));
+	ASSERT_EQ(m.faces.size(), 2u + 2u + 6u);
+	EXPECT_EQ(m.faces[0], halfmesh::Mesh::Face(1, 2, 3));
+	EXPECT_EQ(m.faces[1], halfmesh::Mesh::Face(1, 3, 0));
+	EXPECT_EQ(m.faces[2], halfmesh::Mesh::Face(5, 6, 7));
+	EXPECT_EQ(m.faces[3], halfmesh::Mesh::Face(5, 7, 4));
+	double areaU = 0;
+	for (size_t f = 4; f < m.faces.size(); ++f) {
+		const halfmesh::Mesh::Normal n = m.ComputeFaceNormal(m.faces[f]);
+		EXPECT_GT(n.z(), 0.f);
+		areaU += 0.5 * n.z();
+	}
+	EXPECT_NEAR(areaU, 7.0, 1e-6);
+}
+
+TEST(MeshIoObj, MalformedFilesFail)
+{
+	const std::filesystem::path dir = ObjTestDir("halfmesh_obj_malformed");
+	const std::pair<const char*, const char*> cases[] = {
+	    {"short_vertex.obj", "v 1 2\nv 0 0 0\nv 1 0 0\nf 1 2 3\n"},
+	    {"bad_float.obj", "v 0 abc 0\nv 0 0 0\nv 1 0 0\nf 1 2 3\n"},
+	    {"out_of_range.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 4\n"},
+	    {"relative_too_far.obj", "v 0 0 0\nv 1 0 0\nf 1 2 -3\n"},
+	    {"zero_index.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\n"},
+	    {"no_faces.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\n"},
+	};
+	for (const auto& [name, text] : cases) {
+		WriteText(dir / name, text);
+		halfmesh::Mesh m;
+		EXPECT_FALSE(m.Load((dir / name).string())) << name;
+		EXPECT_TRUE(m.vertices.empty()) << name;
+	}
+	halfmesh::Mesh m;
+	EXPECT_FALSE(m.LoadOBJ((dir / "does_not_exist.obj").string()));
+}
+
+TEST(MeshIoObj, BlocksAndChunksJoinSeamlessly)
+{
+	// ~38 MB of relative indices: more than one streamed block, dozens of
+	// parallel chunks, every face pointing back across their seams
+	const std::filesystem::path dir = ObjTestDir("halfmesh_obj_blocks");
+	const std::filesystem::path path = dir / "large.obj";
+	constexpr unsigned numTriangles = 800000;
+	{
+		std::string text;
+		text.reserve(size_t(numTriangles) * 56);
+		for (unsigned t = 0; t < numTriangles; ++t) {
+			for (unsigned k = 0; k < 3; ++k) {
+				const unsigned v = t * 3 + k;
+				text += "v " + std::to_string(v % 1000) + ' ' + std::to_string(v / 1000) + ' ' + std::to_string(k) + '\n';
+			}
+			text += "f -3 -2 -1\n";
+		}
+		WriteText(path, text);
+		ASSERT_GT(text.size(), size_t(32) << 20); // OBJ_BLOCK_BYTES
+	}
+	halfmesh::Mesh m;
+	ASSERT_TRUE(m.Load(path.string()));
+	ASSERT_EQ(m.vertices.size(), size_t(numTriangles) * 3);
+	ASSERT_EQ(m.faces.size(), size_t(numTriangles));
+	bool exact = true;
+	for (unsigned t = 0; t < numTriangles && exact; ++t) {
+		exact = m.faces[t] == halfmesh::Mesh::Face(t * 3, t * 3 + 1, t * 3 + 2);
+		for (unsigned k = 0; k < 3 && exact; ++k) {
+			const unsigned v = t * 3 + k;
+			exact = m.vertices[v] == halfmesh::Mesh::Vertex(static_cast<float>(v % 1000), static_cast<float>(v / 1000), static_cast<float>(k));
+		}
+	}
+	EXPECT_TRUE(exact);
+	std::filesystem::remove_all(dir);
 }

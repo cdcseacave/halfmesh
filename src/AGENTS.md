@@ -20,6 +20,8 @@ The `Mesh` class is split across several TUs by concern:
   `ListHalfEdges`, edit primitives (RemoveFaces/RemoveUnreferencedVertices…),
   `IsWatertight`, `ComputeVolume` (closed and against a plane), `Join`, `SubMesh`.
 - `MeshIO.cpp` — PLY/glTF load/save, texture & texcoord handling, seam export.
+- `MeshIOOBJ.cpp` — OBJ/MTL load/save: streamed blocks, two-pass parallel chunk parsing
+  (count, place, parse), fast_float, polygon triangulation, parallel formatting.
 - `MeshRepair.cpp` — RemoveDuplicate/Degenerate faces, FixNonManifold,
   RemoveSmallComponents, RemoveLongEdgeFaces, RemoveLongEdgeFacesLocal,
   RemoveLongEdgeFacesCapped (probes on a TriangleBVH), RemoveSpuriousComponents,

@@ -223,6 +223,18 @@ def test_unwrap_raises_on_unwritable_output(tmp_path):
         hm.unwrap(src, str(tmp_path / "no_such_dir" / "out.ply"))
 
 
+def test_mesh_roundtrips_obj_bit_exact(tmp_path):
+    v, f = _cube_arrays()
+    v = (v * np.float32(1 / 3) + np.float32(1e5 / 7)).astype(np.float32)
+    path = str(tmp_path / "cube.obj")
+    hm.Mesh.from_arrays(v, f).save(path)
+    loaded = hm.Mesh()
+    loaded.load(path)
+    lv, lf = loaded.to_arrays()
+    np.testing.assert_array_equal(lv, v)
+    np.testing.assert_array_equal(lf, f)
+
+
 def test_mesh_join_appends_without_welding():
     v, f = _cube_arrays()
     mesh = hm.Mesh.from_arrays(v, f)

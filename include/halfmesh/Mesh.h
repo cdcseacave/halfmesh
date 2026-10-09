@@ -180,8 +180,9 @@ class Mesh
 		PNG, // lossless, several times larger
 	};
 
-	// import/export PLY/GLTF mesh
-	// Load dispatches on the file extension: .ply -> LoadPLY, .glb/.gltf -> LoadGLTF
+	// import/export PLY/GLTF/OBJ mesh
+	// Load and Save dispatch on the file extension: .ply -> PLY, .glb/.gltf ->
+	// glTF, .obj -> OBJ (Load reads any other extension as PLY)
 	//
 	// Coordinate frame. halfmesh is z-up in memory, everywhere, always. glTF is
 	// y-up by specification, so the conversion happens at the glTF boundary and
@@ -207,6 +208,29 @@ class Mesh
 	// <stem>_diffuse<NN>.<ext> and referenced by relative URI.
 	bool SaveGLTF(const std::string& fileName, bool binary = true,
 	              ImageFormat imageFormat = ImageFormat::JPG, bool embedImages = true) const;
+	// Wavefront OBJ, read in streamed blocks parsed in parallel, with exact
+	// (correctly rounded) float parsing. Reads v (with the x y z r g b color
+	// extension, in 0..1 or 0..255), vt, vn and f in every index form (v, v/vt,
+	// v//vn, v/vt/vn; negative = relative), polygons (a quad is split along the
+	// diagonal that keeps both halves facing the polygon's way, the shorter one
+	// when both do; larger polygons are ear-clipped in their best-fit plane), line
+	// continuations, usemtl, and mtllib with Kd and map_Kd (options skipped, paths
+	// may hold spaces). Once any material the faces use has a map, each of those
+	// materials becomes one texture blob: its image, or a 1x1 image of its Kd when
+	// it has no map or the image does not load, so every face keeps its color; a
+	// face without vt then samples the middle of its texture. Without any map the
+	// UVs load alone (normalized, as an atlas has them) when every face has them.
+	// A vertex whose corners reference different vn takes their normalized mean;
+	// colors and normals load only when every vertex / corner carries them.
+	// Points, lines, groups and smoothing groups are ignored; a malformed line or
+	// an index out of range fails the load.
+	bool LoadOBJ(const std::string& fileName);
+	// OBJ in the shortest decimal text that reads back to the same float, so
+	// positions, normals and normalized UVs round-trip bit-exact; colors as
+	// x y z r g b; one vt per distinct UV of a vertex; one usemtl group per texture
+	// blob, the textures written beside the file as <stem>_material_NN_map_Kd.<ext>
+	// and listed in <stem>.mtl. Formatted in parallel blocks.
+	bool SaveOBJ(const std::string& fileName, ImageFormat imageFormat = ImageFormat::JPG) const;
 	bool ExportSeamEdges(std::vector<std::pair<VIndex, VIndex>> seamEdges, const std::string& fileName, bool binary = true) const;
 	bool ExportSeamEdges(const std::string& fileName, bool binary = true) const;
 

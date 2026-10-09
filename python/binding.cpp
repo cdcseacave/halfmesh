@@ -434,7 +434,7 @@ PYBIND11_MODULE(_halfmesh, m)
 		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("edge_length"), py::arg("iterations") = 3, py::arg("vertex_sizing") = py::none(), py::arg("adapt") = false, py::arg("approx_error") = 0.f, py::arg("min_adaptive_mult") = 0.25f, py::arg("max_adaptive_mult") = 4.f, "Isotropic remeshing toward a uniform target edge length (world units).\n\nvertex_sizing: optional [N] float32 per-vertex TARGET edge length (world units, one entry per input vertex) replacing the uniform target, so the split, collapse and smoothing passes grade the mesh where the caller asks. Every entry must be finite and > 0. Unlike simplify's vertex_max_error it is read-only, so the return stays (vertices, faces). Being per vertex is what makes a target stated in image pixels expressible (target_edge_px / footprint_v). edge_length is still required (the passes that never consult the field read it); the field's own mean is the natural value.\n\nadapt: curvature-adaptive sizing -- high-curvature regions get shorter edges, flat ones longer, for the same fidelity at fewer triangles. approx_error is the target geometric deviation (0 derives it from edge_length) and min/max_adaptive_mult clamp the per-vertex target to that multiple of the base length. Combined with vertex_sizing the two fields INTERSECT per vertex (the finer target wins), so a caller can ask for no face coarser than its own field allows and none so coarse it leaves the surface.");
 
 	py::class_<Mesh>(m, "Mesh",
-	                 "Triangle mesh facade over halfmesh::Mesh (PLY / glTF / GLB I/O).")
+	                 "Triangle mesh facade over halfmesh::Mesh (PLY / glTF / GLB / OBJ I/O).")
 	    .def(py::init<>())
 	    .def_static("from_arrays", [](const VertArray& v, const FaceArray& f) { return MeshFromArrays(v, f); }, py::arg("vertices"), py::arg("faces"))
 	    .def("to_arrays", [](Mesh& self) { return ArraysFromMesh(self); }, "Return (vertices float32 [N,3], faces uint32 [M,3]) copies.")
@@ -445,7 +445,7 @@ PYBIND11_MODULE(_halfmesh, m)
 			    ok = self.Load(path);
 		    }
 		    if (!ok)
-			    throw std::runtime_error("Mesh.load: failed to load '" + path + "'"); }, py::arg("path"), "Load a .ply / .gltf / .glb mesh (format from extension).")
+			    throw std::runtime_error("Mesh.load: failed to load '" + path + "'"); }, py::arg("path"), "Load a .ply / .gltf / .glb / .obj mesh (format from extension).")
 	    .def("save", [](const Mesh& self, const std::string& path, bool binary) {
 		    bool ok;
 		    {
@@ -453,7 +453,7 @@ PYBIND11_MODULE(_halfmesh, m)
 			    ok = self.Save(path, binary);
 		    }
 		    if (!ok)
-			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb (format from extension).")
+			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb / .obj (format from extension; binary applies to PLY and glTF).")
 	    .def("join", [](Mesh& self, const Mesh& other) {
 		    py::gil_scoped_release release;
 		    self.Join(other); }, py::arg("other"), "Append a copy of other: its vertices and faces after this mesh's, indices shifted, nothing welded. An attribute (colors, normals, texture) survives only when both meshes carry it; textures are concatenated and other's blob ids shifted.")

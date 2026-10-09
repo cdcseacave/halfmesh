@@ -328,11 +328,11 @@ array ops above.
   out-of-range face index raises `ValueError`).
 - `to_arrays() -> (v, f)` — `(float32[N,3], uint32[M,3])` copies of the
   current geometry.
-- `load(path)` — load `.ply` / `.gltf` / `.glb` (format from the extension).
-  Raises `RuntimeError` on failure (missing file, malformed data).
-- `save(path, binary=True)` — save as `.ply` / `.gltf` / `.glb` (format from
-  the extension). `binary=False` writes ASCII PLY. Raises `RuntimeError` on
-  failure.
+- `load(path)` — load `.ply` / `.gltf` / `.glb` / `.obj` (format from the
+  extension). Raises `RuntimeError` on failure (missing file, malformed data).
+- `save(path, binary=True)` — save as `.ply` / `.gltf` / `.glb` / `.obj`
+  (format from the extension). `binary=False` writes ASCII PLY; OBJ is always
+  text. Raises `RuntimeError` on failure.
 - `join(other)` — append a copy of `other`: its vertices and faces after this
   mesh's, indices shifted, nothing welded. An attribute (colors, normals,
   texture) survives only when both meshes carry it; textures are concatenated
