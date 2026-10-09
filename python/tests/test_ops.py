@@ -540,3 +540,14 @@ def test_subdivide_faces_splits_selected_faces_conforming():
     assert counts.max() <= 2
     with pytest.raises(ValueError):
         hm.subdivide_faces(v, f, selected[:-1])
+
+
+def test_sample_points_follows_area_and_seed():
+    v, f = _grid_mesh(n=8, noise=0.0)  # the unit square
+    a = hm.sample_points(v, f, 1000.0, seed=3)
+    b = hm.sample_points(v, f, 1000.0, seed=3)
+    assert a.shape[1] == 3 and abs(len(a) - 1000) <= len(f)
+    assert np.array_equal(a, b)
+    assert (a[:, :2] >= 0).all() and (a[:, :2] <= 1).all()
+    with pytest.raises(ValueError):
+        hm.sample_points(v, f, -1.0)

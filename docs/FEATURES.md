@@ -96,7 +96,11 @@ Vertices, faces and UVs are contiguous and memcpy-compatible
 (`static_assert`ed in `src/MeshIO.cpp`) — bulk import/export from external
 buffers is a single copy in each direction. Geometry helpers include
 `ComputeFaceNormals`, `ComputeSmoothFaceNormals`, `ComputeVertexNormals`,
-`ComputeArea`, `ComputeAABBox`, and per-face/per-edge queries. Texture-layout
+`ComputeArea`, `ComputeAABBox`, and per-face/per-edge queries.
+`SamplePoints(density, seed, points, colors)` draws area-uniform random
+points on the surface (Turk), one more per face with the probability of its
+fractional count, colored from the texture when asked (openMVS samples meshes
+for view selection and `DensifyPointCloud --sample-mesh` with it). Texture-layout
 conversions: `ToTexCoordPerVertex()`, `ToTexCoordPerVertexUVOnly()`,
 `ToOneMeshPerTexblob()`.
 

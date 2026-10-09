@@ -262,6 +262,20 @@ PYBIND11_MODULE(_halfmesh, m)
 		RequireIndexStableBuild(mesh, "selected");
 		return ArraysWithCount(mesh, [&mask](Mesh& self) { return self.SubdivideFaces(mask); }); }, py::arg("vertices"), py::arg("faces"), py::arg("selected"), "Split every selected face 1-to-4 at its edge midpoints and every neighbour sharing a split edge into 2 or 3 (red-green closure), so the mesh stays conforming. Returns (vertices, faces, added vertices).");
 
+	m.def("sample_points", [](const VertArray& v, const FaceArray& f, double density, uint32_t seed) {
+		if (!(density >= 0))
+			throw py::value_error("density must be >= 0");
+		const Mesh mesh = MeshFromArrays(v, f);
+		std::vector<Mesh::Vertex> points;
+		{
+			py::gil_scoped_release release;
+			mesh.SamplePoints(density, seed, points);
+		}
+		py::array_t<float> out({static_cast<py::ssize_t>(points.size()), py::ssize_t(3)});
+		if (!points.empty())
+			std::memcpy(out.mutable_data(), points.data(), sizeof(Mesh::Vertex) * points.size());
+		return out; }, py::arg("vertices"), py::arg("faces"), py::arg("density"), py::arg("seed") = 0u, "Area-uniform random points on the surface (Turk): each face gets floor(area*density) points plus one more with the probability of the fraction left. Deterministic for a given seed. Returns [N,3] float32 points.");
+
 	m.def("remove_vertices_and_fill", [](const VertArray& v, const FaceArray& f, const py::array& vertex_indices) {
 		const Int64Array indices = IntegerArray(vertex_indices, 1, "vertex_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
 		Mesh mesh = MeshFromArrays(v, f);

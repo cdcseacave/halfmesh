@@ -47,6 +47,49 @@ static Mesh BuildMesh(std::vector<Mesh::Vertex> verts,
 // edge01 = (1,0,0), edge02 = (0,1,0)
 // cross = edge01 × edge02 = (0,0,1) → normalized = (0,0,1)
 // ---------------------------------------------------------------------------
+// Area-uniform surface sampling: the count follows area*density, every point
+// lies on its face's plane inside the mesh bounds, a seed reproduces the set,
+// and a textured mesh colors each point from its texture.
+TEST(MeshCore, SamplePoints_AreaUniformAndSeeded)
+{
+	Mesh mesh;
+	// a 4x2 rectangle as two triangles, and a 1x1 one far away (area 8 + 0.5)
+	mesh.vertices = {{0, 0, 0}, {4, 0, 0}, {4, 2, 0}, {0, 2, 0}, {10, 0, 1}, {11, 0, 1}, {10, 1, 1}};
+	mesh.faces = {{0, 1, 2}, {0, 2, 3}, {4, 5, 6}};
+	std::vector<Mesh::Vertex> a, b, c;
+	mesh.SamplePoints(100.0, 42, a);
+	mesh.SamplePoints(100.0, 42, b);
+	mesh.SamplePoints(100.0, 7, c);
+	EXPECT_NEAR(static_cast<double>(a.size()), 850.0, 3.0); // floor per face plus at most one each
+	ASSERT_EQ(a.size(), b.size());
+	for (size_t i = 0; i < a.size(); ++i)
+		EXPECT_EQ(a[i], b[i]);
+	EXPECT_NE(a.front(), c.front());
+	size_t onSmall = 0;
+	for (const Mesh::Vertex& p : a) {
+		if (p.z() == 1.f) {
+			++onSmall;
+			EXPECT_TRUE(p.x() >= 10.f && p.y() >= 0.f && (p.x() - 10.f) + p.y() <= 1.f + 1e-5f);
+		} else {
+			EXPECT_EQ(p.z(), 0.f);
+			EXPECT_TRUE(p.x() >= 0.f && p.x() <= 4.f && p.y() >= 0.f && p.y() <= 2.f);
+		}
+	}
+	EXPECT_NEAR(static_cast<double>(onSmall), 50.0, 2.0);
+	// a uniform texture colors every point with its color
+	Mesh::Image3u texture(8, 8);
+	for (int r = 0; r < texture.rows; ++r)
+		for (int c = 0; c < texture.cols; ++c)
+			texture(r, c) = Pixel(30, 60, 90);
+	mesh.texturesDiffuse.push_back(texture);
+	mesh.faceTexcoords.assign(mesh.faces.size() * 3, Mesh::TexCoord(3.f, 3.f));
+	std::vector<Pixel> colors;
+	mesh.SamplePoints(10.0, 1, a, &colors);
+	ASSERT_EQ(colors.size(), a.size());
+	for (const Pixel& color : colors)
+		EXPECT_EQ(color, Pixel(30, 60, 90));
+}
+
 TEST(MeshCore, ComputeFaceNormals_SingleTriangle)
 {
 	Mesh m = BuildMesh(

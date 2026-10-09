@@ -337,6 +337,13 @@ array ops above.
 - `has_texcoords: bool` — whether the mesh carries per-face-corner UVs
   (read-only).
 
+### `sample_points(vertices, faces, density, seed=0) -> points`
+
+Area-uniform random points on the surface (Turk, Graphics Gems 1990): each face
+gets `floor(area * density)` points plus one more with the probability of the
+fraction left, each uniform in its triangle. Deterministic for a given `seed`.
+Returns `[N,3] float32` points. Raises `ValueError` for a negative density.
+
 ### `subdivide_faces(vertices, faces, selected) -> (v, f, added)`
 
 Split every face flagged in `selected` (a boolean array, one entry per face)

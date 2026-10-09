@@ -22,11 +22,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   quality ratchet now tracks `coverage`.
 - **`Mesh::SubdivideFaces`**: selective 1-to-4 midpoint subdivision with
   red-green closure (moved from openMVS's mesh refinement, which now calls it).
+- **`Mesh::SamplePoints`**: area-uniform random surface sampling, optionally
+  colored from the texture (moved from openMVS).
 - **`PushPullFill`** (`Util/Raster.h`): fills every texel a mask leaves out by
   push-pull over a box pyramid (moved from openMVS's texturing).
 - `atlasbench --pack-footprints`, and the bench builds on Windows (peak RSS
   through `GetProcessMemoryInfo`).
-- **Python:** `pack_footprints`, `subdivide_faces`, and `unwrap(...,
+- **Python:** `pack_footprints`, `subdivide_faces`, `sample_points`, and `unwrap(...,
   pack_footprints=True)`.
 
 ## [0.4.2]

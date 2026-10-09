@@ -13,12 +13,14 @@
 #include <halfmesh/Util/Assert.h>
 #include <halfmesh/Util/Log.h>
 #include <halfmesh/Util/Maths.h>
+#include <halfmesh/Util/Sampler.h>
 
 #include <algorithm>
 #include <unordered_set>
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <random>
 #include <vector>
 #include <BS_thread_pool.hpp>
 
@@ -393,6 +395,54 @@ Eigen::AlignedBox<Mesh::Type, 3> Mesh::ComputeAABBox() const
 	for (const Vertex& vert : vertices)
 		bbox.extend(vert);
 	return bbox;
+}
+
+void Mesh::SamplePoints(double density, uint32_t seed, std::vector<Vertex>& points, std::vector<Pixel>* colors) const
+{
+	ASSERT(density >= 0);
+	SyncFacesConst();
+	points.clear();
+	const bool textured = colors != nullptr && faceTexcoords.size() == faces.size() * 3 && !texturesDiffuse.empty();
+	if (colors)
+		colors->clear();
+	const size_t expected = static_cast<size_t>(std::ceil(ComputeArea() * density));
+	points.reserve(expected);
+	if (textured)
+		colors->reserve(expected);
+	std::mt19937 rnd(seed);
+	std::uniform_real_distribution<double> dist(0, 1);
+	for (FIndex idxFace = 0; idxFace < static_cast<FIndex>(faces.size()); ++idxFace) {
+		const Face& face = faces[idxFace];
+		// the triangle as O + x*u + y*v
+		const Vertex& O = vertices[face[0]];
+		const Vertex u = vertices[face[1]] - O;
+		const Vertex v = vertices[face[2]] - O;
+		const Vertex n = u.cross(v);
+		const double area = static_cast<double>(std::sqrt(n.x() * n.x() + n.y() * n.y() + n.z() * n.z())) * 0.5;
+		// the points this face takes, the fraction left with its probability
+		const double toAdd = area * density;
+		unsigned numPoints = static_cast<unsigned>(toAdd);
+		if (dist(rnd) <= toAdd - static_cast<double>(numPoints))
+			++numPoints;
+		for (unsigned i = 0; i < numPoints; ++i) {
+			double x = dist(rnd), y = dist(rnd);
+			// fold the half of the unit square outside the triangle back in
+			if (x + y > 1.0) {
+				x = 1.0 - x;
+				y = 1.0 - y;
+			}
+			points.emplace_back(O + static_cast<Type>(x) * u + static_cast<Type>(y) * v);
+			if (textured) {
+				const TexCoord* tc = &faceTexcoords[static_cast<size_t>(idxFace) * 3];
+				const TexCoord t = tc[0] + static_cast<TexCoord::Scalar>(x) * (tc[1] - tc[0]) + static_cast<TexCoord::Scalar>(y) * (tc[2] - tc[0]);
+				const Image3u& texture = texturesDiffuse[FTexblob(idxFace)];
+				const auto color = SampleImage<LinearInterp<float>>(texture, Eigen::Vector2f(t.x(), t.y()));
+				colors->emplace_back(Pixel(static_cast<uint8_t>(std::clamp(std::lround(color.x()), 0l, 255l)),
+				                           static_cast<uint8_t>(std::clamp(std::lround(color.y()), 0l, 255l)),
+				                           static_cast<uint8_t>(std::clamp(std::lround(color.z()), 0l, 255l))));
+			}
+		}
+	}
 }
 
 void Mesh::ListVertexFaces()

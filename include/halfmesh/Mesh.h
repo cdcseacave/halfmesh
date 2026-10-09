@@ -242,6 +242,12 @@ class Mesh
 	Type ComputeMeanEdgeLength();
 	// compute the axis-aligned bounding box of the mesh vertices
 	Eigen::AlignedBox<Type, 3> ComputeAABBox() const;
+	// area-uniform random sampling of the surface (Turk, "Generating random points
+	// in triangles", Graphics Gems 1990): each face gets floor(area*density) points
+	// plus one more with the probability of the fraction left, each uniform in the
+	// triangle; `colors`, if given and the mesh is textured, receives each point's
+	// bilinear texture color. Deterministic for a given seed (std::mt19937).
+	void SamplePoints(double density, uint32_t seed, std::vector<Vertex>& points, std::vector<Pixel>* colors = nullptr) const;
 
 	// enumerate the array of triangles incident to each vertex;
 	// the list of faces per vertex is stored in increasing index order
