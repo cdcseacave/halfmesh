@@ -24,6 +24,7 @@
 #include "MeshRemeshShared.h"
 #include "ParallelFor.h"
 
+#include <unordered_map>
 #include <vector>
 #include <tuple>
 #include <cmath>

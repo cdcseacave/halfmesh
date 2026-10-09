@@ -451,6 +451,10 @@ near-linear on 100k+ small rectangles.
 
 `sizes` is an `[N,2]` **integer** array of `(width, height)` pairs. A float array
 would be truncated and a boolean one read as 1s, so both raise `ValueError`, as
+`pack_footprints` (default `True`) packs the charts' footprints instead of
+their bounding rectangles (`AtlasParams::packFootprints`); compare `coverage`
+across the two, `occupancy` measures different things in each.
+
 do a negative size and one above `2**31 - 1`. A zero width or height is
 degenerate: that entry is left unpacked rather than raising.
 
@@ -503,6 +507,18 @@ multiple of `multiple`, or to a power of two when `multiple` is `0`. It is an
 estimate from area, not a packing, so it makes a good starting `page_size` for
 `pack_rectangles`. Raises `ValueError` for `target_occupancy` outside `(0, 1]`
 or a negative `multiple`.
+### `pack_footprints(masks, max_page_size=0, size_multiple=0, block_size=4, allow_rotation=True) -> dict`
+
+Pack a list of binary masks (2-D `uint8` arrays, non-zero = footprint) by their
+footprints instead of their bounding rectangles, so irregular shapes nest into
+each other's empty corners; any gutter must be part of the masks.
+`max_page_size` bounds the page side (0: unbounded); each page is cropped to
+its content and rounded up to `size_multiple` (0: a power of two). A rotated
+mask is placed as `np.rot90(mask)`. Returns `{rects [N,4] int32 (x, y, w, h),
+page [N], rotated [N], packed [N], page_sizes [(w, h)], n_packed,
+footprint_area, occupancy}`, each per-mask array in input order. Raises
+`ValueError` for a mask that is not 2-D, `block_size` 0 or a negative bound.
+
 
 ## Worked example
 

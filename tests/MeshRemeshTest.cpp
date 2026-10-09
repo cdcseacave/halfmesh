@@ -30,6 +30,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <set>
 #include <string>
 #include <cmath>
 #include <limits>

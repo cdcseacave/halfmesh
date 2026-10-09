@@ -477,7 +477,7 @@ method write-up lives in its header comment).
 ```cpp
 struct AtlasParams { texelsPerUnit, resolution, padding, allowRotation,
                      powerOfTwo, square, orientCharts, fitToResolution,
-                     tinyChartSide, debrisChartFaces };
+                     tinyChartSide, debrisChartFaces, packFootprints };
 AtlasResult GenerateAtlas(Mesh&, const ParametrizeParams&, const AtlasParams& = {});
 AtlasResult PackAtlas(Mesh&, const std::vector<unsigned>& faceChart,
                       unsigned numCharts, const AtlasParams& = {});
@@ -491,15 +491,29 @@ float NormalizeChartDensity(Mesh&, const std::vector<unsigned>& faceChart,
   dimensions, page count, occupancy and true triangle `coverage`, plus layout
   diagnostics (`fitScale`, `maxChartExtent`, `minPadding`); leaves normalized
   `[0,1]` UVs in `mesh.faceTexcoords`.
-- `PackAtlas` is the packer alone: skyline bottom-left min-waste placement
-  (xatlas-inspired) with per-chart minimum-area-rectangle pre-orientation
-  (rotating calipers), optional 90° rotations (true rotations — winding
-  survives), gutter `padding` (opt-in per-size narrowing to a 1-texel gutter
-  for tiny/debris charts via `tinyChartSide`/`debrisChartFaces`), and
-  multi-page overflow. For multi-page results, per-face pages come from
-  `AtlasResult::chartPage[faceChart[f]]`.
+- `PackAtlas` is the packer alone. By default (`packFootprints`) it packs
+  each chart's **footprint** — the texels its UV triangles touch
+  (conservative raster) grown by its gutter — with `PackFootprints` (below),
+  so charts nest into each other's empty bounding-box corners; under
+  `fitToResolution` the scale search probes with footprints too, so the
+  denser layout becomes texel density. The grid is one texel up to 2048-texel
+  pages, page/2048 above. With `packFootprints = false` it packs bounding
+  rectangles: skyline bottom-left min-waste placement (xatlas-inspired). Both
+  keep the per-chart minimum-area-rectangle pre-orientation (rotating
+  calipers), optional 90° rotations (true rotations — winding survives),
+  gutter `padding` (opt-in per-size narrowing to a 1-texel gutter for
+  tiny/debris charts via `tinyChartSide`/`debrisChartFaces`), and multi-page
+  overflow. For multi-page results, per-face pages come from
+  `AtlasResult::chartPage[faceChart[f]]`. With footprints, `occupancy` is the
+  footprint area over the page area; `coverage` (triangle area) is the number
+  to compare across modes and engines.
 
-Packing is **two-tier**: rects whose padded long side reaches `pageW/32` go
+Footprints put far more of the page under geometry (`coverage`): 0.291 →
+0.502 on `mesh.ply` at 1024 (xatlas 0.415), 0.387 → 0.637 on a 200k-face
+Truck at 4096 (xatlas 0.614), for 1.4 s and 13 s of packing against 0.03 s
+and 0.06 s for rectangles (xatlas: 48 s and 318 s end to end).
+
+Rectangle packing is **two-tier**: rects whose padded long side reaches `pageW/32` go
 through the full min-waste skyline scan, everything smaller lands on
 height-sorted shelves allocated through that same skyline. The skyline probe
 is `O(#segments)` per rect, so the shelf tier is what removes the quadratic
@@ -531,8 +545,8 @@ degenerate, oversized, and cap-limited entries come back with
 ([`PYTHON.md`](PYTHON.md)).
 
 Header: [`RectPacking.h`](../include/halfmesh/RectPacking.h) ·
-implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp` ·
-example: `examples/Unwrap.cpp`.
+implementation: `src/AtlasCharting.cpp`, `src/AtlasPacking.cpp`,
+`src/FootprintPacking.cpp` · example: `examples/Unwrap.cpp`.
 
 ## Texture bake / rebake / defrag
 
@@ -544,6 +558,28 @@ BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
                      const SourceResolver&, const BakeParams&);
 BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams&);
 BakeResult BakeOntoAtlas(const Mesh& source, Mesh& target, const BakeParams&);
+### Footprint packing (mesh-independent)
+
+```cpp
+FootprintPackResult PackFootprints(const std::vector<cv::Mat>& masks,
+                                   const FootprintPackParams&,
+                                   std::vector<FootprintPlacement>& placements);
+```
+
+Packs binary masks (CV_8UC1, non-zero = footprint) by their footprints, not
+their rectangles: two items may share texels of their rectangles wherever
+neither mask is set, so irregular shapes — texture patches, UV charts — nest
+into each other's corners. The masks are quantized to `blockSize` texel blocks,
+each block row described by the one span it covers; bottom-left first fit
+over per-row free intervals, largest first, in whichever orientation sits
+lower (a rotated mask is placed as `cv::rotate(mask,
+cv::ROTATE_90_COUNTERCLOCKWISE)`, winding preserved). Each page is tried at
+three widths around the square root of the footprint area and cropped to its
+content (rounded to `sizeMultiple`, or a power of two); what a page cannot take
+opens the next, bounded by `maxPageSize` (0: unbounded). Any gutter must be
+part of the masks. openMVS's texturing packs its texture patches with it.
+From Python: `halfmesh.pack_footprints`.
+
 BakeResult DefragmentTexture(Mesh& mesh, const BakeParams&);
 unsigned   AutoAtlasResolution(const Mesh& source, unsigned maxResolution = 8192);
 ```

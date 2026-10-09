@@ -117,6 +117,7 @@ struct BenchConfig
 	int foldRescueSlits = -1; // ParametrizeParams::foldRescueSlits (fold-rescue slit count)
 	float tinyChartSide = -1.f; // AtlasParams::tinyChartSide (per-size padding trigger, unpadded side texels)
 	int debrisChartFaces = -1; // AtlasParams::debrisChartFaces (per-size padding trigger, face count)
+	int packFootprints = -1; // AtlasParams::packFootprints (0/1)
 };
 
 } // namespace hmbench

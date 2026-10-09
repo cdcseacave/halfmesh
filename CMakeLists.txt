@@ -84,7 +84,7 @@ endif()
 # so an absolute path works on all CMake versions >= 3.21.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
-project(halfmesh VERSION 0.4.2 LANGUAGES CXX)
+project(halfmesh VERSION 0.5.0 LANGUAGES CXX)
 
 # vcpkg.json cannot read the version above, so it carries a manual copy —
 # fail the configure the moment the two drift apart (a version bump must
@@ -201,6 +201,7 @@ add_library(halfmesh
 	src/Parametrize.cpp
 	src/AtlasCharting.cpp
 	src/AtlasPacking.cpp
+	src/FootprintPacking.cpp
 	src/TextureBake.cpp
 	src/GltfImageCodec.cpp
 )

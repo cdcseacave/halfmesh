@@ -7,7 +7,7 @@
 * See the LICENSE file in the project root for the full license text.
 */
 
-// halfmesh/RectPacking.h — mesh-independent rectangle bin packing.
+// halfmesh/RectPacking.h — mesh-independent rectangle and footprint bin packing.
 //
 // This mesh-independent counterpart to the atlas pipeline's float chart packer
 // accepts integer pixel rectangles, so texture-atlas repacking, lightmap layout,
@@ -97,5 +97,65 @@ RectPackResult PackRectangles(const std::vector<cv::Rect>& rects,
 int EstimateSquareTextureSize(const std::vector<cv::Rect>& rects,
                               int multiple = 0,
                               float targetOccupancy = 0.9f);
+
+// ---------------------------------------------------------------------------
+// Footprint packing: items are binary masks, not rectangles. Two items may share
+// texels of their rectangles wherever neither mask is set, so irregular shapes
+// (texture patches, UV charts) nest into each other's empty corners instead of
+// each claiming its whole bounding box.
+//
+// The masks are quantized to a grid of blockSize x blockSize texels (a block is
+// taken if any of its texels is set), each block row of a footprint described by
+// the one span of block columns it covers (holes inside a row are not reused).
+// Bottom-left first fit: largest footprint first, each takes the lowest row, then
+// the leftmost column, where every one of its row spans lies in a free interval
+// of the page row it falls on, in whichever orientation sits lower. A page is
+// tried at three widths around the square root of the footprint area (half,
+// equal, double) and the one leaving the fewest footprints over, then the
+// smallest, is kept; its dimensions are cropped to the extent the footprints use.
+// Footprints a page cannot take open the next page.
+// ---------------------------------------------------------------------------
+
+// Where an input mask landed. `rect` is the mask's rectangle on its page
+// (width/height swapped when rotated); a rotated mask is turned 90 degrees in
+// the winding-preserving direction of RectPlacement: the texel (x,y) of a mask
+// w texels wide lands at (rect.x + y, rect.y + w-1 - x), i.e. the mask is placed
+// as cv::rotate(mask, cv::ROTATE_90_COUNTERCLOCKWISE).
+struct FootprintPlacement
+{
+	cv::Rect rect;
+	bool rotated = false;
+	unsigned page = 0;
+	bool packed = false;
+};
+
+struct FootprintPackParams
+{
+	// Placement grid in texels; any gutter must already be part of the masks.
+	unsigned blockSize = 4;
+	// Page side bound in texels (0: unbounded, the page height is then capped at
+	// four times its width, so a long tail still opens a new page).
+	int maxPageSize = 0;
+	// Round each page dimension up to this multiple; 0 rounds to a power of two.
+	int sizeMultiple = 0;
+	// Permit the 90-degree rotation.
+	bool allowRotation = true;
+};
+
+struct FootprintPackResult
+{
+	std::vector<cv::Size> pageSizes; // one per page, each cropped to its content
+	unsigned numPacked = 0;
+	// Texels of the block-quantized footprints, on the same basis as the page
+	// areas, so occupancy is footprintArea / sum(pageSizes area).
+	uint64_t footprintArea = 0;
+};
+
+// Pack the masks (CV_8UC1, non-zero = footprint, each with at least one texel
+// set). `placements` is indexed in lockstep with `masks`. A mask wider and taller
+// than maxPageSize in both orientations is left unpacked (packed=false).
+FootprintPackResult PackFootprints(const std::vector<cv::Mat>& masks,
+                                   const FootprintPackParams& params,
+                                   std::vector<FootprintPlacement>& placements);
 
 } // namespace halfmesh

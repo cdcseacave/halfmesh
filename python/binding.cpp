@@ -382,7 +382,7 @@ PYBIND11_MODULE(_halfmesh, m)
 	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)
 	    .def("__repr__", [](Mesh& self) { self.SyncFaces(); return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
 
-	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion, unsigned repair_carve_rings, unsigned fold_rescue_slits, float tiny_chart_side, unsigned debris_chart_faces) {
+	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion, unsigned repair_carve_rings, unsigned fold_rescue_slits, float tiny_chart_side, unsigned debris_chart_faces, bool pack_footprints) {
 		if (resolution == 0u)
 			throw py::value_error("unwrap resolution must be > 0");
 		if (2u * padding >= resolution)
@@ -443,6 +443,7 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["pages"] = result.numPages;
 		meta["width"] = result.width;
 		meta["height"] = result.height;
+			aparams.packFootprints = pack_footprints;
 		meta["occupancy"] = result.occupancy;
 		meta["coverage"] = result.coverage;
 		meta["fit_attempts"] = result.fitAttempts;
@@ -455,7 +456,7 @@ PYBIND11_MODULE(_halfmesh, m)
 		meta["padding_applied"] = padding_applied;
 		meta["vertices"] = mesh.vertices.size();
 		meta["faces"] = mesh.faces.size();
-		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("max_cone_error") = 0.05f, py::arg("cut_to_disk") = false, py::arg("max_uv_distortion") = 0.f, py::arg("repair_carve_rings") = 0u, py::arg("fold_rescue_slits") = 0u, py::arg("tiny_chart_side") = 0.f, py::arg("debris_chart_faces") = 0u, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. Returns {charts, pages, width, height, occupancy, coverage, fit_attempts, fit_scale, max_chart_extent, padding_applied{nominal,min,n_charts_reduced}, vertices, faces}.");
+		return meta; }, py::arg("input_path"), py::arg("output_path"), py::arg("resolution") = 4096u, py::arg("padding") = 2u, py::arg("allow_rotation") = true, py::arg("max_cone_error") = 0.05f, py::arg("cut_to_disk") = false, py::arg("max_uv_distortion") = 0.f, py::arg("repair_carve_rings") = 0u, py::arg("fold_rescue_slits") = 0u, py::arg("tiny_chart_side") = 0.f, py::arg("debris_chart_faces") = 0u, py::arg("pack_footprints") = true, "Generate a packed UV atlas: load -> weld -> GenerateAtlas -> save. Returns {charts, pages, width, height, occupancy, coverage, fit_attempts, fit_scale, max_chart_extent, padding_applied{nominal,min,n_charts_reduced}, vertices, faces}.");
 
 	m.def("pack_rectangles", [](const py::array& sizes, const PageSizeArg& page_size, const std::string& mode, const std::optional<PageSizeArg>& max_page_size, unsigned padding, bool allow_rotation, bool power_of_two, bool square) {
 		halfmesh::RectPackParams params;
@@ -531,3 +532,66 @@ PYBIND11_MODULE(_halfmesh, m)
 		py::gil_scoped_release release;
 		return halfmesh::EstimateSquareTextureSize(rects, multiple, target_occupancy); }, py::arg("sizes"), py::arg("multiple") = 0, py::arg("target_occupancy") = 0.9f, "Approximate the smallest square page side holding these (width, height) rectangles at target_occupancy, rounded up to a multiple of `multiple`, or to a power of two when it is 0. A starting page_size for pack_rectangles.");
 }
+	m.def("pack_footprints", [](const std::vector<py::array>& masks, int max_page_size, int size_multiple, unsigned block_size, bool allow_rotation) {
+		if (max_page_size < 0 || size_multiple < 0)
+			throw py::value_error("max_page_size and size_multiple must be >= 0");
+		if (block_size == 0)
+			throw py::value_error("block_size must be > 0");
+		std::vector<cv::Mat> mats;
+		mats.reserve(masks.size());
+		for (const py::array& mask : masks) {
+			// copied: the packer never aliases the caller's buffers
+			const py::array_t<uint8_t, py::array::c_style | py::array::forcecast> m(mask);
+			if (m.ndim() != 2)
+				throw py::value_error("every mask must be a 2-D array (rows, cols)");
+			cv::Mat mat(static_cast<int>(m.shape(0)), static_cast<int>(m.shape(1)), CV_8UC1);
+			std::memcpy(mat.data, m.data(), static_cast<size_t>(m.size()));
+			mats.push_back(mat);
+		}
+		halfmesh::FootprintPackParams params;
+		params.maxPageSize = max_page_size;
+		params.sizeMultiple = size_multiple;
+		params.blockSize = block_size;
+		params.allowRotation = allow_rotation;
+		std::vector<halfmesh::FootprintPlacement> placements;
+		halfmesh::FootprintPackResult result;
+		{
+			py::gil_scoped_release release;
+			result = halfmesh::PackFootprints(mats, params, placements);
+		}
+		const auto n = static_cast<py::ssize_t>(placements.size());
+		py::array_t<int32_t> outRects({n, py::ssize_t(4)});
+		py::array_t<uint32_t> outPage(n);
+		py::array_t<bool> outRotated(n);
+		py::array_t<bool> outPacked(n);
+		auto r = outRects.mutable_unchecked<2>();
+		auto pg = outPage.mutable_unchecked<1>();
+		auto rot = outRotated.mutable_unchecked<1>();
+		auto pk = outPacked.mutable_unchecked<1>();
+		for (py::ssize_t i = 0; i < n; ++i) {
+			const halfmesh::FootprintPlacement& p = placements[static_cast<size_t>(i)];
+			r(i, 0) = p.rect.x;
+			r(i, 1) = p.rect.y;
+			r(i, 2) = p.rect.width;
+			r(i, 3) = p.rect.height;
+			pg(i) = p.page;
+			rot(i) = p.rotated;
+			pk(i) = p.packed;
+		}
+		py::list sizes;
+		double pageArea = 0;
+		for (const cv::Size& size : result.pageSizes) {
+			sizes.append(py::make_tuple(size.width, size.height));
+			pageArea += static_cast<double>(size.area());
+		}
+		py::dict out;
+		out["rects"] = std::move(outRects);
+		out["page"] = std::move(outPage);
+		out["rotated"] = std::move(outRotated);
+		out["packed"] = std::move(outPacked);
+		out["page_sizes"] = sizes;
+		out["n_packed"] = result.numPacked;
+		out["footprint_area"] = result.footprintArea;
+		out["occupancy"] = pageArea > 0. ? static_cast<double>(result.footprintArea) / pageArea : 0.;
+		return out; }, py::arg("masks"), py::arg("max_page_size") = 0, py::arg("size_multiple") = 0, py::arg("block_size") = 4u, py::arg("allow_rotation") = true, "Pack binary masks (2-D uint8 arrays, non-zero = footprint) into texture pages by their footprints, not their bounding rectangles, so irregular shapes nest into each other's empty corners; any gutter must be part of the masks. max_page_size bounds the page side (0: unbounded), each page is cropped to its content and rounded up to size_multiple (0: a power of two). A rotated mask is placed as np.rot90(mask) (counter-clockwise). Returns {rects [N,4] int32 (x, y, w, h), page [N], rotated [N], packed [N], page_sizes [(w, h)], n_packed, footprint_area, occupancy}, each per-mask array in input order.");
+

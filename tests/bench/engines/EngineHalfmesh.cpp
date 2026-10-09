@@ -63,6 +63,8 @@ inline void ApplyAtlasOverrides(halfmesh::AtlasParams& ap, const BenchConfig& cf
 		ap.tinyChartSide = cfg.tinyChartSide;
 	if (cfg.debrisChartFaces >= 0)
 		ap.debrisChartFaces = static_cast<unsigned>(cfg.debrisChartFaces);
+	if (cfg.packFootprints >= 0)
+		ap.packFootprints = cfg.packFootprints != 0;
 }
 } // namespace
 
