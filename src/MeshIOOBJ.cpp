@@ -1015,7 +1015,8 @@ bool Mesh::SaveOBJ(const std::string& fileName, ImageFormat imageFormat) const
 		std::vector<std::string> textureNames(texturesDiffuse.size());
 		FOREACH (i, textureNames)
 			textureNames[i] = HALFMESH_FORMAT("{}_material_{:02}_map_Kd.{}", stem, i, extension);
-		std::vector<bool> written(texturesDiffuse.size(), false);
+		// one byte per texture, not std::vector<bool>: the workers write their flags concurrently
+		std::vector<uint8_t> written(texturesDiffuse.size(), 0);
 		const std::vector<int> codecParams{cv::IMWRITE_JPEG_QUALITY, 95};
 		ParallelForPool(pool, texturesDiffuse.size(), [&](size_t i) {
 			try {
