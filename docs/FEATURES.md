@@ -655,7 +655,10 @@ caches and octree are derived data and are not copied.
 - `Util/Geometry.h` — angles/cotangents, point–segment and point–triangle
   distances, Möller–Trumbore ray-triangle intersection, barycentric helpers.
 - `Util/Raster.h` — `RasterizeTriangleBary` (top-left-rule triangle traversal
-  with barycentric callback) and mask-guided `Dilate` (the bake gutter fill).
+  with barycentric callback), mask-guided `Dilate` (the bake gutter fill) and
+  `PushPullFill` (fills every texel a mask leaves out by push-pull over a box
+  pyramid, so mipmapped lookups near a chart average its own surroundings;
+  openMVS's texturing fills its atlas pages with it).
 - `Util/Sampler.h` — bilinear/bicubic image sampling with texel-center
   convention (`uv*size − 0.5`).
 - `Util/Accumulator.h`, `Util/PixelTraits.h` — weighted accumulation over

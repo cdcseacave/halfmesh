@@ -596,6 +596,10 @@ oversights:
   — not bound yet. It needs image-array marshalling and a
   Python-subclassable source resolver, and is planned as its own follow-up
   designed together with the texturing-stage consumer.
+- **Image utilities** (`Util/Raster.h`: `RasterizeTriangleBary`, `Dilate`,
+  `PushPullFill`; `Util/Sampler.h`) — numpy and OpenCV already cover raster
+  and image work in Python; these are the C++ building blocks of baking and
+  texturing.
 - **Per-element attributes on `Mesh`** — vertex colors and normals, per-corner
   UVs and textures are carried through `load`/`save`, but `to_arrays` returns
   geometry only. The array ops take and return bare geometry.

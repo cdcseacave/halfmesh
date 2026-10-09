@@ -270,4 +270,71 @@ void Dilate(cv::Mat_<T>& image, cv::Mat_<uint8_t>& mask,
 	}
 }
 
+// Fill every texel `mask` leaves out (zero) from the texels it keeps, by push-pull
+// over a box pyramid: each level halves the previous one, summing the kept
+// texels' colors and their count; then, from the coarsest level down, every
+// empty texel takes its parent's mean color. Unlike Dilate it fills the whole
+// image in O(texels), so a mipmapped lookup anywhere near a chart averages that
+// chart's own surroundings instead of the background. image: CV_8UC1..4,
+// mask: CV_8UC1 of the same size; texels the mask keeps are left untouched.
+inline void PushPullFill(cv::Mat& image, const cv::Mat& mask)
+{
+	ASSERT(image.depth() == CV_8U && image.channels() <= 4 && mask.type() == CV_8UC1 && image.size() == mask.size());
+	const int channels = image.channels();
+	// per texel: the summed color (up to 4 channels) and the number of kept texels summed
+	std::vector<cv::Mat_<cv::Vec<float, 5>>> levels(1);
+	levels[0].create(image.size());
+	for (int r = 0; r < image.rows; ++r) {
+		const uint8_t* const px = image.ptr<uint8_t>(r);
+		const uint8_t* const m = mask.ptr<uint8_t>(r);
+		for (int c = 0; c < image.cols; ++c) {
+			cv::Vec<float, 5>& a = levels[0](r, c);
+			a = cv::Vec<float, 5>::all(0.f);
+			if (!m[c])
+				continue;
+			for (int k = 0; k < channels; ++k)
+				a[k] = px[c * channels + k];
+			a[4] = 1.f;
+		}
+	}
+	while (levels.back().rows > 1 || levels.back().cols > 1) {
+		const cv::Mat_<cv::Vec<float, 5>>& fine = levels.back();
+		cv::Mat_<cv::Vec<float, 5>> coarse((fine.rows + 1) / 2, (fine.cols + 1) / 2, cv::Vec<float, 5>::all(0.f));
+		for (int r = 0; r < fine.rows; ++r)
+			for (int c = 0; c < fine.cols; ++c)
+				coarse(r / 2, c / 2) += fine(r, c);
+		levels.emplace_back(std::move(coarse));
+	}
+	// pull: a level's empty texel takes its parent's normalized color
+	for (int l = static_cast<int>(levels.size()) - 2; l >= 0; --l) {
+		cv::Mat_<cv::Vec<float, 5>>& fine = levels[l];
+		const cv::Mat_<cv::Vec<float, 5>>& coarse = levels[l + 1];
+		for (int r = 0; r < fine.rows; ++r)
+			for (int c = 0; c < fine.cols; ++c) {
+				cv::Vec<float, 5>& a = fine(r, c);
+				if (a[4] > 0) {
+					a *= 1.f / a[4];
+					continue;
+				}
+				const cv::Vec<float, 5>& parent = coarse(r / 2, c / 2);
+				if (parent[4] > 0) {
+					for (int k = 0; k < 4; ++k)
+						a[k] = parent[k] / parent[4];
+					a[4] = 1.f;
+				}
+			}
+	}
+	for (int r = 0; r < image.rows; ++r) {
+		uint8_t* const px = image.ptr<uint8_t>(r);
+		const uint8_t* const m = mask.ptr<uint8_t>(r);
+		for (int c = 0; c < image.cols; ++c) {
+			if (m[c])
+				continue;
+			const cv::Vec<float, 5>& a = levels[0](r, c);
+			for (int k = 0; k < channels; ++k)
+				px[c * channels + k] = static_cast<uint8_t>(std::clamp(static_cast<int>(std::floor(static_cast<double>(a[k]) + 0.5)), 0, 255));
+		}
+	}
+}
+
 } // namespace halfmesh
