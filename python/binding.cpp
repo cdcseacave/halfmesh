@@ -276,6 +276,58 @@ PYBIND11_MODULE(_halfmesh, m)
 			std::memcpy(out.mutable_data(), points.data(), sizeof(Mesh::Vertex) * points.size());
 		return out; }, py::arg("vertices"), py::arg("faces"), py::arg("density"), py::arg("seed") = 0u, "Area-uniform random points on the surface (Turk): each face gets floor(area*density) points plus one more with the probability of the fraction left. Deterministic for a given seed. Returns [N,3] float32 points.");
 
+	m.def("is_watertight", [](const VertArray& v, const FaceArray& f) {
+		const Mesh mesh = MeshFromArrays(v, f);
+		py::gil_scoped_release release;
+		return mesh.IsWatertight(); }, py::arg("vertices"), py::arg("faces"), "True if every edge is shared by exactly two faces traversing it in opposite directions: closed, edge-manifold and consistently oriented, so the surface bounds a volume. Two shells touching at a vertex qualify; unreferenced vertices are ignored; an empty mesh is not watertight.");
+
+	m.def("compute_volume", [](const VertArray& v, const FaceArray& f, std::optional<py::array_t<double, py::array::c_style | py::array::forcecast>> plane) -> py::object {
+		const Mesh mesh = MeshFromArrays(v, f);
+		if (!plane) {
+			double volume;
+			{
+				py::gil_scoped_release release;
+				volume = mesh.ComputeVolume();
+			}
+			return py::float_(volume);
+		}
+		if (plane->ndim() != 1 || plane->shape(0) != 4)
+			throw py::value_error("plane must be (a, b, c, d) with a*x + b*y + c*z + d = 0");
+		const double* abcd = plane->data();
+		const Eigen::Vector3d normal(abcd[0], abcd[1], abcd[2]);
+		const double norm = normal.norm();
+		if (!(norm > 0) || !std::isfinite(norm) || !std::isfinite(abcd[3]))
+			throw py::value_error("plane needs a finite, non-zero normal (a, b, c) and a finite d");
+		Mesh::PlaneVolume volume;
+		{
+			py::gil_scoped_release release;
+			volume = mesh.ComputeVolume(Mesh::Plane(normal / norm, abcd[3] / norm));
+		}
+		return py::make_tuple(volume.above, volume.below); }, py::arg("vertices"), py::arg("faces"), py::arg("plane") = py::none(), "Volume by the divergence theorem, in double, exact for a watertight surface (positive when the faces wind counter-clockwise seen from outside), referenced to the bounding-box center so coordinates far from the origin lose no digits. Returns a float.\n\nplane: optional (a, b, c, d), a*x + b*y + c*z + d = 0 (normalized here). Every face then contributes the prism between it and its projection onto the plane, split where it crosses it; returns (above, below), the parts on the side the normal points to and on the other. For a watertight surface above + below is the enclosed volume; for an open one whose boundary lies on the plane (a stockpile on its ground) it is the volume it closes against the plane, above being the fill and -below the cut.");
+
+	m.def("sub_mesh", [](const VertArray& v, const FaceArray& f, const py::array& face_indices) {
+		const Int64Array indices = IntegerArray(face_indices, 1, "face_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
+		const Mesh mesh = MeshFromArrays(v, f);
+		const auto numFaces = static_cast<int64_t>(mesh.faces.size());
+		std::vector<Mesh::FIndex> selection;
+		selection.reserve(static_cast<size_t>(indices.shape(0)));
+		for (const int64_t idx : std::span(indices.data(), static_cast<size_t>(indices.shape(0)))) {
+			if (idx < 0 || idx >= numFaces)
+				throw py::value_error("face index " + std::to_string(idx) + " is out of range for " + std::to_string(numFaces) + " faces");
+			selection.push_back(static_cast<Mesh::FIndex>(idx));
+		}
+		Mesh sub;
+		std::vector<Mesh::VIndex> vertexMap;
+		{
+			py::gil_scoped_release release;
+			sub = mesh.SubMesh(selection, &vertexMap);
+		}
+		py::tuple vf = ArraysFromMesh(sub);
+		py::array_t<uint32_t> map(static_cast<py::ssize_t>(vertexMap.size()));
+		if (!vertexMap.empty())
+			std::memcpy(map.mutable_data(), vertexMap.data(), sizeof(uint32_t) * vertexMap.size());
+		return py::make_tuple(vf[0], vf[1], std::move(map)); }, py::arg("vertices"), py::arg("faces"), py::arg("face_indices"), "Copy the given faces, in that order, and the vertices they reference, in order of first reference. Returns (vertices, faces, vertex_map), vertex_map holding the source index of each new vertex.");
+
 	m.def("remove_vertices_and_fill", [](const VertArray& v, const FaceArray& f, const py::array& vertex_indices) {
 		const Int64Array indices = IntegerArray(vertex_indices, 1, "vertex_indices must be a 1-D integer array (for a boolean mask pass np.flatnonzero(mask))");
 		Mesh mesh = MeshFromArrays(v, f);
@@ -402,6 +454,9 @@ PYBIND11_MODULE(_halfmesh, m)
 		    }
 		    if (!ok)
 			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb (format from extension).")
+	    .def("join", [](Mesh& self, const Mesh& other) {
+		    py::gil_scoped_release release;
+		    self.Join(other); }, py::arg("other"), "Append a copy of other: its vertices and faces after this mesh's, indices shifted, nothing welded. An attribute (colors, normals, texture) survives only when both meshes carry it; textures are concatenated and other's blob ids shifted.")
 	    .def_property_readonly("n_vertices", [](const Mesh& self) { return self.vertices.size(); })
 	    .def_property_readonly("n_faces", [](Mesh& self) { self.SyncFaces(); return self.faces.size(); })
 	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)

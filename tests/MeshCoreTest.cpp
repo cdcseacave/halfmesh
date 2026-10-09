@@ -14,6 +14,8 @@
 #include <halfmesh/Mesh.h>
 #include <halfmesh/HalfMesh.h>
 
+#include "Corpus.h"
+
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -932,6 +934,271 @@ TEST(MeshCoreTest, SmoothFaceNormalsIsolatedFaceStaysFinite)
 	ASSERT_EQ(m.faceNormals.size(), 1u);
 	EXPECT_TRUE(m.faceNormals[0].allFinite());
 	EXPECT_NEAR(m.faceNormals[0].norm(), 1.f, 1e-6f);
+}
+
+// ---------------------------------------------------------------------------
+// IsWatertight / ComputeVolume / Join / SubMesh
+// ---------------------------------------------------------------------------
+
+Mesh Translated(Mesh m, const Mesh::Vertex& offset)
+{
+	for (Mesh::Vertex& v : m.vertices)
+		v += offset;
+	return m;
+}
+
+TEST(MeshCore, IsWatertight_ClosedOpenAndDefects)
+{
+	namespace corpus = hmtest::corpus;
+	for (const Mesh& closed : {corpus::CubeMesh(), corpus::IcosahedronMesh(), corpus::TorusMesh(), corpus::UVSphere(), corpus::TetrahedronMesh()}) {
+		EXPECT_TRUE(closed.IsWatertight());
+		// the half-edge arm agrees
+		Mesh built = closed;
+		built.ListHalfEdges();
+		ASSERT_FALSE(built.halfMesh.Empty());
+		EXPECT_TRUE(built.IsWatertight());
+	}
+	for (const Mesh& open : {corpus::GridPlane(), corpus::OpenCylinder(), corpus::Cone()}) {
+		EXPECT_FALSE(open.IsWatertight());
+		Mesh built = open;
+		built.ListHalfEdges();
+		EXPECT_FALSE(built.IsWatertight());
+	}
+	EXPECT_FALSE(Mesh().IsWatertight());
+	// one face wound the other way: its three edges run the same way twice
+	Mesh flipped = corpus::CubeMesh();
+	std::swap(flipped.faces[3][1], flipped.faces[3][2]);
+	EXPECT_FALSE(flipped.IsWatertight());
+	// a duplicated face puts three faces on its edges
+	Mesh duplicated = corpus::CubeMesh();
+	duplicated.faces.push_back(duplicated.faces[0]);
+	EXPECT_FALSE(duplicated.IsWatertight());
+	// a face repeating a vertex
+	Mesh degenerate = corpus::CubeMesh();
+	degenerate.faces.push_back(Mesh::Face(0, 0, 1));
+	EXPECT_FALSE(degenerate.IsWatertight());
+	// two closed shells sharing a vertex still bound a volume, and an
+	// unreferenced vertex does not open anything
+	Mesh pinched = corpus::CubeMesh();
+	const Mesh other = Translated(corpus::CubeMesh(), Mesh::Vertex(1, 1, 1));
+	const auto offset = static_cast<Mesh::VIndex>(pinched.vertices.size());
+	pinched.vertices.insert(pinched.vertices.end(), other.vertices.begin() + 1, other.vertices.end());
+	for (const Mesh::Face& face : other.faces) {
+		Mesh::Face shifted;
+		for (int k = 0; k < 3; ++k)
+			shifted[k] = face[k] == 0 ? 6u : face[k] - 1 + offset; // other's vertex 0 is pinched's vertex 6, (1,1,1)
+		pinched.faces.push_back(shifted);
+	}
+	pinched.vertices.push_back(Mesh::Vertex(9, 9, 9));
+	EXPECT_TRUE(pinched.IsWatertight());
+	// a large mesh runs the parallel bucket check
+	const Mesh large = corpus::LargeMesh(200000);
+	ASSERT_GE(large.faces.size(), size_t(1) << 16);
+	EXPECT_TRUE(large.IsWatertight());
+	Mesh largeOpen = large;
+	largeOpen.faces.pop_back();
+	EXPECT_FALSE(largeOpen.IsWatertight());
+}
+
+TEST(MeshCore, ComputeVolume_ExactFarFromTheOrigin)
+{
+	namespace corpus = hmtest::corpus;
+	const Mesh cube = corpus::CubeMesh(2.f);
+	EXPECT_DOUBLE_EQ(cube.ComputeVolume(), 8.0);
+	// inside out is negative
+	Mesh inverted = cube;
+	for (Mesh::Face& face : inverted.faces)
+		std::swap(face[1], face[2]);
+	EXPECT_DOUBLE_EQ(inverted.ComputeVolume(), -8.0);
+	// geo-referenced coordinates: the tetrahedra spanned with the origin cancel
+	// terms of ~1e18 down to 8; spanned with the box center they stay exact
+	EXPECT_DOUBLE_EQ(Translated(cube, Mesh::Vertex(4e6f, -2e6f, 5e5f)).ComputeVolume(), 8.0);
+	const Eigen::Vector3d offset(4123456.25, -2345678.5, 512345.75); // exact in float
+	const Mesh far = Translated(corpus::UVSphere(16, 24), offset.cast<float>());
+	double reference = 0, naive = 0;
+	for (const Mesh::Face& face : far.faces) {
+		Eigen::Vector3d p[3];
+		for (int k = 0; k < 3; ++k)
+			p[k] = far.vertices[face[k]].cast<double>();
+		reference += (p[0] - offset).dot((p[1] - offset).cross(p[2] - offset)) / 6; // exact differences
+		naive += p[0].dot(p[1].cross(p[2])) / 6;
+	}
+	EXPECT_NEAR(far.ComputeVolume(), reference, std::abs(reference) * 1e-14);
+	EXPECT_GT(std::abs(naive - reference), std::abs(reference) * 1e-11); // ~1e-9: what the reference point is for
+	// many blocks: the plane split adds up to the closed volume, on both sides
+	const Mesh large = corpus::LargeMesh(300000);
+	const Mesh::Plane plane(Eigen::Vector3d(0.3, -0.5, 0.8).normalized(), 0.1);
+	const Mesh::PlaneVolume split = large.ComputeVolume(plane);
+	EXPECT_NEAR(split.above + split.below, large.ComputeVolume(), 1e-9);
+	EXPECT_GT(split.above, 0);
+	EXPECT_GT(split.below, 0);
+	EXPECT_EQ(large.ComputeVolume(), large.ComputeVolume());
+	EXPECT_EQ(Mesh().ComputeVolume(), 0.0);
+}
+
+TEST(MeshCore, ComputeVolume_AgainstAPlane)
+{
+	namespace corpus = hmtest::corpus;
+	// a closed surface: each side holds its own part, whatever the plane
+	const Mesh cube = corpus::CubeMesh(2.f);
+	const Mesh::PlaneVolume cut = cube.ComputeVolume(Mesh::Plane(Eigen::Vector3d::UnitZ(), -0.5));
+	EXPECT_NEAR(cut.above, 6.0, 1e-12);
+	EXPECT_NEAR(cut.below, 2.0, 1e-12);
+	const Mesh::PlaneVolume tilted = cube.ComputeVolume(Mesh::Plane(Eigen::Vector3d(1, 2, 3).normalized(), -1.7));
+	EXPECT_NEAR(tilted.above + tilted.below, 8.0, 1e-12);
+	// a terrain z = 1 + x over the unit square, faces up, linear per face so the
+	// split is exact: over z = 0 it holds 1.5; against z = 1.25 the fill is
+	// 0.75^2/2 and the cut, below the plane and counted negative, 0.25^2/2
+	Mesh terrain = corpus::GridPlane(8);
+	for (Mesh::Vertex& v : terrain.vertices) {
+		v.x() /= 8;
+		v.y() /= 8;
+		v.z() = 1 + v.x();
+	}
+	const Mesh::PlaneVolume ground = terrain.ComputeVolume(Mesh::Plane(Eigen::Vector3d::UnitZ(), 0));
+	EXPECT_NEAR(ground.above, 1.5, 1e-12);
+	EXPECT_EQ(ground.below, 0.0);
+	const Mesh::PlaneVolume level = terrain.ComputeVolume(Mesh::Plane(Eigen::Vector3d::UnitZ(), -1.25));
+	EXPECT_NEAR(level.above, 0.28125, 1e-12);
+	EXPECT_NEAR(level.below, -0.03125, 1e-12);
+	// the same terrain far from the origin
+	const Mesh far = Translated(terrain, Mesh::Vertex(5e5f, 4e6f, 0));
+	const Mesh::PlaneVolume farLevel = far.ComputeVolume(Mesh::Plane(Eigen::Vector3d::UnitZ(), -1.25));
+	EXPECT_NEAR(farLevel.above, 0.28125, 1e-9);
+	EXPECT_NEAR(farLevel.below, -0.03125, 1e-9);
+}
+
+TEST(MeshCore, Join_AttributesTexturesAndHalfEdges)
+{
+	namespace corpus = hmtest::corpus;
+	Mesh a = corpus::CubeMesh();
+	Mesh b = Translated(corpus::CubeMesh(), Mesh::Vertex(3, 0, 0));
+	a.vertexColors.assign(a.vertices.size(), Pixel(1, 2, 3));
+	b.vertexColors.assign(b.vertices.size(), Pixel(4, 5, 6));
+	a.vertexNormals.assign(a.vertices.size(), Mesh::Normal::UnitZ()); // only one side: dropped
+	const auto texture = [](int size, uint8_t value) {
+		Mesh::Image3u image(size, size);
+		image.setTo(cv::Scalar::all(value));
+		return image;
+	};
+	a.texturesDiffuse = {texture(4, 10)};
+	a.faceTexcoords.assign(a.faces.size() * 3, Mesh::TexCoord(1, 1));
+	b.texturesDiffuse = {texture(8, 20), texture(2, 30)};
+	b.faceTexcoords.assign(b.faces.size() * 3, Mesh::TexCoord(2, 2));
+	b.faceTexblobs.assign(b.faces.size(), 1);
+	b.faceTexblobs[0] = 0;
+	a.ListHalfEdges();
+	b.ListHalfEdges();
+	Mesh joined = a;
+	joined.Join(b);
+	ASSERT_EQ(joined.vertices.size(), 16u);
+	ASSERT_EQ(joined.faces.size(), 24u);
+	EXPECT_EQ(joined.faces[12], Mesh::Face(b.faces[0][0] + 8, b.faces[0][1] + 8, b.faces[0][2] + 8));
+	EXPECT_EQ(joined.vertexColors.size(), 16u);
+	EXPECT_EQ(joined.vertexColors[8], Pixel(4, 5, 6));
+	EXPECT_TRUE(joined.vertexNormals.empty());
+	ASSERT_EQ(joined.texturesDiffuse.size(), 3u);
+	ASSERT_EQ(joined.faceTexblobs.size(), 24u);
+	EXPECT_EQ(joined.faceTexblobs[0], 0);
+	EXPECT_EQ(joined.faceTexblobs[12], 1);
+	EXPECT_EQ(joined.faceTexblobs[13], 2);
+	EXPECT_EQ(joined.faceTexcoords[36], Mesh::TexCoord(2, 2));
+	// both half-edge structures were live: appended, and equal to a rebuild
+	ASSERT_FALSE(joined.halfMesh.Empty());
+	EXPECT_TRUE(joined.ValidateHalfMesh());
+	EXPECT_TRUE(joined.IsWatertight());
+	EXPECT_NEAR(joined.ComputeVolume(), 2.0, 1e-12);
+	// a side without a half-edge structure drops it; textured with untextured drops the texture
+	const Mesh plain = Translated(corpus::CubeMesh(), Mesh::Vertex(0, 3, 0));
+	joined.Join(plain);
+	EXPECT_TRUE(joined.halfMesh.Empty());
+	EXPECT_TRUE(joined.faceTexcoords.empty() && joined.faceTexblobs.empty() && joined.texturesDiffuse.empty());
+	EXPECT_TRUE(joined.vertexColors.empty());
+	EXPECT_EQ(joined.faces.size(), 36u);
+	EXPECT_TRUE(joined.IsWatertight());
+	// into an empty mesh: a copy
+	Mesh empty;
+	empty.Join(b);
+	EXPECT_EQ(empty.vertices, b.vertices);
+	EXPECT_EQ(empty.texturesDiffuse.size(), 2u);
+}
+
+TEST(MeshCore, SubMesh_FirstReferenceOrderAttributesAndTextures)
+{
+	namespace corpus = hmtest::corpus;
+	Mesh grid = corpus::GridPlane(4); // 25 vertices, 32 faces
+	grid.vertexColors.resize(grid.vertices.size());
+	FOREACH (v, grid.vertexColors)
+		grid.vertexColors[v] = Pixel(static_cast<uint8_t>(v), 0, 0);
+	grid.ComputeFaceNormals();
+	grid.faceTexcoords.resize(grid.faces.size() * 3);
+	FOREACH (c, grid.faceTexcoords)
+		grid.faceTexcoords[c] = Mesh::TexCoord(static_cast<float>(c), 0);
+	for (int i = 0; i < 3; ++i) {
+		Mesh::Image3u image(2, 2);
+		image.setTo(cv::Scalar::all(i));
+		grid.texturesDiffuse.push_back(image);
+	}
+	grid.faceTexblobs.resize(grid.faces.size());
+	FOREACH (f, grid.faceTexblobs)
+		grid.faceTexblobs[f] = static_cast<Mesh::TexIndex>(f % 3);
+	const std::vector<Mesh::FIndex> selection = {5, 2, 8};
+	std::vector<Mesh::VIndex> vertexMap;
+	const Mesh sub = grid.SubMesh(selection, &vertexMap);
+	ASSERT_EQ(sub.faces.size(), 3u);
+	// vertices in order of first reference, and the map back to them
+	std::vector<Mesh::VIndex> expected;
+	for (const Mesh::FIndex f : selection)
+		for (int k = 0; k < 3; ++k)
+			if (std::find(expected.begin(), expected.end(), grid.faces[f][k]) == expected.end())
+				expected.push_back(grid.faces[f][k]);
+	EXPECT_EQ(vertexMap, expected);
+	ASSERT_EQ(sub.vertices.size(), expected.size());
+	FOREACH (i, selection) {
+		for (int k = 0; k < 3; ++k) {
+			EXPECT_EQ(sub.vertices[sub.faces[i][k]], grid.vertices[grid.faces[selection[i]][k]]);
+			EXPECT_EQ(sub.faceTexcoords[i * 3 + k], grid.faceTexcoords[selection[i] * 3 + k]);
+		}
+		EXPECT_EQ(sub.faceNormals[i], grid.faceNormals[selection[i]]);
+	}
+	FOREACH (v, sub.vertexColors)
+		EXPECT_EQ(sub.vertexColors[v], grid.vertexColors[vertexMap[v]]);
+	// faces 5, 2, 8 all use blob 2: one texture left, no ids
+	ASSERT_EQ(sub.texturesDiffuse.size(), 1u);
+	EXPECT_EQ(sub.texturesDiffuse[0](0, 0), grid.texturesDiffuse[2](0, 0));
+	EXPECT_TRUE(sub.faceTexblobs.empty());
+	// faces 4 (blob 1), 3 (blob 0), 7 (blob 1): textures in order of first use
+	const std::vector<Mesh::FIndex> mixed = {4, 3, 7};
+	const Mesh sub2 = grid.SubMesh(mixed);
+	ASSERT_EQ(sub2.texturesDiffuse.size(), 2u);
+	EXPECT_EQ(sub2.texturesDiffuse[0](0, 0), grid.texturesDiffuse[1](0, 0));
+	EXPECT_EQ(sub2.faceTexblobs, (std::vector<Mesh::TexIndex>{0, 1, 0}));
+	// a small piece of a large mesh takes the hashed renumbering: the same
+	// result as the dense table
+	const Mesh large = corpus::LargeMesh(200000);
+	std::vector<Mesh::FIndex> piece;
+	for (Mesh::FIndex f = 1000; f < 1100; ++f)
+		piece.push_back(f);
+	std::vector<Mesh::VIndex> pieceMap;
+	const Mesh small = large.SubMesh(piece, &pieceMap);
+	Mesh reference;
+	std::vector<Mesh::VIndex> dense(large.vertices.size(), math::NO_ID);
+	for (const Mesh::FIndex f : piece) {
+		Mesh::Face face;
+		for (int k = 0; k < 3; ++k) {
+			Mesh::VIndex& idx = dense[large.faces[f][k]];
+			if (idx == math::NO_ID) {
+				idx = static_cast<Mesh::VIndex>(reference.vertices.size());
+				reference.vertices.push_back(large.vertices[large.faces[f][k]]);
+			}
+			face[k] = idx;
+		}
+		reference.faces.push_back(face);
+	}
+	EXPECT_EQ(small.vertices, reference.vertices);
+	EXPECT_EQ(small.faces, reference.faces);
+	EXPECT_EQ(pieceMap.size(), small.vertices.size());
+	EXPECT_TRUE(grid.SubMesh(std::vector<Mesh::FIndex>()).vertices.empty());
 }
 
 } // namespace

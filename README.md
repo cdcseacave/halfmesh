@@ -22,6 +22,8 @@ parametrization and texture atlas pipeline.
 - **Liepa hole-filling** — fill boundary holes using the minimum-area advancing-front approach
 - **Triangle KD-tree** — spatial index for ray-triangle intersection and closest-point queries
 - **PLY / glTF I/O** — load and save binary/ASCII PLY and glTF/GLB files
+- **Volume and topology queries** — exact enclosed volume and volume against a plane
+  (fill/cut), watertightness, mesh join and sub-mesh extraction with all attributes
 - **UV parametrization** — developable (D-Charts) chart segmentation + per-chart SLIM/ARAP flattening
 - **Texture atlas** — uniform-density normalisation + two-tier (skyline min-waste + shelf)
   packing into one or more atlas pages, also usable standalone on integer rectangles

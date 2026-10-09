@@ -221,3 +221,14 @@ def test_unwrap_raises_on_unwritable_output(tmp_path):
     hm.Mesh.from_arrays(v, f).save(src)
     with pytest.raises(RuntimeError):
         hm.unwrap(src, str(tmp_path / "no_such_dir" / "out.ply"))
+
+
+def test_mesh_join_appends_without_welding():
+    v, f = _cube_arrays()
+    mesh = hm.Mesh.from_arrays(v, f)
+    mesh.join(hm.Mesh.from_arrays(v + np.float32(2), f))
+    jv, jf = mesh.to_arrays()
+    assert jv.shape == (16, 3) and jf.shape == (24, 3)
+    np.testing.assert_array_equal(jf[12:], f + 8)
+    assert hm.is_watertight(jv, jf)
+    assert hm.compute_volume(jv, jf) == pytest.approx(2.0, abs=1e-12)

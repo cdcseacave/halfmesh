@@ -333,6 +333,10 @@ array ops above.
 - `save(path, binary=True)` — save as `.ply` / `.gltf` / `.glb` (format from
   the extension). `binary=False` writes ASCII PLY. Raises `RuntimeError` on
   failure.
+- `join(other)` — append a copy of `other`: its vertices and faces after this
+  mesh's, indices shifted, nothing welded. An attribute (colors, normals,
+  texture) survives only when both meshes carry it; textures are concatenated
+  and `other`'s blob ids shifted.
 - `n_vertices: int`, `n_faces: int` — read-only counts.
 - `has_texcoords: bool` — whether the mesh carries per-face-corner UVs
   (read-only).
@@ -343,6 +347,32 @@ Area-uniform random points on the surface (Turk, Graphics Gems 1990): each face
 gets `floor(area * density)` points plus one more with the probability of the
 fraction left, each uniform in its triangle. Deterministic for a given `seed`.
 Returns `[N,3] float32` points. Raises `ValueError` for a negative density.
+
+### `is_watertight(vertices, faces) -> bool`
+
+True if every edge is shared by exactly two faces traversing it in opposite
+directions: closed, edge-manifold and consistently oriented, so the surface
+bounds a volume. Two shells touching at a vertex qualify; unreferenced vertices
+are ignored; an empty mesh is not watertight. Read-only (no repair).
+
+### `compute_volume(vertices, faces, plane=None) -> float | (above, below)`
+
+The enclosed volume by the divergence theorem, in double, exact for a
+watertight surface (positive when the faces wind counter-clockwise seen from
+outside), referenced to the bounding-box center so coordinates far from the
+origin lose no digits. With `plane = (a, b, c, d)` (`a*x + b*y + c*z + d = 0`,
+normalized here) each face contributes the prism between it and its projection
+onto the plane, split where it crosses it, and the call returns
+`(above, below)`: for a watertight surface their sum is the enclosed volume;
+for an open one whose boundary lies on the plane (a stockpile on its ground)
+it is the volume it closes against the plane, `above` the fill and `-below`
+the cut. Raises `ValueError` for a zero or non-finite plane.
+
+### `sub_mesh(vertices, faces, face_indices) -> (v, f, vertex_map)`
+
+Copy the given faces, in that order, and the vertices they reference, in order
+of first reference; `vertex_map` holds each new vertex's source index
+(`v == vertices[vertex_map]`). Raises `ValueError` for an out-of-range index.
 
 ### `subdivide_faces(vertices, faces, selected) -> (v, f, added)`
 

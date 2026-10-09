@@ -17,6 +17,7 @@ Quick index:
 |---|---|---|---|
 | [Half-edge core](#half-edge-core) | `HalfMesh` | `HalfMesh.h` | — |
 | [Mesh container](#mesh-container) | `Mesh` | `Mesh.h` | all |
+| [Volume, watertightness, join, extraction](#volume-watertightness-join-and-extraction) | `Mesh::ComputeVolume`, `IsWatertight`, `Join`, `SubMesh` | `Mesh.h` | — |
 | [PLY / glTF I/O](#ply--gltf-io) | `Mesh::Load` / `Mesh::Save` | `Mesh.h` | all |
 | [Repair & cleaning](#repair--cleaning) | `Mesh::RemoveDuplicateVertices`, `FixNonManifold`, … | `Mesh.h` | `Decimate.cpp` preamble |
 | [QEM decimation](#qem-decimation) | `Mesh::Simplify` | `Mesh.h` | `Decimate.cpp` |
@@ -142,6 +143,63 @@ I/O/export and other array consumers remain safe. Do not expose a mesh to
 ordinary callers between Begin/End: `faces.empty()` is intentional there.
 
 Header: [`Mesh.h`](../include/halfmesh/Mesh.h).
+
+### Volume, watertightness, join and extraction
+
+```cpp
+bool        Mesh::IsWatertight() const;
+real        Mesh::ComputeVolume() const;
+PlaneVolume Mesh::ComputeVolume(const Plane& plane) const; // {above, below}
+void        Mesh::Join(const Mesh& other);
+Mesh        Mesh::SubMesh(std::span<const FIndex> faces, std::vector<VIndex>* vertexMap = nullptr) const;
+```
+
+- **`IsWatertight`** — every edge shared by exactly two faces that traverse it
+  in opposite directions: closed, edge-manifold and consistently oriented, the
+  condition under which the surface bounds a volume. Two shells touching at a
+  vertex qualify (they still bound a volume); a boundary edge, a third face on
+  an edge, two faces winding an edge the same way or a face repeating a vertex
+  do not. Read-only and repair-free: on the arrays it buckets the directed
+  edges under their smaller endpoint (counting sort, 32-bit entries packing the
+  other endpoint and the direction; buckets checked in parallel), O(F) with no
+  hashing; on a live half-edge structure, which is oriented by construction, it
+  looks for a border half-edge.
+- **`ComputeVolume()`** — the signed enclosed volume by the divergence theorem,
+  exact for a watertight surface: positive for faces wound counter-clockwise
+  seen from outside, and a region a nested or self-intersecting surface winds
+  around k times counts k times. The tetrahedra are spanned with the bounding-
+  box center rather than the origin and summed in double over fixed blocks of
+  faces: the terms stay at the mesh's own scale (a sphere 4·10⁶ units from the
+  origin: under 10⁻¹⁴ relative error, against 10⁻⁹ origin-referenced), and the result
+  does not depend on the thread count.
+- **`ComputeVolume(plane)`** — the volume between the surface and a plane
+  (unit normal), along the normal: each face contributes the prism between it
+  and its projection, signed by the side it faces, a face crossing the plane
+  split on it in closed form (the height is linear over the face). `above` and
+  `below` are the parts on either side. For a watertight surface their sum is
+  the enclosed volume whatever the plane; for an open surface whose boundary
+  lies on the plane — a stockpile on its ground, a terrain over a datum — it is
+  the volume the surface closes against the plane, `above` the fill and
+  `-below` the cut (a pit counts negative). openMVS's `TransformScene
+  --compute-volume` measures open meshes this way against their estimated
+  ground plane.
+- **`Join`** — appends another mesh, indices shifted, nothing welded
+  (`RemoveDuplicateVertices` merges a shared seam). An attribute survives only
+  when both meshes carry it, so no array is left partial; textures are
+  concatenated with the other mesh's blob ids shifted (dropped past
+  `MAX_TEXBLOBS`). When both meshes hold a live half-edge structure it is
+  appended in place, O(V+F), instead of being rebuilt.
+- **`SubMesh`** — copies the given faces in order and the vertices they
+  reference in order of first reference, with every attribute and only the
+  textures those faces use (renumbered in order of first use). The renumbering
+  is a dense table when the faces reference a fair share of the vertices and an
+  open-addressing table sized to the selection otherwise, so cutting many small
+  pieces out of a large mesh does not pay O(V) each. `vertexMap` returns each
+  new vertex's source index, for callers carrying attributes of their own. The
+  result is array-only and may be non-manifold where the selection pinches a
+  vertex.
+
+Implementation: `src/Mesh.cpp`.
 
 ## PLY / glTF I/O
 

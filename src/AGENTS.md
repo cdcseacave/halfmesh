@@ -17,7 +17,8 @@ The `Mesh` class is split across several TUs by concern:
   `FAddDisk` / `FRemoveBulk` (undo-log rollback, pinch splitting).
 - `Mesh.cpp` — `Mesh` core: the representation contract (`InvalidateFaces`/`SyncFaces`/
   `Validate*`/pipeline scope), normals, area, AABB, vertex/face adjacency,
-  `ListHalfEdges`, edit primitives (RemoveFaces/RemoveUnreferencedVertices…).
+  `ListHalfEdges`, edit primitives (RemoveFaces/RemoveUnreferencedVertices…),
+  `IsWatertight`, `ComputeVolume` (closed and against a plane), `Join`, `SubMesh`.
 - `MeshIO.cpp` — PLY/glTF load/save, texture & texcoord handling, seam export.
 - `MeshRepair.cpp` — RemoveDuplicate/Degenerate faces, FixNonManifold,
   RemoveSmallComponents, RemoveLongEdgeFaces, RemoveLongEdgeFacesLocal,

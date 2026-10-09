@@ -26,10 +26,23 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   colored from the texture (moved from openMVS).
 - **`PushPullFill`** (`Util/Raster.h`): fills every texel a mask leaves out by
   push-pull over a box pyramid (moved from openMVS's texturing).
+- **`Mesh::IsWatertight`**: closed, edge-manifold, consistently oriented, by an
+  O(F) bucket pass over the directed edges, read-only (moved from openMVS, which
+  only checked for boundary vertices).
+- **`Mesh::ComputeVolume`**: the enclosed volume referenced to the bounding-box
+  center, in double over fixed blocks (exact far from the origin, independent of
+  the thread count), and **`ComputeVolume(plane)`**: the volume between the
+  surface and a plane, split into the parts above and below it (fill and cut of
+  an open surface such as a stockpile).
+- **`Mesh::Join`** (attributes kept when both meshes carry them, textures
+  concatenated, a live half-edge structure appended without a rebuild) and
+  **`Mesh::SubMesh`** (faces with every attribute and only the textures they use;
+  a hashed renumbering for small selections), moved from openMVS.
 - `atlasbench --pack-footprints`, and the bench builds on Windows (peak RSS
   through `GetProcessMemoryInfo`).
-- **Python:** `pack_footprints`, `subdivide_faces`, `sample_points`, and `unwrap(...,
-  pack_footprints=True)`.
+- **Python:** `pack_footprints`, `subdivide_faces`, `sample_points`,
+  `is_watertight`, `compute_volume`, `sub_mesh`, `Mesh.join`, and
+  `unwrap(..., pack_footprints=True)`.
 
 ## [0.4.2]
 

@@ -150,6 +150,28 @@ class Mesh
 	// split a textured mesh in multiple meshes, one per texture
 	std::vector<Mesh> ToOneMeshPerTexblob() const;
 
+	// append a copy of `other`: its vertices after this mesh's and its faces after
+	// this mesh's, their indices shifted (nothing is welded: RemoveDuplicateVertices
+	// merges a shared seam). An attribute survives when both meshes carry it, or
+	// when this mesh is empty, and is dropped otherwise, so no array is ever left
+	// partial. Texture coordinates (per corner) survive when both meshes have them
+	// and both or neither have textures: the textures are concatenated and
+	// `other`'s blob ids shifted past this mesh's, unless together they exceed
+	// MAX_TEXBLOBS, which drops the texture. When both meshes hold a live half-edge
+	// structure it is appended in place (O(V+F), no rebuild); otherwise it is
+	// dropped, as are the vertex-face lists.
+	void Join(const Mesh& other);
+	// copy of the given faces, in that order, and of the vertices they reference,
+	// in order of first reference, with every attribute: vertex colors and normals,
+	// face normals, per-corner texture coordinates and the textures those faces use
+	// (blob ids renumbered in order of first use; one texture left needs no ids).
+	// The vertex renumbering is a dense table when the faces reference a fair share
+	// of the vertices and a hash table sized to the selection otherwise, so cutting
+	// many small pieces out of a large mesh does not cost O(V) each. The result holds
+	// arrays only and may be non-manifold where the selection pinches a vertex.
+	//  - vertexMap: if given, receives the source index of each new vertex
+	Mesh SubMesh(std::span<const FIndex> faceIndices, std::vector<VIndex>* vertexMap = nullptr) const;
+
 	// Image encoding SaveGLTF uses for the diffuse textures. tinygltf selects
 	// its encoder from the image's file extension, which it derives from the
 	// glTF mimeType -- so this maps directly onto that mimeType.
@@ -242,6 +264,43 @@ class Mesh
 	Type ComputeMeanEdgeLength();
 	// compute the axis-aligned bounding box of the mesh vertices
 	Eigen::AlignedBox<Type, 3> ComputeAABBox() const;
+	// true if every edge is shared by exactly two faces that traverse it in
+	// opposite directions: the surface is closed, edge-manifold and consistently
+	// oriented, so it bounds a volume (ComputeVolume is exact, inside and outside
+	// are defined). Two shells touching at a vertex qualify; a boundary edge, an
+	// edge shared by three or more faces, two faces winding an edge the same way or
+	// a face repeating a vertex do not. Unreferenced vertices are ignored and an
+	// empty mesh is not watertight. Read-only: on the arrays it buckets the directed
+	// edges by their smaller endpoint (O(F), no hashing), on a live half-edge
+	// structure it looks for a border half-edge.
+	bool IsWatertight() const;
+	// signed volume enclosed by the surface, by the divergence theorem: the sum of
+	// the tetrahedra the faces span with a reference point. Exact for a watertight
+	// surface, where the reference point drops out: positive when the faces wind
+	// counter-clockwise seen from outside, and a region a self-intersecting or
+	// nested surface winds around k times counts k times. The reference point is
+	// the bounding-box center and the sum runs in double over fixed blocks, so a
+	// mesh far from the origin (geo-referenced coordinates) loses no digits to
+	// cancellation and the result does not depend on the thread count. On an open
+	// surface the result depends on that point: measure against a plane instead.
+	real ComputeVolume() const;
+	// volume between the surface and a plane (unit normal), measured along the
+	// normal: every face contributes the prism between it and its projection onto
+	// the plane, signed by the side it faces, and a face crossing the plane is split
+	// on it. `above` sums the parts on the side the normal points to, `below` the
+	// rest. For a watertight surface above + below is the enclosed volume whatever
+	// the plane, each term the part on its side. For an open surface whose boundary
+	// lies on the plane (a stockpile on its ground, a terrain over a datum) it is
+	// the volume the surface closes against the plane, or with a boundary off the
+	// plane, the volume closed by walls dropped along the normal; there `above` is
+	// the fill and -`below` the cut, a pit below the plane counting negative.
+	typedef Eigen::Hyperplane<real, 3> Plane;
+	struct PlaneVolume
+	{
+		real above{0};
+		real below{0};
+	};
+	PlaneVolume ComputeVolume(const Plane& plane) const;
 	// area-uniform random sampling of the surface (Turk, "Generating random points
 	// in triangles", Graphics Gems 1990): each face gets floor(area*density) points
 	// plus one more with the probability of the fraction left, each uniform in the

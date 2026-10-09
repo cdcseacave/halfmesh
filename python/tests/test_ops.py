@@ -551,3 +551,35 @@ def test_sample_points_follows_area_and_seed():
     assert (a[:, :2] >= 0).all() and (a[:, :2] <= 1).all()
     with pytest.raises(ValueError):
         hm.sample_points(v, f, -1.0)
+
+
+def test_is_watertight_and_compute_volume():
+    v, f = _cube_mesh()
+    assert hm.is_watertight(v, f)
+    assert not hm.is_watertight(v, f[:-1])
+    assert hm.compute_volume(v, f) == pytest.approx(1.0, abs=1e-12)
+    # far from the origin: the box-center reference keeps it exact
+    assert hm.compute_volume(v + np.float32(4e6), f) == pytest.approx(1.0, abs=1e-9)
+    # against a plane, normalized here: z = 0.25 with a scaled normal
+    above, below = hm.compute_volume(v, f, plane=np.array([0, 0, 2, -0.5]))
+    assert above == pytest.approx(0.75, abs=1e-12) and below == pytest.approx(0.25, abs=1e-12)
+    with pytest.raises(ValueError):
+        hm.compute_volume(v, f, plane=np.array([0, 0, 0, 1.0]))
+    with pytest.raises(ValueError):
+        hm.compute_volume(v, f, plane=np.array([0, 0, 1.0]))
+
+
+def test_sub_mesh_keeps_first_reference_order():
+    v, f = _grid_mesh(n=8)
+    sv, sf, vmap = hm.sub_mesh(v, f, np.array([5, 2]))
+    assert sf.shape == (2, 3) and sf.dtype == np.uint32
+    expected = []
+    for idx in (5, 2):
+        for vi in f[idx]:
+            if vi not in expected:
+                expected.append(vi)
+    np.testing.assert_array_equal(vmap, expected)
+    np.testing.assert_array_equal(sv, v[vmap])
+    np.testing.assert_array_equal(vmap[sf], f[[5, 2]])
+    with pytest.raises(ValueError):
+        hm.sub_mesh(v, f, np.array([len(f)]))
