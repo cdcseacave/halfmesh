@@ -131,7 +131,9 @@ struct FootprintPlacement
 
 struct FootprintPackParams
 {
-	// Placement grid in texels; any gutter must already be part of the masks.
+	// Placement grid in texels, 1..maxBlockSize (outside it nothing is packed);
+	// any gutter must already be part of the masks.
+	static constexpr unsigned maxBlockSize = 1u << 16;
 	unsigned blockSize = 4;
 	// Page side bound in texels (0: unbounded, the page height is then capped at
 	// four times its width, so a long tail still opens a new page).

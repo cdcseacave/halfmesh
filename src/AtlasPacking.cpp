@@ -21,6 +21,7 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "FootprintPacking.h"
 #include "ParallelFor.h"
 
 #include <Eigen/Dense>
@@ -563,10 +564,8 @@ void ChartFootprints(BS::light_thread_pool& pool, const Mesh& mesh, const std::v
 	});
 }
 
-// Footprint pack into square pages of `page` texels; returns the page count, or
-// 0 if some chart did not fit a page.
-unsigned PackChartFootprints(const std::vector<cv::Mat>& masks, int page, bool allowRotation,
-                             std::vector<FootprintPlacement>& placements, uint64_t& footprintArea)
+// The footprint packing of the charts into square pages of `page` texels.
+FootprintPackParams ChartFootprintParams(int page, bool allowRotation)
 {
 	FootprintPackParams fparams;
 	// one texel up to 2048-texel pages, then page/2048: on a 200k-face Truck at 4096
@@ -576,7 +575,15 @@ unsigned PackChartFootprints(const std::vector<cv::Mat>& masks, int page, bool a
 	fparams.maxPageSize = page;
 	fparams.sizeMultiple = 1;
 	fparams.allowRotation = allowRotation;
-	const FootprintPackResult result = PackFootprints(masks, fparams, placements);
+	return fparams;
+}
+
+// Footprint pack into square pages of `page` texels; returns the page count, or
+// 0 if some chart did not fit a page.
+unsigned PackChartFootprints(const std::vector<cv::Mat>& masks, int page, bool allowRotation,
+                             std::vector<FootprintPlacement>& placements, uint64_t& footprintArea)
+{
+	const FootprintPackResult result = PackFootprints(masks, ChartFootprintParams(page, allowRotation), placements);
 	footprintArea = result.footprintArea;
 	return result.numPacked == masks.size() ? static_cast<unsigned>(result.pageSizes.size()) : 0u;
 }
@@ -1001,9 +1008,9 @@ AtlasResult PackAtlas(Mesh& mesh,
 					// the footprints at this scale, in one page of the resolution
 					uint64_t area = 0;
 					ChartFootprints(pool, mesh, chartFaceList, crects, kk, params, pad, chartFaces, masks, gutters);
-					probePages = PackChartFootprints(masks, static_cast<int>(params.resolution), params.allowRotation, footprintPlacements, area);
+					const bool fit = detail::FootprintsFitOnePage(masks, ChartFootprintParams(static_cast<int>(params.resolution), params.allowRotation), area);
 					probeArea = static_cast<float>(area);
-					return probePages == 1;
+					return fit;
 				}
 				PackRects(trial, numCharts, params, pad, chartFaces, probe, probePages, probePw, probePh, probeArea);
 				// Page COUNT is not enough: PackRects grows a page to swallow an

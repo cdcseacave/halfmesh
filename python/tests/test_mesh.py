@@ -244,3 +244,8 @@ def test_mesh_join_appends_without_welding():
     np.testing.assert_array_equal(jf[12:], f + 8)
     assert hm.is_watertight(jv, jf)
     assert hm.compute_volume(jv, jf) == pytest.approx(2.0, abs=1e-12)
+    # onto itself: twice the mesh
+    mesh.join(mesh)
+    sv, sf = mesh.to_arrays()
+    assert sv.shape == (32, 3) and sf.shape == (48, 3)
+    np.testing.assert_array_equal(sf[24:], jf + 16)

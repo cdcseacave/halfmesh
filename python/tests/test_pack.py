@@ -168,3 +168,5 @@ def test_pack_footprints_rejects_bad_input():
         hm.pack_footprints([np.ones(5, np.uint8)])
     with pytest.raises(ValueError):
         hm.pack_footprints([np.ones((2, 2), np.uint8)], block_size=0)
+    with pytest.raises(ValueError):
+        hm.pack_footprints([np.ones((2, 2), np.uint8)], block_size=2**31)

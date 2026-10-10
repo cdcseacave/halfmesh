@@ -14,6 +14,8 @@
 #include <halfmesh/RectPacking.h>
 #include <halfmesh/Util/Assert.h>
 
+#include "FootprintPacking.h"
+
 #include <opencv2/core.hpp>
 
 #include <algorithm>
@@ -44,6 +46,7 @@ int RoundPageSize(int size, int multiple)
 // columns [start,end) it spans (start >= end: empty)
 struct Profile
 {
+	cv::Size size; // of the mask, in this orientation
 	int cols = 0;
 	std::vector<int> start, end;
 	std::vector<int> rowOrder; // the non-empty block rows, longest span first
@@ -58,6 +61,7 @@ struct Footprint
 
 void ComputeProfile(const cv::Mat& mask, int block, Profile& profile)
 {
+	profile.size = mask.size();
 	const int rows = (mask.rows + block - 1) / block;
 	profile.cols = (mask.cols + block - 1) / block;
 	profile.start.assign(rows, profile.cols);
@@ -97,81 +101,109 @@ struct Placed
 };
 
 // Bottom-left first fit of the footprints, in the given order, into one page of
-// the given width (blocks): each page block row keeps its free block-column
+// width x height texels: each page block row keeps its free block-column
 // intervals; a footprint takes, in whichever allowed orientation goes lower, the
 // lowest row, then the leftmost column, where each of its row spans lies in a free
-// interval of the page row it falls on. Footprints that would pass maxHeight
-// (blocks) are left over.
-void PackPage(const std::vector<Footprint>& footprints, const std::vector<uint32_t>& order, int W, int H,
-              bool allowRotation, std::vector<Placed>& page, std::vector<uint32_t>& leftover)
+// interval of the page row it falls on and its mask lies inside the page. The
+// search starts on the row the last one for the same bounding size ended on (the
+// rows below are mostly taken by then); a footprint that finds no place from there
+// searches the rows it skipped, so it is left over only if the page has no place
+// for it. With stopAtLeftover the packing ends at the first one left over.
+void PackPage(const std::vector<Footprint>& footprints, const std::vector<uint32_t>& order,
+              int width, int height, int block, bool allowRotation, bool stopAtLeftover,
+              std::vector<Placed>& page, std::vector<uint32_t>& leftover)
 {
-	ASSERT(W > 0 && H > 0);
+	ASSERT(width > 0 && height > 0);
+	// the grid covers the page; a partial last block column or row takes only the
+	// footprints whose mask ends inside the page
+	const int W = (width + block - 1) / block, H = (height + block - 1) / block;
 	using Interval = std::pair<int, int>; // [first,second)
 	using Intervals = std::vector<Interval>;
 	std::vector<Intervals> freeRows(H, Intervals{Interval(0, W)});
 	std::vector<int> maxFree(H, W); // longest free interval of each page row
 	Intervals feasible, next;
-	// per footprint size (block columns, rows): the row below which the last search
-	// for that size found no place; space is only ever taken, so a footprint of the
-	// same size starts there
+	// the leftmost block column at which the profile fits with its first row on
+	// page row y, at most maxX; -1 if none
+	const auto fitAt = [&](const Profile& p, int y, int maxX) {
+		// cheap rejection first: a row whose longest free interval is shorter than its span
+		for (const int r : p.rowOrder)
+			if (maxFree[y + r] < p.end[r] - p.start[r])
+				return -1;
+		// the columns the footprint can start at: for each of its rows, those that put
+		// the row's span inside a free interval of the page row, intersected over the rows
+		feasible.assign(1, Interval(0, maxX + 1));
+		for (const int r : p.rowOrder) {
+			const int start = p.start[r], end = p.end[r], len = end - start;
+			const Intervals& freeRow = freeRows[y + r];
+			next.clear();
+			for (const Interval& g : feasible) {
+				// the free intervals that can hold the span for some x in g
+				auto it = std::lower_bound(freeRow.cbegin(), freeRow.cend(), g.first + end,
+				                           [](const Interval& gap, int v) { return gap.second < v; });
+				for (; it != freeRow.cend() && it->first <= g.second - 1 + start; ++it) {
+					if (it->second - it->first < len)
+						continue;
+					const Interval common(std::max(g.first, it->first - start), std::min(g.second, it->second - end + 1));
+					if (common.first < common.second)
+						next.emplace_back(common);
+				}
+			}
+			feasible.swap(next);
+			if (feasible.empty())
+				return -1;
+		}
+		return feasible.front().first;
+	};
+	// per footprint size (block columns, rows): the row the last search for that
+	// size ended on
 	std::unordered_map<uint64_t, int> cursors;
+	const auto cursor = [&cursors](const Profile& p) -> int& {
+		return cursors[(static_cast<uint64_t>(p.cols) << 32) | static_cast<uint32_t>(p.start.size())];
+	};
+	const int numOrientations = allowRotation ? 2 : 1;
 	for (const uint32_t idx : order) {
 		const Footprint& footprint = footprints[idx];
 		int bestX = 0, bestY = std::numeric_limits<int>::max(), bestO = -1;
-		for (int o = 0; o < (allowRotation ? 2 : 1); ++o) {
+		// the page rows [from,to) for orientation o, lowest first, up to the best
+		// place so far; returns the row the search ended on
+		const auto search = [&](int o, int from, int to) {
 			const Profile& p = footprint.profiles[o];
-			const int rows = static_cast<int>(p.start.size());
-			if (p.cols > W)
-				continue;
-			const int r0 = p.rowOrder.front(), len0 = p.end[r0] - p.start[r0];
-			int& cursor = cursors[(static_cast<uint64_t>(p.cols) << 32) | static_cast<uint32_t>(rows)];
-			int y = cursor;
-			for (; y + rows <= H && y < bestY; ++y) {
-				if (maxFree[y + r0] < len0)
-					continue;
-				// cheap rejection first: a row whose longest free interval is shorter than its span
-				bool fits = true;
-				for (const int r : p.rowOrder)
-					if (maxFree[y + r] < p.end[r] - p.start[r]) {
-						fits = false;
-						break;
-					}
-				if (!fits)
-					continue;
-				// the columns the footprint can start at: for each of its rows, those that put
-				// the row's span inside a free interval of the page row, intersected over the rows
-				feasible.assign(1, Interval(0, W - p.cols + 1));
-				for (const int r : p.rowOrder) {
-					const int start = p.start[r], end = p.end[r], len = end - start;
-					const Intervals& freeRow = freeRows[y + r];
-					next.clear();
-					for (const Interval& g : feasible) {
-						// the free intervals that can hold the span for some x in g
-						auto it = std::lower_bound(freeRow.cbegin(), freeRow.cend(), g.first + end,
-						                           [](const Interval& gap, int v) { return gap.second < v; });
-						for (; it != freeRow.cend() && it->first <= g.second - 1 + start; ++it) {
-							if (it->second - it->first < len)
-								continue;
-							const Interval common(std::max(g.first, it->first - start), std::min(g.second, it->second - end + 1));
-							if (common.first < common.second)
-								next.emplace_back(common);
-						}
-					}
-					feasible.swap(next);
-					if (feasible.empty())
-						break;
-				}
-				if (!feasible.empty()) {
-					bestX = feasible.front().first;
+			const int maxX = (width - p.size.width) / block;
+			ASSERT(maxX + p.cols <= W && (height - p.size.height) / block + static_cast<int>(p.start.size()) <= H);
+			int y = from;
+			for (; y < to && y < bestY; ++y) {
+				const int x = fitAt(p, y, maxX);
+				if (x >= 0) {
+					bestX = x;
 					bestY = y;
 					bestO = o;
 					break;
 				}
 			}
-			cursor = y;
+			return y;
+		};
+		int starts[2] = {0, 0}, ends[2] = {0, 0};
+		for (int o = 0; o < numOrientations; ++o) {
+			const Profile& p = footprint.profiles[o];
+			if (p.size.width > width || p.size.height > height)
+				continue;
+			ends[o] = (height - p.size.height) / block + 1; // past the last row the mask can start on
+			int& y = cursor(p);
+			starts[o] = std::min(y, ends[o]);
+			y = search(o, starts[o], ends[o]);
 		}
+		// nothing from the cursors: the rows they skipped
+		if (bestO < 0)
+			for (int o = 0; o < numOrientations; ++o)
+				if (starts[o] > 0) {
+					search(o, 0, starts[o]);
+					if (bestO == o)
+						cursor(footprint.profiles[o]) = bestY;
+				}
 		if (bestO < 0) {
 			leftover.emplace_back(idx);
+			if (stopAtLeftover)
+				return;
 			continue;
 		}
 		// occupy the spans
@@ -204,23 +236,15 @@ void PackPage(const std::vector<Footprint>& footprints, const std::vector<uint32
 	}
 }
 
-} // namespace
-
-FootprintPackResult PackFootprints(const std::vector<cv::Mat>& masks,
-                                   const FootprintPackParams& params,
-                                   std::vector<FootprintPlacement>& placements)
+// the footprints of the masks, both orientations (footprints[i] for masks[i]);
+// returns the indices of those to pack, largest first: an empty mask or one larger
+// than a bounded page in both orientations is not packed
+std::vector<uint32_t> MakeFootprints(const std::vector<cv::Mat>& masks, const FootprintPackParams& params, std::vector<Footprint>& footprints)
 {
-	ASSERT(params.blockSize > 0 && params.maxPageSize >= 0 && params.sizeMultiple >= 0);
 	const int block = static_cast<int>(params.blockSize);
-	const int multiple = params.sizeMultiple;
-	FootprintPackResult result;
-	placements.assign(masks.size(), FootprintPlacement{});
-
-	// the footprints, both orientations; an empty mask or one larger than a bounded
-	// page in both orientations is not packed
-	std::vector<Footprint> footprints(masks.size());
-	std::vector<uint32_t> remaining;
-	remaining.reserve(masks.size());
+	footprints.assign(masks.size(), Footprint{});
+	std::vector<uint32_t> order;
+	order.reserve(masks.size());
 	for (size_t i = 0; i < masks.size(); ++i) {
 		const cv::Mat& mask = masks[i];
 		ASSERT(mask.type() == CV_8UC1);
@@ -236,38 +260,79 @@ FootprintPackResult PackFootprints(const std::vector<cv::Mat>& masks,
 			cv::rotate(mask, rotated, cv::ROTATE_90_COUNTERCLOCKWISE);
 			ComputeProfile(rotated, block, footprint.profiles[1]);
 		}
-		remaining.emplace_back(static_cast<uint32_t>(i));
+		order.emplace_back(static_cast<uint32_t>(i));
 	}
-	std::stable_sort(remaining.begin(), remaining.end(), [&footprints](uint32_t a, uint32_t b) {
+	std::stable_sort(order.begin(), order.end(), [&footprints](uint32_t a, uint32_t b) {
 		return footprints[a].profiles[0].area > footprints[b].profiles[0].area;
 	});
+	return order;
+}
 
-	while (!remaining.empty()) {
-		// every footprint has to fit an empty page alone: the page is at least as wide
-		// as the narrower side of each (the other side runs down the page)
-		uint64_t area = 0;
-		int minWidth = 0, minHeight = 0;
-		for (const uint32_t idx : remaining) {
-			const Footprint& footprint = footprints[idx];
-			area += footprint.profiles[0].area * static_cast<uint64_t>(block * block);
-			// in whole blocks: a page W blocks wide holds a footprint up to W block columns
-			const cv::Size size((footprint.size.width + block - 1) / block * block, (footprint.size.height + block - 1) / block * block);
-			const bool across = params.allowRotation && size.height < size.width; // placed rotated when alone
-			minWidth = std::max(minWidth, across ? size.height : size.width);
-			minHeight = std::max(minHeight, across ? size.width : size.height);
-		}
-		int side = RoundPageSize(std::max(static_cast<int>(std::ceil(std::sqrt(static_cast<double>(area)))), 1), multiple);
+// texels of the given footprints, block-quantized, as unrotated
+uint64_t FootprintArea(const std::vector<Footprint>& footprints, const std::vector<uint32_t>& indices, int block)
+{
+	uint64_t area = 0;
+	for (const uint32_t idx : indices)
+		area += footprints[idx].profiles[0].area;
+	return area * static_cast<uint64_t>(block) * static_cast<uint64_t>(block);
+}
+
+// the page widths to try for the given footprints, of `area` texels in all, and
+// the page height: every footprint has to fit an empty page alone, so the page is
+// at least as wide as the narrower side of each (the other side runs down the page)
+void PageCandidates(const std::vector<Footprint>& footprints, const std::vector<uint32_t>& indices, uint64_t area,
+                    const FootprintPackParams& params, std::vector<int>& widths, int& maxHeight)
+{
+	const int block = static_cast<int>(params.blockSize), multiple = params.sizeMultiple;
+	int minWidth = 0, minHeight = 0;
+	for (const uint32_t idx : indices) {
+		const Footprint& footprint = footprints[idx];
+		// in whole blocks: a page W blocks wide holds a footprint up to W block columns
+		const cv::Size size((footprint.size.width + block - 1) / block * block, (footprint.size.height + block - 1) / block * block);
+		const bool across = params.allowRotation && size.height < size.width; // placed rotated when alone
+		minWidth = std::max(minWidth, across ? size.height : size.width);
+		minHeight = std::max(minHeight, across ? size.width : size.height);
+	}
+	int side = RoundPageSize(std::max(static_cast<int>(std::ceil(std::sqrt(static_cast<double>(area)))), 1), multiple);
+	if (params.maxPageSize > 0)
+		side = std::min(side, params.maxPageSize);
+	maxHeight = params.maxPageSize > 0 ? params.maxPageSize : std::max(side * 4, minHeight);
+	widths.clear();
+	for (const int w : {side / 2, side, side * 2}) {
+		int width = std::max(RoundPageSize(std::max(w, 1), multiple), RoundPageSize(minWidth, multiple));
 		if (params.maxPageSize > 0)
-			side = std::min(side, params.maxPageSize);
-		const int maxHeight = params.maxPageSize > 0 ? params.maxPageSize : std::max(side * 4, minHeight);
-		std::vector<int> widths;
-		for (const int w : {side / 2, side, side * 2}) {
-			int width = std::max(RoundPageSize(std::max(w, 1), multiple), RoundPageSize(minWidth, multiple));
-			if (params.maxPageSize > 0)
-				width = std::min(width, params.maxPageSize);
-			if (std::find(widths.begin(), widths.end(), width) == widths.end())
-				widths.emplace_back(width);
-		}
+			width = std::min(width, params.maxPageSize);
+		if (std::find(widths.begin(), widths.end(), width) == widths.end())
+			widths.emplace_back(width);
+	}
+}
+
+bool ValidParams(const FootprintPackParams& params)
+{
+	ASSERT(params.blockSize > 0 && params.blockSize <= FootprintPackParams::maxBlockSize && params.maxPageSize >= 0 && params.sizeMultiple >= 0);
+	return params.blockSize > 0 && params.blockSize <= FootprintPackParams::maxBlockSize;
+}
+
+} // namespace
+
+FootprintPackResult PackFootprints(const std::vector<cv::Mat>& masks,
+                                   const FootprintPackParams& params,
+                                   std::vector<FootprintPlacement>& placements)
+{
+	FootprintPackResult result;
+	placements.assign(masks.size(), FootprintPlacement{});
+	if (!ValidParams(params))
+		return result;
+	const int block = static_cast<int>(params.blockSize);
+	const uint64_t blockArea = static_cast<uint64_t>(block) * static_cast<uint64_t>(block);
+	const int multiple = params.sizeMultiple;
+	std::vector<Footprint> footprints;
+	std::vector<uint32_t> remaining = MakeFootprints(masks, params, footprints);
+	std::vector<int> widths;
+	while (!remaining.empty()) {
+		const uint64_t area = FootprintArea(footprints, remaining, block);
+		int maxHeight;
+		PageCandidates(footprints, remaining, area, params, widths, maxHeight);
 		std::vector<Placed> bestPage;
 		std::vector<uint32_t> bestLeftover;
 		cv::Size bestSize;
@@ -276,7 +341,7 @@ FootprintPackResult PackFootprints(const std::vector<cv::Mat>& masks,
 				continue; // this width cannot make a smaller page
 			std::vector<Placed> page;
 			std::vector<uint32_t> leftover;
-			PackPage(footprints, remaining, width / block, maxHeight / block, params.allowRotation, page, leftover);
+			PackPage(footprints, remaining, width, maxHeight, block, params.allowRotation, false, page, leftover);
 			if (page.empty())
 				continue;
 			cv::Size extent(0, 0);
@@ -305,11 +370,41 @@ FootprintPackResult PackFootprints(const std::vector<cv::Mat>& masks,
 			placement.page = pageIdx;
 			placement.packed = true;
 			++result.numPacked;
-			result.footprintArea += footprint.profiles[placed.orientation].area * static_cast<uint64_t>(block * block);
+			result.footprintArea += footprint.profiles[placed.orientation].area * blockArea;
 		}
 		remaining.swap(bestLeftover);
 	}
 	return result;
 }
+
+namespace detail {
+
+bool FootprintsFitOnePage(const std::vector<cv::Mat>& masks, const FootprintPackParams& params, uint64_t& footprintArea)
+{
+	footprintArea = 0;
+	if (!ValidParams(params))
+		return false;
+	const int block = static_cast<int>(params.blockSize);
+	std::vector<Footprint> footprints;
+	const std::vector<uint32_t> order = MakeFootprints(masks, params, footprints);
+	footprintArea = FootprintArea(footprints, order, block);
+	if (order.empty() || order.size() < masks.size())
+		return false; // a mask PackFootprints leaves unpacked
+	std::vector<int> widths;
+	int maxHeight;
+	PageCandidates(footprints, order, footprintArea, params, widths, maxHeight);
+	std::vector<Placed> page;
+	std::vector<uint32_t> leftover;
+	for (const int width : widths) {
+		page.clear();
+		leftover.clear();
+		PackPage(footprints, order, width, maxHeight, block, params.allowRotation, true, page, leftover);
+		if (leftover.empty())
+			return true;
+	}
+	return false;
+}
+
+} // namespace detail
 
 } // namespace halfmesh

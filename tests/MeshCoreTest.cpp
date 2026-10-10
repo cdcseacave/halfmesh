@@ -1121,6 +1121,15 @@ TEST(MeshCore, Join_AttributesTexturesAndHalfEdges)
 	empty.Join(b);
 	EXPECT_EQ(empty.vertices, b.vertices);
 	EXPECT_EQ(empty.texturesDiffuse.size(), 2u);
+	// onto itself: twice the mesh, live half-edges and textures included
+	b.Join(b);
+	ASSERT_EQ(b.vertices.size(), 16u);
+	ASSERT_EQ(b.faces.size(), 24u);
+	EXPECT_EQ(b.faces[12], Mesh::Face(b.faces[0][0] + 8, b.faces[0][1] + 8, b.faces[0][2] + 8));
+	EXPECT_EQ(b.texturesDiffuse.size(), 4u);
+	EXPECT_EQ(b.faceTexblobs[12], 2);
+	EXPECT_TRUE(b.ValidateHalfMesh());
+	EXPECT_NEAR(b.ComputeVolume(), 2.0, 1e-12);
 }
 
 TEST(MeshCore, SubMesh_FirstReferenceOrderAttributesAndTextures)

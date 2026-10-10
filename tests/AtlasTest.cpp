@@ -2370,5 +2370,75 @@ TEST(FootprintPacking, UnboundedPageTakesAFootprintLongerThanTheAreaSuggests)
 	EXPECT_EQ(CountFootprintOverlaps(masks, result, placements), 0u);
 }
 
+TEST(FootprintPacking, PagesThatAreNotWholeBlocksTakeFootprintsUpToTheirSide)
+{
+	FootprintPackParams params;
+	params.sizeMultiple = 1;
+	params.allowRotation = false;
+	std::vector<FootprintPlacement> placements;
+	// a mask filling the page needs the partial last block column and row
+	params.blockSize = 4;
+	params.maxPageSize = 5;
+	FootprintPackResult result = PackFootprints({cv::Mat(5, 5, CV_8UC1, cv::Scalar(255))}, params, placements);
+	EXPECT_EQ(result.numPacked, 1u);
+	ASSERT_EQ(result.pageSizes.size(), 1u);
+	EXPECT_EQ(result.pageSizes.front(), cv::Size(5, 5));
+	// PackAtlas's grid for a 4097-texel page
+	params.blockSize = 2;
+	params.maxPageSize = 4097;
+	result = PackFootprints({cv::Mat(24, 4097, CV_8UC1, cv::Scalar(255))}, params, placements);
+	EXPECT_EQ(result.numPacked, 1u);
+	EXPECT_EQ(result.pageSizes.size(), 1u);
+	// the partial last block column takes a mask ending inside the page, and only
+	// such a mask: two 2-texel columns share a 6-texel page, two 3-texel ones do not
+	params.blockSize = 4;
+	params.maxPageSize = 6;
+	const std::vector<cv::Mat> narrow(2, cv::Mat(6, 2, CV_8UC1, cv::Scalar(255)));
+	result = PackFootprints(narrow, params, placements);
+	EXPECT_EQ(result.numPacked, 2u);
+	EXPECT_EQ(result.pageSizes.size(), 1u);
+	EXPECT_EQ(CountFootprintOverlaps(narrow, result, placements), 0u);
+	const std::vector<cv::Mat> wide(2, cv::Mat(6, 3, CV_8UC1, cv::Scalar(255)));
+	result = PackFootprints(wide, params, placements);
+	EXPECT_EQ(result.numPacked, 2u);
+	EXPECT_EQ(result.pageSizes.size(), 2u);
+	EXPECT_EQ(CountFootprintOverlaps(wide, result, placements), 0u);
+}
+
+TEST(FootprintPacking, LeftOverOnlyWhenThePageHasNoPlace)
+{
+	FootprintPackParams params;
+	params.blockSize = 1;
+	params.maxPageSize = 4;
+	params.sizeMultiple = 1;
+	params.allowRotation = false;
+	std::vector<FootprintPlacement> placements;
+	// left halves, then right halves, all of one bounding size: two pages, a right
+	// half taking the rows a left half found taken
+	cv::Mat left(4, 4, CV_8UC1, cv::Scalar(0)), right(4, 4, CV_8UC1, cv::Scalar(0));
+	left.colRange(0, 2).setTo(255);
+	right.colRange(2, 4).setTo(255);
+	const std::vector<cv::Mat> halves{left, left, right, right};
+	FootprintPackResult result = PackFootprints(halves, params, placements);
+	EXPECT_EQ(result.numPacked, 4u);
+	EXPECT_EQ(result.pageSizes.size(), 2u);
+	EXPECT_EQ(CountFootprintOverlaps(halves, result, placements), 0u);
+	// a square footprint whose only place is rotated, on the rows the unrotated
+	// search exhausted: an L of three texels takes the page's corner, the one texel
+	// left fits the second mask turned only
+	params.maxPageSize = 2;
+	params.allowRotation = true;
+	cv::Mat ell(2, 2, CV_8UC1, cv::Scalar(255)), dot(2, 2, CV_8UC1, cv::Scalar(0));
+	ell.at<uint8_t>(1, 1) = 0;
+	dot.at<uint8_t>(1, 0) = 255; // at (x=0, y=1); turned, at (1, 1)
+	const std::vector<cv::Mat> square{ell, dot};
+	result = PackFootprints(square, params, placements);
+	EXPECT_EQ(result.numPacked, 2u);
+	EXPECT_EQ(result.pageSizes.size(), 1u);
+	EXPECT_FALSE(placements[0].rotated);
+	EXPECT_TRUE(placements[1].rotated);
+	EXPECT_EQ(CountFootprintOverlaps(square, result, placements), 0u);
+}
+
 } // namespace
 } // namespace halfmesh

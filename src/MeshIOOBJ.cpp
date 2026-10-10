@@ -86,6 +86,20 @@ inline const char* StripComment(const char* first, const char* last)
 		--last;
 	return last;
 }
+// the argument of a statement naming a file or material (mtllib, usemtl, newmtl,
+// map_Kd) up to a comment, without trailing blanks: a '#' within a name
+// ("race#1.mtl") is part of it, a comment starts after a blank
+inline const char* StripNameComment(const char* first, const char* last)
+{
+	for (const char* p = first; p < last; ++p)
+		if (*p == '#' && (p == first || IsBlank(p[-1]))) {
+			last = p;
+			break;
+		}
+	while (last > first && IsBlank(last[-1]))
+		--last;
+	return last;
+}
 inline bool IsKeyword(const char* p, const char* end, std::string_view keyword)
 {
 	const size_t n = keyword.size();
@@ -217,6 +231,7 @@ void CountChunk(Chunk& chunk)
 	LineReader reader(chunk.first, chunk.last);
 	const char *first, *last;
 	while (reader.Next(first, last)) {
+		const char* const lineEnd = last;
 		last = StripComment(first, last);
 		const char* p = SkipBlanks(first, last);
 		if (p == last)
@@ -255,9 +270,9 @@ void CountChunk(Chunk& chunk)
 				}
 			}
 		} else if (IsKeyword(p, last, "usemtl")) {
-			chunk.materials.emplace_back(StatementArgument(p + 6, last));
+			chunk.materials.emplace_back(StatementArgument(p + 6, StripNameComment(p + 6, lineEnd)));
 		} else if (IsKeyword(p, last, "mtllib")) {
-			chunk.libraries.emplace_back(StatementArgument(p + 6, last));
+			chunk.libraries.emplace_back(StatementArgument(p + 6, StripNameComment(p + 6, lineEnd)));
 		}
 	}
 	chunk.numLines = reader.numPhysical;
@@ -317,6 +332,7 @@ void ParseChunk(Chunk& chunk, const Targets& targets)
 	};
 	const char *first, *last;
 	while (reader.Next(first, last)) {
+		const char* const lineEnd = last;
 		last = StripComment(first, last);
 		const char* p = SkipBlanks(first, last);
 		if (p == last)
@@ -395,7 +411,7 @@ void ParseChunk(Chunk& chunk, const Targets& targets)
 				numTriangles += corners.size() - 2;
 			}
 		} else if (IsKeyword(p, last, "usemtl")) {
-			material = targets.materialIds->at(StatementArgument(p + 6, last));
+			material = targets.materialIds->at(StatementArgument(p + 6, StripNameComment(p + 6, lineEnd)));
 		}
 	}
 	ASSERT(numV == chunk.numV && numVT == chunk.numVT && numVN == chunk.numVN && numTriangles == chunk.numTriangles);
@@ -556,13 +572,14 @@ void LoadMaterialLibrary(const std::filesystem::path& fileName, std::unordered_m
 	Material* material = nullptr;
 	const char *first, *last;
 	while (reader.Next(first, last)) {
+		const char* const lineEnd = last;
 		last = StripComment(first, last);
 		const char* p = SkipBlanks(first, last);
 		const char* keywordEnd = SkipToken(p, last);
 		const std::string_view keyword(p, static_cast<size_t>(keywordEnd - p));
 		if (EqualsNoCase(keyword, "newmtl")) {
 			// the first definition of a name wins, as for the libraries' order
-			const auto [it, inserted] = materials.try_emplace(StatementArgument(keywordEnd, last));
+			const auto [it, inserted] = materials.try_emplace(StatementArgument(keywordEnd, StripNameComment(keywordEnd, lineEnd)));
 			material = inserted ? &it->second : nullptr;
 		} else if (material && EqualsNoCase(keyword, "Kd")) {
 			p = keywordEnd;
@@ -570,7 +587,7 @@ void LoadMaterialLibrary(const std::filesystem::path& fileName, std::unordered_m
 			if (ParseFloat(p, last, Kd[0]) && ParseFloat(p, last, Kd[1]) && ParseFloat(p, last, Kd[2]))
 				material->Kd = Kd;
 		} else if (material && EqualsNoCase(keyword, "map_Kd")) {
-			const std::string name = MapFileName(keywordEnd, last);
+			const std::string name = MapFileName(keywordEnd, StripNameComment(keywordEnd, lineEnd));
 			if (!name.empty())
 				material->map = ResolvePath(directory, name);
 		}

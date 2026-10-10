@@ -1542,6 +1542,56 @@ TEST(MeshIoObj, PolygonsAreSplitFacingTheirNormal)
 	EXPECT_NEAR(areaU, 7.0, 1e-6);
 }
 
+TEST(MeshIoObj, NamesMayHoldAHash)
+{
+	// a '#' inside a file or material name is part of it, after a blank it starts a comment
+	const std::filesystem::path dir = ObjTestDir("halfmesh_obj_hash");
+	halfmesh::Mesh m;
+	m.vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+	m.faces = {{0, 1, 2}};
+	m.faceTexcoords = {{0, 0}, {1, 0}, {0, 1}};
+	m.texturesDiffuse.emplace_back(4, 4);
+	m.texturesDiffuse.front().setTo(cv::Scalar(10, 20, 30));
+	const std::string path = (dir / "race#1.obj").string();
+	ASSERT_TRUE(m.SaveOBJ(path, halfmesh::Mesh::ImageFormat::PNG));
+	halfmesh::Mesh loaded;
+	ASSERT_TRUE(loaded.Load(path));
+	ASSERT_EQ(loaded.texturesDiffuse.size(), 1u);
+	EXPECT_EQ(cv::norm(loaded.texturesDiffuse.front(), m.texturesDiffuse.front(), cv::NORM_INF), 0.0);
+	halfmesh::Image3u texture(2, 2);
+	texture.setTo(cv::Scalar(1, 2, 3));
+	ASSERT_TRUE(cv::imwrite((dir / "map#2.png").string(), texture));
+	WriteText(dir / "lib#3.mtl", "newmtl mat#4 # comment\nmap_Kd map#2.png # comment\n");
+	WriteText(dir / "scene.obj",
+	          "mtllib lib#3.mtl # comment\n"
+	          "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\n"
+	          "usemtl mat#4\t# comment\n"
+	          "f 1/1 2/1 3/1\n");
+	ASSERT_TRUE(loaded.Load((dir / "scene.obj").string()));
+	ASSERT_EQ(loaded.texturesDiffuse.size(), 1u);
+	EXPECT_EQ(loaded.texturesDiffuse.front().size(), texture.size());
+}
+
+TEST(MeshIoObj, MixedVertexNormalsStayFinite)
+{
+	// the corners of a vertex disagree: their mean, and zero where they are zero
+	// or cancel, never NaN
+	const std::filesystem::path dir = ObjTestDir("halfmesh_obj_normals");
+	WriteText(dir / "normals.obj",
+	          "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\n"
+	          "vn 0 0 0\nvn 0 0 1\nvn 0 0 -1\nvn 0 0 3\n"
+	          "f 1//1 2//2 3//2\n"
+	          "f 2//3 4//4 3//3\n"
+	          "f 1//1 3//1 4//1\n");
+	halfmesh::Mesh m;
+	ASSERT_TRUE(m.Load((dir / "normals.obj").string()));
+	ASSERT_EQ(m.vertexNormals.size(), 4u);
+	EXPECT_EQ(m.vertexNormals[0], halfmesh::Mesh::Normal::Zero()); // one vn, zero
+	EXPECT_EQ(m.vertexNormals[1], halfmesh::Mesh::Normal::Zero()); // +z and -z cancel
+	EXPECT_EQ(m.vertexNormals[2], halfmesh::Mesh::Normal::Zero()); // +z, -z, zero
+	EXPECT_EQ(m.vertexNormals[3], halfmesh::Mesh::Normal::UnitZ()); // 3z and zero
+}
+
 TEST(MeshIoObj, MalformedFilesFail)
 {
 	const std::filesystem::path dir = ObjTestDir("halfmesh_obj_malformed");

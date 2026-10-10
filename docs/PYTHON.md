@@ -554,7 +554,8 @@ its content and rounded up to `size_multiple` (0: a power of two). A rotated
 mask is placed as `np.rot90(mask)`. Returns `{rects [N,4] int32 (x, y, w, h),
 page [N], rotated [N], packed [N], page_sizes [(w, h)], n_packed,
 footprint_area, occupancy}`, each per-mask array in input order. Raises
-`ValueError` for a mask that is not 2-D, `block_size` 0 or a negative bound.
+`ValueError` for a mask that is not 2-D, `block_size` outside 1..65536 or a
+negative bound.
 
 ### `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9) -> int`
 

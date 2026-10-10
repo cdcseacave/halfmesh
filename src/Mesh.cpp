@@ -562,6 +562,12 @@ Mesh::PlaneVolume Mesh::ComputeVolume(const Plane& plane) const
 
 void Mesh::Join(const Mesh& other)
 {
+	if (&other == this) {
+		// the arrays would be appended to while read
+		const Mesh copy(other);
+		Join(copy);
+		return;
+	}
 	SyncFaces();
 	other.SyncFacesConst();
 	if (other.vertices.empty())

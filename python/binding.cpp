@@ -606,8 +606,8 @@ PYBIND11_MODULE(_halfmesh, m)
 	m.def("pack_footprints", [](const std::vector<py::array>& masks, int max_page_size, int size_multiple, unsigned block_size, bool allow_rotation) {
 		if (max_page_size < 0 || size_multiple < 0)
 			throw py::value_error("max_page_size and size_multiple must be >= 0");
-		if (block_size == 0)
-			throw py::value_error("block_size must be > 0");
+		if (block_size == 0 || block_size > halfmesh::FootprintPackParams::maxBlockSize)
+			throw py::value_error("block_size must be in [1, " + std::to_string(halfmesh::FootprintPackParams::maxBlockSize) + "]");
 		std::vector<cv::Mat> mats;
 		mats.reserve(masks.size());
 		for (const py::array& mask : masks) {

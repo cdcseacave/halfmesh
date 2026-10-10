@@ -48,6 +48,9 @@ The `Mesh` class is split across several TUs by concern:
 - `AtlasPacking.cpp` — uniform texel-density normalization + the two-tier (skyline
   min-waste head / shelf tail) first-fit multi-page packer, shared by `PackAtlas` and
   the mesh-independent `PackRectangles` in `RectPacking.h`.
+- `FootprintPacking.cpp` — `PackFootprints` (mask packing, `RectPacking.h`); its
+  internal `FootprintPacking.h` adds `detail::FootprintsFitOnePage`, the early-out
+  probe of `PackAtlas`'s fit-to-resolution search.
 - `TriangleKDTree.cpp` — median-split KD-tree (build + nearest-point/ray queries with
   branch-and-bound pruning); commented.
 - `TriangleBVH.cpp` — binned-SAH BVH build with a bounded traversal stack; nearest-point/ray
