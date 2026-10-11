@@ -856,7 +856,7 @@ TEST(MeshHolesTest, CloseHolesLeavesIsolatedTriangleOpen)
 	EXPECT_EQ(m.CloseHoles(30), 1u);
 	EXPECT_EQ(CountBoundaryLoops(m), 2u);
 	EXPECT_EQ(CountCoincidentFaces(m), 0u);
-	EXPECT_TRUE(m.ValidateInvariants());
+	EXPECT_TRUE(m.ValidateHalfMesh());
 }
 
 // A triangle sharing one vertex with the grid's rim is a non-manifold pinch; the
@@ -873,7 +873,7 @@ TEST(MeshHolesTest, CloseHolesLeavesPinchedTriangleOpen)
 
 	EXPECT_EQ(m.CloseHoles(30), 1u);
 	EXPECT_EQ(CountCoincidentFaces(m), 0u);
-	EXPECT_TRUE(m.ValidateInvariants());
+	EXPECT_TRUE(m.ValidateHalfMesh());
 }
 
 // A 2x2 flat patch: an 8-edge outline whose Liepa fill re-triangulates the patch
@@ -910,7 +910,56 @@ TEST(MeshHolesTest, CloseHolesFillsSmallHoleInClosedSurface)
 	EXPECT_EQ(m.CloseHoles(30), 1u);
 	EXPECT_EQ(CountBoundaryLoops(m), 0u);
 	EXPECT_EQ(CountDuplicateFaces(m), 0u);
-	EXPECT_TRUE(m.ValidateInvariants());
+	EXPECT_TRUE(m.ValidateHalfMesh());
+}
+
+// A planar annulus of `segments` sides, outer radius 1: its inner loop spans
+// inner^2 / (1 - inner^2) of the surface.
+static Mesh MakeAnnulus(unsigned segments, float inner)
+{
+	Mesh m;
+	for (unsigned i = 0; i < segments; ++i) {
+		const float angle = 2.f * 3.14159265f * static_cast<float>(i) / static_cast<float>(segments);
+		m.vertices.emplace_back(std::cos(angle), std::sin(angle), 0.f);
+		m.vertices.emplace_back(inner * std::cos(angle), inner * std::sin(angle), 0.f);
+	}
+	for (unsigned i = 0; i < segments; ++i) {
+		const Mesh::VIndex o0 = 2 * i, i0 = 2 * i + 1, o1 = 2 * ((i + 1) % segments), i1 = o1 + 1;
+		m.faces.emplace_back(o0, o1, i1);
+		m.faces.emplace_back(o0, i1, i0);
+	}
+	return m;
+}
+
+// A tetrahedron of apex height h missing its base, the side of the triangle under
+// the apex: the base spans 0.82 of the rest at h = 0.2, 0.28 at h = 1.
+static Mesh MakeOpenTetrahedron(float h)
+{
+	Mesh m;
+	m.vertices = {Mesh::Vertex(0, 0, 0), Mesh::Vertex(1, 0, 0), Mesh::Vertex(0, 1, 0), Mesh::Vertex(0.25f, 0.25f, h)};
+	m.faces = {Mesh::Face(0, 1, 3), Mesh::Face(0, 3, 2), Mesh::Face(1, 2, 3)};
+	return m;
+}
+
+// Both sides of the 3/4 area share, independent of where the surface lies and of
+// its scale: a washer's inner hole is filled up to 0.65 of its outer radius, and
+// the missing side of a shallow shell is taken for an outline (the documented
+// trade-off).
+TEST(MeshHolesTest, CloseHolesOutlineThreshold)
+{
+	const auto closes = [](Mesh m, float scale, const Mesh::Vertex& offset) {
+		for (Mesh::Vertex& v : m.vertices)
+			v = v * scale + offset;
+		const unsigned closed = m.CloseHoles(30);
+		EXPECT_TRUE(m.ValidateHalfMesh());
+		return closed;
+	};
+	for (const auto& [scale, offset] : {std::pair<float, Mesh::Vertex>(1.f, Mesh::Vertex::Zero()), std::pair<float, Mesh::Vertex>(1000.f, Mesh::Vertex(1e4f, -2e4f, 3e4f))}) {
+		EXPECT_EQ(closes(MakeAnnulus(16, 0.65f), scale, offset), 1u) << scale; // share 0.73
+		EXPECT_EQ(closes(MakeAnnulus(16, 0.66f), scale, offset), 0u) << scale; // share 0.77
+		EXPECT_EQ(closes(MakeOpenTetrahedron(1.f), scale, offset), 1u) << scale; // share 0.28
+		EXPECT_EQ(closes(MakeOpenTetrahedron(0.2f), scale, offset), 0u) << scale; // share 0.82
+	}
 }
 
 // ---------------------------------------------------------------------------

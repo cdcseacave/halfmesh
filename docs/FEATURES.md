@@ -504,7 +504,9 @@ scores the share of that surface it would add (a hemisphere's rim 1/2, a cube
 corner's 0.58). Components are taken after the build splits non-manifold
 vertices, so a triangle pinched to another rim by one vertex counts as
 isolated. The rule is by area, so a large hole in a thin sheet (a washer whose
-inner radius is over 0.65 of its outer one) stays open too, whatever the cap.
+inner radius is over 0.65 of its outer one) stays open too, whatever the cap,
+and so does the missing side of a shallow shell (the base of a tetrahedron
+less than about 0.2 of its base side tall).
 An internal patch budget (`max(16384, 8·n)` triangles) keeps degenerate giant
 boundaries from exploding the fill. Returns the number of holes closed;
 `holesFaces` optionally receives the new face indices per filled hole (each

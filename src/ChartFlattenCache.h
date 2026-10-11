@@ -130,6 +130,7 @@ struct AtlasSegmentStats
 	struct MergeRound
 	{
 		unsigned pairsPushed = 0; // tryPush accepted into the heap
+		unsigned heapPops = 0; // entries popped: at most pairsPushed (stale ones are dropped)
 		unsigned pairsBudgetRejected = 0; // combinedError > budget at push or pop
 		unsigned pairsEncloseRejected = 0; // wouldEnclose veto at push or pop
 		unsigned merges = 0; // doMerge calls
@@ -149,6 +150,7 @@ struct AtlasSegmentStats
 		// which can only raise the final chart count.
 		unsigned refoldedPairsCollateral = 0;
 	};
+	MergeRound initialMerge; // the first DevelopableMerge (merge fields only)
 	std::vector<MergeRound> rounds; // one per post-repair merge round
 };
 

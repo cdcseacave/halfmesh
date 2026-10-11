@@ -1963,7 +1963,15 @@ TEST(SegmentCharts, SegmentationStatsPopulatedOnChallengeMesh)
 	for (const auto& r : stats.rounds) {
 		EXPECT_GE(r.merges, r.dirtyCharts ? 1u : 0u);
 		EXPECT_LE(r.resplitCharts, r.dirtyCharts);
+		EXPECT_LE(r.heapPops, r.pairsPushed);
 	}
+	// A merge raises the cost of every pair its chart is in and pushes them again,
+	// so the entries left stale are dropped: never more pops than pushes. Re-queueing
+	// them instead (before 0.4.1) added a copy per merge of either side, quadratic
+	// in the merges a dominant chart absorbs: here 49,955 pops for 15,034 pushes in
+	// the initial merge.
+	EXPECT_EQ(stats.initialMerge.merges, stats.lloydCharts - stats.mergedCharts);
+	EXPECT_LE(stats.initialMerge.heapPops, stats.initialMerge.pairsPushed);
 }
 
 // ---------------------------------------------------------------------------

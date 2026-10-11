@@ -663,6 +663,8 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 	while (!pq.empty()) {
 		const auto [e, a, b] = pq.top();
 		pq.pop();
+		if (mr != nullptr)
+			++mr->heapPops;
 		const unsigned ar = find(a), br = find(b);
 		if (ar == br)
 			continue;
@@ -1437,7 +1439,8 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 	if (stats != nullptr)
 		stats->lloydCharts = numCharts;
 	numCharts = DevelopableMerge(s, params, chart, numCharts,
-	                             static_cast<double>(params.developableMaxConeError));
+	                             static_cast<double>(params.developableMaxConeError),
+	                             stats != nullptr ? &stats->initialMerge : nullptr);
 	if (stats != nullptr)
 		stats->mergedCharts = numCharts;
 	numCharts = EnforceConnectivity(s, chart);
