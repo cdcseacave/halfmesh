@@ -906,7 +906,7 @@ TEST(MeshCore, HalfEdgesRebuiltAfterRemoveFaces)
 // (normalized zero cross product), which ComputeVertexNormals then silently
 // accumulated into every touching vertex normal (2026-08 review). Degenerate
 // faces must yield a zero normal and finite vertex normals.
-TEST(MeshCoreTest, DegenerateFaceNormalsStayFinite)
+TEST(MeshCore, DegenerateFaceNormalsStayFinite)
 {
 	Mesh m;
 	m.vertices = {Mesh::Vertex(0, 0, 0), Mesh::Vertex(1, 0, 0), Mesh::Vertex(2, 0, 0),
@@ -925,7 +925,7 @@ TEST(MeshCoreTest, DegenerateFaceNormalsStayFinite)
 // ComputeSmoothFaceNormals: a face with no admissible neighbor (isolated, or
 // all neighbors beyond maxAngle) left the neighbor average at zero, whose
 // normalization injected NaN into the blend. It must keep its own normal.
-TEST(MeshCoreTest, SmoothFaceNormalsIsolatedFaceStaysFinite)
+TEST(MeshCore, SmoothFaceNormalsIsolatedFaceStaysFinite)
 {
 	Mesh m;
 	m.vertices = {Mesh::Vertex(0, 0, 0), Mesh::Vertex(1, 0, 0), Mesh::Vertex(0, 1, 0)};
@@ -934,6 +934,21 @@ TEST(MeshCoreTest, SmoothFaceNormalsIsolatedFaceStaysFinite)
 	ASSERT_EQ(m.faceNormals.size(), 1u);
 	EXPECT_TRUE(m.faceNormals[0].allFinite());
 	EXPECT_NEAR(m.faceNormals[0].norm(), 1.f, 1e-6f);
+}
+
+// Removing every face leaves the vertices (unreferenced vertices are legal): such
+// a mesh is not empty, and asking must not trip the representation assert.
+TEST(MeshCore, EmptyWithVerticesButNoFaces)
+{
+	Mesh m;
+	m.vertices = {Mesh::Vertex(0, 0, 0), Mesh::Vertex(1, 0, 0), Mesh::Vertex(0, 1, 0)};
+	m.faces = {Mesh::Face(0, 1, 2)};
+	std::vector<Mesh::FIndex> remove = {0};
+	m.RemoveFaces(remove);
+	ASSERT_TRUE(m.faces.empty());
+	EXPECT_EQ(m.vertices.size(), 3u);
+	EXPECT_FALSE(m.Empty());
+	EXPECT_TRUE(Mesh().Empty());
 }
 
 // ---------------------------------------------------------------------------

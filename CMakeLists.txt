@@ -94,7 +94,10 @@ endif()
 # so an absolute path works on all CMake versions >= 3.21.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
-project(halfmesh VERSION 0.5.0 LANGUAGES CXX)
+project(halfmesh VERSION 0.5.1 LANGUAGES CXX)
+
+# Sources and headers contain UTF-8 text (directory-scoped, not exported to consumers).
+add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 
 # vcpkg.json cannot read the version above, so it carries a manual copy —
 # fail the configure the moment the two drift apart (a version bump must
@@ -136,7 +139,7 @@ option(HALFMESH_ATLAS_DEBUG "Compile in verbose atlas segmentation/flatten diagn
 #   -DHALFMESH_NATIVE=ON    -> -march=native  (tune for this machine)
 #   -DHALFMESH_ARCH=<isa>   -> -march=<isa>    (e.g. x86-64-v3 for portable AVX2)
 option(HALFMESH_NATIVE "Build for the host CPU (-march=native). Opt-in; breaks bit-identical goldens" OFF)
-set(HALFMESH_ARCH "" CACHE STRING "Target CPU architecture for -march=<arch> (e.g. x86-64-v3); empty = compiler default")
+set(HALFMESH_ARCH "" CACHE STRING "Target CPU architecture; empty = compiler default. GCC/Clang take -march names (e.g. x86-64-v3), MSVC takes /arch names (e.g. AVX2, AVX512)")
 
 # Interprocedural optimization (LTO/IPO). Inlines hot cross-TU calls — kd-tree
 # nearest/ray queries, half-edge ESplit/EFlip/ERemove, bake sampling — across the
@@ -344,9 +347,17 @@ endif()
 # unsafe). HALFMESH_ARCH (explicit ISA) takes precedence over HALFMESH_NATIVE.
 if(HALFMESH_NATIVE OR HALFMESH_ARCH)
     if(MSVC)
-        # MSVC has no -march; AVX2 is the closest portable analogue.
-        target_compile_options(halfmesh PUBLIC /arch:AVX2)
-        message(STATUS "halfmesh: SIMD arch enabled (/arch:AVX2)")
+        # MSVC has no -march; HALFMESH_ARCH names the /arch level, and
+        # HALFMESH_NATIVE maps to the closest portable analogue, AVX2 (x64 only).
+        if(HALFMESH_ARCH)
+            target_compile_options(halfmesh PUBLIC /arch:${HALFMESH_ARCH})
+            message(STATUS "halfmesh: SIMD arch enabled (/arch:${HALFMESH_ARCH})")
+        elseif(CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+            target_compile_options(halfmesh PUBLIC /arch:AVX2)
+            message(STATUS "halfmesh: SIMD arch enabled (/arch:AVX2)")
+        else()
+            message(STATUS "halfmesh: HALFMESH_NATIVE skipped (/arch:AVX2 needs an x64 target)")
+        endif()
     else()
         if(HALFMESH_ARCH)
             set(_hm_arch_flag "-march=${HALFMESH_ARCH}")

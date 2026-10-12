@@ -32,7 +32,6 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -1635,8 +1634,8 @@ float NormalizeChartDensity(Mesh& mesh,
 	if (nf == 0 || numCharts == 0)
 		return 0.f;
 
-	assert(faceChart.size() == nf && "face_chart must have one entry per face");
-	assert(mesh.faceTexcoords.size() == nf * 3 && "faceTexcoords must be populated (run ParametrizeCharts first)");
+	ASSERT(faceChart.size() == nf); // one chart per face
+	ASSERT(mesh.faceTexcoords.size() == nf * 3); // ParametrizeCharts ran first
 
 	// -----------------------------------------------------------------------
 	// Pass 1: accumulate per-chart world area, UV area, and UV bbox min.

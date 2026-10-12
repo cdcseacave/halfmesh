@@ -24,6 +24,7 @@ def test_mesh_roundtrips_arrays_and_ply(tmp_path):
     mesh = hm.Mesh.from_arrays(v, f)
     assert mesh.n_vertices == 8 and mesh.n_faces == 12
     assert not mesh.has_texcoords
+    assert not mesh.has_texture
 
     path = str(tmp_path / "cube.ply")
     mesh.save(path)
@@ -104,6 +105,7 @@ def test_unwrap_generates_a_packed_atlas(tmp_path):
     unwrapped = hm.Mesh()
     unwrapped.load(out)
     assert unwrapped.has_texcoords
+    assert not unwrapped.has_texture  # the UV layout only, no texture image
 
 
 @pytest.mark.parametrize(

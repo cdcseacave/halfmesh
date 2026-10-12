@@ -220,8 +220,10 @@ PYBIND11_MODULE(_halfmesh, m)
 		return ArraysFromMesh(mesh); }, py::arg("vertices"), py::arg("faces"), py::arg("iterations"), py::arg("method"), "Smooth vertex positions: 'taubin' (band-pass, ~zero shrink) or 'hc' (anti-shrink Laplacian).");
 
 	m.def("simplify", [](const VertArray& v, const FaceArray& f, float target, float aggressiveness, std::optional<BoundArray> vertexMaxError) -> py::object {
-		if (target <= 0.f)
-			throw py::value_error("simplify target must be > 0 (fraction in (0,1) or absolute count > 1)");
+		if (!(target > 0.f) || !std::isfinite(target))
+			throw py::value_error("simplify target must be finite and > 0 (fraction in (0,1) or absolute count > 1)");
+		if (!(aggressiveness >= 0.f) || !std::isfinite(aggressiveness))
+			throw py::value_error("simplify aggressiveness must be finite and >= 0 (0 = exact mode)");
 		Mesh mesh = MeshFromArrays(v, f);
 		if (!vertexMaxError) {
 			{
@@ -253,6 +255,9 @@ PYBIND11_MODULE(_halfmesh, m)
 
 	m.def("subdivide_faces", [](const VertArray& v, const FaceArray& f, const py::array& selected) {
 		Mesh mesh = MeshFromArrays(v, f);
+		// boolean only: forcecasting would read any nonzero number as a selection
+		if (selected.dtype().kind() != 'b')
+			throw py::value_error("selected must be a 1-D boolean array with one entry per face");
 		const py::array_t<bool, py::array::c_style | py::array::forcecast> flags(selected);
 		if (flags.ndim() != 1 || static_cast<size_t>(flags.shape(0)) != mesh.faces.size())
 			throw py::value_error("selected must be a 1-D boolean array with one entry per face");
@@ -390,8 +395,8 @@ PYBIND11_MODULE(_halfmesh, m)
 		}); }, py::arg("vertices"), py::arg("faces"), py::arg("factor") = 2.f, py::arg("reach") = 4.f, py::arg("cone") = 0.35f, "Remove long-edged faces (longest edge > factor x the median longest edge) that cap a cavity: probes on both sides of the centroid along the normal, at 0.5, 1, 2, ..., reach x the longest edge, hit when the nearest surface lies within cone x the probe distance. A lid across an open box or a sheet under a chassis goes; a coarsely sampled real surface has nothing behind it and stays. factor, reach or cone <= 0 disables. Returns (vertices, faces, removed).");
 
 	m.def("remesh", [](const VertArray& v, const FaceArray& f, float edge_length, int iterations, std::optional<BoundArray> vertexSizing, bool adapt, float approx_error, float min_adaptive_mult, float max_adaptive_mult) {
-		if (edge_length <= 0.f)
-			throw py::value_error("remesh edge_length must be > 0");
+		if (!(edge_length > 0.f) || !std::isfinite(edge_length))
+			throw py::value_error("remesh edge_length must be finite and > 0");
 		if (iterations <= 0)
 			throw py::value_error("remesh iterations must be > 0");
 		// The struct defaults the multipliers to 1/1, which clamps the curvature field
@@ -453,13 +458,14 @@ PYBIND11_MODULE(_halfmesh, m)
 			    ok = self.Save(path, binary);
 		    }
 		    if (!ok)
-			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb / .obj (format from extension; binary applies to PLY and glTF).")
+			    throw std::runtime_error("Mesh.save: failed to save '" + path + "'"); }, py::arg("path"), py::arg("binary") = true, "Save as .ply / .gltf / .glb / .obj (format from extension; binary applies to PLY only: .glb / .gltf choose the glTF container, OBJ is text).")
 	    .def("join", [](Mesh& self, const Mesh& other) {
 		    py::gil_scoped_release release;
 		    self.Join(other); }, py::arg("other"), "Append a copy of other: its vertices and faces after this mesh's, indices shifted, nothing welded. An attribute (colors, normals, texture) survives only when both meshes carry it; textures are concatenated and other's blob ids shifted.")
 	    .def_property_readonly("n_vertices", [](const Mesh& self) { return self.vertices.size(); })
 	    .def_property_readonly("n_faces", [](Mesh& self) { self.SyncFaces(); return self.faces.size(); })
 	    .def_property_readonly("has_texcoords", &Mesh::HasTextureCoordinates)
+	    .def_property_readonly("has_texture", &Mesh::HasTexture)
 	    .def("__repr__", [](Mesh& self) { self.SyncFaces(); return "<halfmesh.Mesh: " + std::to_string(self.vertices.size()) + " vertices, " + std::to_string(self.faces.size()) + " faces>"; });
 
 	m.def("unwrap", [](const std::string& input_path, const std::string& output_path, unsigned resolution, unsigned padding, bool allow_rotation, float max_cone_error, bool cut_to_disk, float max_uv_distortion, unsigned repair_carve_rings, unsigned fold_rescue_slits, float tiny_chart_side, unsigned debris_chart_faces, bool pack_footprints) {
@@ -611,12 +617,17 @@ PYBIND11_MODULE(_halfmesh, m)
 		std::vector<cv::Mat> mats;
 		mats.reserve(masks.size());
 		for (const py::array& mask : masks) {
+			// boolean or integer only: forcecasting a float mask would truncate 0.3 to 0
+			const char kind = mask.dtype().kind();
+			if (kind != 'b' && kind != 'i' && kind != 'u')
+				throw py::value_error("every mask must be a boolean or integer array");
 			// copied: the packer never aliases the caller's buffers
 			const py::array_t<uint8_t, py::array::c_style | py::array::forcecast> m(mask);
 			if (m.ndim() != 2)
 				throw py::value_error("every mask must be a 2-D array (rows, cols)");
 			cv::Mat mat(static_cast<int>(m.shape(0)), static_cast<int>(m.shape(1)), CV_8UC1);
-			std::memcpy(mat.data, m.data(), static_cast<size_t>(m.size()));
+			if (m.size() != 0) // an empty array may hand out a null data pointer
+				std::memcpy(mat.data, m.data(), static_cast<size_t>(m.size()));
 			mats.push_back(mat);
 		}
 		halfmesh::FootprintPackParams params;

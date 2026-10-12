@@ -125,8 +125,12 @@ def test_simplify_hits_an_absolute_target():
 
 def test_simplify_rejects_nonpositive_target():
     v, f = _cube_mesh()
-    with pytest.raises(ValueError):
-        hm.simplify(v, f, 0.0)
+    for target in (0.0, np.nan, np.inf):
+        with pytest.raises(ValueError):
+            hm.simplify(v, f, target)
+    for aggressiveness in (-1.0, np.nan, np.inf):
+        with pytest.raises(ValueError):
+            hm.simplify(v, f, 0.5, aggressiveness)
 
 
 def test_simplify_vertex_max_error_bounds_the_decimation():
@@ -313,8 +317,9 @@ def test_remesh_coarsens_toward_target_edge_length():
 
 def test_remesh_rejects_nonpositive_edge_length():
     v, f = _cube_mesh()
-    with pytest.raises(ValueError):
-        hm.remesh(v, f, 0.0)
+    for edge_length in (0.0, np.nan, np.inf):
+        with pytest.raises(ValueError):
+            hm.remesh(v, f, edge_length)
 
 
 def _mean_edge_len(v, f, left):
@@ -540,6 +545,8 @@ def test_subdivide_faces_splits_selected_faces_conforming():
     assert counts.max() <= 2
     with pytest.raises(ValueError):
         hm.subdivide_faces(v, f, selected[:-1])
+    with pytest.raises(ValueError):  # a number is not a selection
+        hm.subdivide_faces(v, f, selected.astype(np.int32))
 
 
 def test_sample_points_follows_area_and_seed():

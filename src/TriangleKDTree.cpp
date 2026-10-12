@@ -24,7 +24,7 @@ namespace halfmesh {
 // has to reconstruct triangles cut by a split. Recursion stops when a node holds few
 // enough triangles, the depth budget runs out, or a split fails to separate anything.
 
-void TriangleKdTree::Build(const Mesh& mesh, unsigned maxTriangles, unsigned maxDepth)
+void TriangleKdTree::Build(unsigned maxTriangles, unsigned maxDepth)
 {
 	mesh.SyncFacesConst();
 	// insert triangles
@@ -149,6 +149,7 @@ void TriangleKdTree::BuildRecurse(NodeLeaf& node, unsigned maxTriangles, unsigne
 
 TriangleKdTree::NearestNeighbor TriangleKdTree::NearestPoint(const Point& p, Scalar maxDist) const
 {
+	ASSERT(maxDist >= 0);
 	NearestNeighbor data;
 	// data.dist tracks the best SQUARED distance during recursion (avoids a sqrt
 	// per candidate triangle); convert back to Euclidean once at the end. A finite

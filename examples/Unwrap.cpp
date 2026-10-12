@@ -23,6 +23,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 int main(int argc, char* argv[])
@@ -36,10 +37,21 @@ int main(int argc, char* argv[])
 
 	const std::string inPath = argv[1];
 	const std::string outPath = argv[2];
-	const unsigned resolution = (argc >= 4)
-	                                ? static_cast<unsigned>(std::stoul(argv[3]))
-	                                : 1024u;
-	const unsigned padding = (argc == 5) ? static_cast<unsigned>(std::stoul(argv[4])) : 2u;
+	long resolution = 1024;
+	long padding = 2;
+	try {
+		if (argc >= 4)
+			resolution = std::stol(argv[3]);
+		if (argc == 5)
+			padding = std::stol(argv[4]);
+	} catch (const std::exception&) {
+		std::cerr << "Error: resolution and padding must be integers\n";
+		return EXIT_FAILURE;
+	}
+	if (resolution <= 0 || padding < 0 || 2 * padding >= resolution) {
+		std::cerr << "Error: need resolution > 0 and 0 <= 2*padding < resolution, or no chart fits the page\n";
+		return EXIT_FAILURE;
+	}
 
 	halfmesh::Mesh mesh;
 	if (!mesh.Load(inPath)) {

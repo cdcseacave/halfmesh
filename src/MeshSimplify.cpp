@@ -239,6 +239,10 @@ void Mesh::Simplify(float decimateRatio, float minEdgeLength, float aggressivene
 				}
 				if (halfMesh.fHalfedges.size() <= numTargetFaces)
 					goto FinishSimplification;
+				// deliberate extra step on top of RFOREACH's: the collapse swap-popped up to
+				// two faces, so iF-1 can equal the new size when iF was the last slot; this
+				// keeps the next index in range at the cost of skipping candidate iF-1
+				// (the next sweep revisits it)
 				if (iF-- == 0)
 					break;
 			}

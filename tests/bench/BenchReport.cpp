@@ -10,6 +10,7 @@
 #include "BenchReport.h"
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -151,6 +152,9 @@ std::string RenderMarkdown(const BenchConfig& cfg,
 bool WriteReports(const BenchConfig& cfg,
                   const std::vector<EngineResult>& results)
 {
+	std::error_code ec;
+	std::filesystem::create_directories(cfg.outDir, ec);
+
 	// Markdown
 	{
 		std::ofstream f(cfg.outDir + "/report.md");

@@ -91,7 +91,7 @@ inline bool RayAABB(const TriangleBVH::Point& o, const TriangleBVH::Point& invDi
 
 } // namespace
 
-void TriangleBVH::Build(const Mesh& mesh, unsigned leafSize)
+void TriangleBVH::Build(unsigned leafSize)
 {
 	mesh.SyncFacesConst();
 	nodes.clear();
@@ -132,7 +132,9 @@ void TriangleBVH::Build(const Mesh& mesh, unsigned leafSize)
 	bbox.min() = Point(nodes[0].bmin[0], nodes[0].bmin[1], nodes[0].bmin[2]);
 	bbox.max() = Point(nodes[0].bmax[0], nodes[0].bmax[1], nodes[0].bmax[2]);
 
-	// faceBoxes is build-only scratch; release it (centroids is kept small).
+	// centroids and faceBoxes are build-only scratch: release them
+	centroids.clear();
+	centroids.shrink_to_fit();
 	faceBoxes.clear();
 	faceBoxes.shrink_to_fit();
 }
@@ -319,6 +321,7 @@ void TriangleBVH::Subdivide(uint32_t nodeIdx, uint32_t first, uint32_t count,
 TriangleBVH::NearestNeighbor TriangleBVH::NearestPoint(const Point& p, Scalar maxDist,
                                                        Mesh::FIndex hintFace) const
 {
+	ASSERT(maxDist >= 0);
 	NearestNeighbor best;
 	if (nodes.empty())
 		return best;

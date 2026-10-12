@@ -40,6 +40,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <random>
 #include <string>
 #include <vector>
@@ -60,6 +62,21 @@ std::string Arg(int argc, char** argv, const std::string& key, const std::string
 		if (key == argv[i])
 			return argv[i + 1];
 	return def;
+}
+
+// Numeric option in [lo, hi]; non-numeric, NaN and out-of-range input (including a
+// negative value for an unsigned parameter) is a usage error.
+double NumArg(int argc, char** argv, const std::string& key, const std::string& def, double lo, double hi)
+{
+	const std::string s = Arg(argc, argv, key, def);
+	try {
+		const double v = std::stod(s);
+		if (v >= lo && v <= hi)
+			return v;
+	} catch (const std::exception&) {
+	}
+	std::cerr << "Error: " << key << " must be a number in [" << lo << ", " << hi << "], got '" << s << "'\n";
+	std::exit(EXIT_FAILURE);
 }
 
 bool Flag(int argc, char** argv, const std::string& key)
@@ -176,9 +193,9 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 	const std::string cmd = argv[1];
-	const unsigned tex = static_cast<unsigned>(std::stoul(Arg(argc, argv, "--texture-size", "4096")));
-	const unsigned threads = static_cast<unsigned>(std::stoul(Arg(argc, argv, "--threads", "0")));
-	const unsigned maxRes = static_cast<unsigned>(std::stoul(Arg(argc, argv, "--max-resolution", "8192")));
+	const unsigned tex = static_cast<unsigned>(NumArg(argc, argv, "--texture-size", "4096", 0, 4294967295.0));
+	const unsigned threads = static_cast<unsigned>(NumArg(argc, argv, "--threads", "0", 0, 4294967295.0));
+	const unsigned maxRes = static_cast<unsigned>(NumArg(argc, argv, "--max-resolution", "8192", 0, 4294967295.0));
 
 	if (cmd == "fidelity") {
 		Mesh ref, test;
@@ -186,7 +203,7 @@ int main(int argc, char** argv)
 			std::cerr << "fidelity: failed to load --ref/--test\n";
 			return EXIT_FAILURE;
 		}
-		const int samples = std::stoi(Arg(argc, argv, "--samples", "200000"));
+		const int samples = static_cast<int>(NumArg(argc, argv, "--samples", "200000", 1, 2147483647.0));
 		return DoFidelity(ref, test, samples);
 	}
 
@@ -279,14 +296,14 @@ int main(int argc, char** argv)
 	bp.multiPage = Flag(argc, argv, "--multi-page");
 	bp.padding = 4;
 	bp.numThreads = threads;
-	bp.supersample = static_cast<unsigned>(std::stoul(Arg(argc, argv, "--supersample", "1")));
+	bp.supersample = static_cast<unsigned>(NumArg(argc, argv, "--supersample", "1", 1, 4294967295.0));
 	bp.interp = Flag(argc, argv, "--cubic") ? Interpolation::Cubic : Interpolation::Linear;
 	bp.correspondence = Flag(argc, argv, "--raycast") ? Correspondence::Raycast
 	                                                  : Correspondence::Nearest;
 	bp.accelerator = Flag(argc, argv, "--kdtree") ? Accelerator::KdTree : Accelerator::BVH;
 
 	if (cmd == "rebake") {
-		const double dec = std::stod(Arg(argc, argv, "--decimation", "0.3"));
+		const double dec = NumArg(argc, argv, "--decimation", "0.3", std::numeric_limits<double>::min(), std::numeric_limits<double>::max());
 		// Decimate a copy and bake from the full-res source. glTF stores textured
 		// meshes unwelded (one vertex per corner); weld + clean so the target has
 		// the shared connectivity decimation and charting need.

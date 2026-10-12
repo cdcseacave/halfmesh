@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1]
+
+### Fixed
+
+- **`LoadPLY` rejects face indices past the vertex count.** A malformed file
+  wrote out of bounds in the half-edge build; the OBJ and glTF readers already
+  refused one.
+- **`LoadPLY` converts each face's UVs with its own texture's size.** The
+  texture ids were read after the UVs were un-normalized, so every face was
+  scaled by texture 0: a multi-page PLY whose pages differ in size (openMVS
+  shrinks its last page) loaded with wrong pixel UVs on the other pages.
+- **`LoadGLTF` keeps vertex colors only when every primitive has `COLOR_0`.**
+  An uncolored primitive before a colored one left its vertices with
+  uninitialized colors in a full-length array.
+- **Cut-to-disk counts a pinched chart's boundary loops.** At a vertex where the
+  boundary touches itself `AllBoundaryLoops` kept one successor, so a walk could
+  chain both lobes into one open "loop" and pass a non-disk as a disk; the loops
+  are now simple cycles covering every boundary half-edge. Charts without a
+  pinch are unchanged.
+- **The exact weld (`RemoveDuplicateVertices(0)`) merges `-0` with `+0`**, as
+  the grid-snap weld always did.
+- **`ParametrizeCharts` rethrows a chart worker's exception** once the pool
+  drains, instead of leaving that chart's UVs unwritten in silence.
+- `BakeOntoAtlas` refuses `resolution == 0` (it cannot auto-size) instead of
+  baking 0x0 pages; the BVH frees its build-only centroids;
+  `FTexcoordsUnNormalizeFlipY` subtracted the x half-pixel from v (both are 0.5,
+  so no result changes).
+
+### Changed
+
+- **`TriangleKdTree::Build` and `TriangleBVH::Build` are private**: a tree is
+  built once, by its constructor, over the mesh it keeps. A second `Build`
+  corrupted a KD-tree's root, and its `Mesh` argument shadowed the one the
+  queries read.
+- **`math::RayTriangleIntersect` drops its `pbary` parameter**, which it never
+  wrote; `RayTriangleIntersectBarycentric` returns the barycentrics.
+- Contracts stated with `ASSERT`: `Mesh::Empty` asserts only the real invariant
+  (vertices without faces are a valid mesh), and asserts now cover `ESplit`'s
+  boundary representative, `VRemoveOnly`, the half-edge build's indices,
+  `NearestPoint`'s radius, `RoundPageSize`'s range and `NormalizeChartDensity`
+  (was `<cassert>`).
+- **Python:** `simplify` rejects a NaN or infinite `target` and a negative or
+  non-finite `aggressiveness`, `remesh` a non-finite `edge_length`;
+  `subdivide_faces` takes a boolean `selected` only and `pack_footprints`
+  boolean or integer masks (an empty one is left unpacked); new
+  `Mesh.has_texture`; `Mesh.save` documents that `binary` applies to PLY only.
+  `docs/PYTHON.md` lists `faceChart`/`chartPage` and the numpy one-liner
+  queries as deliberately absent.
+- **Tools:** the example CLIs reject malformed or NaN numbers with an error
+  instead of terminating, and `unwrap` checks `resolution` and `padding` like
+  the Python binding.
+- **Build:** `HALFMESH_BUILD_PERF=ON` with `HALFMESH_BUILD_TESTS=OFF` builds the
+  perf harness only; MSVC compiles with `/utf-8`, and `HALFMESH_ARCH` names its
+  `/arch` level (`HALFMESH_NATIVE` adds AVX2 on x64 only); the BFF benchmark
+  pins geometry-central to a commit and `HALFMESH_PMP_DIR` (default empty)
+  replaces the `$HOME` guess; benchmark area distortion reports "—" when unset,
+  and the report folder is created.
+
 ## [0.5.0]
 
 ### Added
@@ -873,6 +931,7 @@ Initial release.
   UV-atlas and remeshing benchmarks (`HALFMESH_BUILD_BENCH`), ASan+UBSan
   (`HALFMESH_SANITIZE`), and verbose atlas diagnostics (`HALFMESH_ATLAS_DEBUG`).
 
+[0.5.1]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.5.1
 [0.5.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.5.0
 [0.4.2]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.4.2
 [0.4.1]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.4.1

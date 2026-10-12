@@ -24,6 +24,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 int main(int argc, char* argv[])
@@ -39,14 +40,23 @@ int main(int argc, char* argv[])
 
 	const std::string inPath = argv[1];
 	const std::string outPath = argv[2];
-	const double target = (argc >= 4) ? std::stod(argv[3]) : 0.5;
-	const float aggressiveness = (argc == 5) ? std::stof(argv[4]) : 0.f;
+	double target = 0.5;
+	float aggressiveness = 0.f;
+	try {
+		if (argc >= 4)
+			target = std::stod(argv[3]);
+		if (argc == 5)
+			aggressiveness = std::stof(argv[4]);
+	} catch (const std::exception&) {
+		std::cerr << "Error: target and aggressiveness must be numbers\n";
+		return EXIT_FAILURE;
+	}
 
-	if (target <= 0.0) {
+	if (!(target > 0.0)) {
 		std::cerr << "Error: target must be > 0 (ratio in (0,1], or absolute face count > 1)\n";
 		return EXIT_FAILURE;
 	}
-	if (aggressiveness < 0.f) {
+	if (!(aggressiveness >= 0.f)) {
 		std::cerr << "Error: aggressiveness must be >= 0\n";
 		return EXIT_FAILURE;
 	}

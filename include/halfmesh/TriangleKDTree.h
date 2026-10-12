@@ -48,12 +48,9 @@ class TriangleKdTree
 	explicit TriangleKdTree(const Mesh& mesh, unsigned maxTriangles = 8, unsigned maxDepth = 32) :
 	    mesh(mesh)
 	{
-		Build(mesh, maxTriangles, maxDepth);
+		Build(maxTriangles, maxDepth);
 	}
 	~TriangleKdTree() {}
-
-	// create the K-d tree from the given mesh
-	void Build(const Mesh&, unsigned maxTriangles = 8, unsigned maxDepth = 32);
 
 	// find the nearest point on the surface for the given point.
 	// `maxDist` bounds the search: only surface points strictly closer than
@@ -150,6 +147,9 @@ class TriangleKdTree
 			return nodeleaf.leaf;
 		}
 	};
+
+	// create the K-d tree over `mesh`; construction only
+	void Build(unsigned maxTriangles, unsigned maxDepth);
 
 	// recursive tree build. `scratch` is a single centroid buffer threaded through
 	// the recursion and reused at every node (resized, never reallocated) to avoid

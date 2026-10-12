@@ -136,17 +136,6 @@ static std::pair<double, double> TriStretchL2(
 	return {stretch, a3d};
 }
 
-// Point-to-segment squared distance helper.
-static float PointSegDistSq(const Mesh::Vertex& p,
-                            const Mesh::Vertex& a,
-                            const Mesh::Vertex& b)
-{
-	const Mesh::Vertex ab = b - a;
-	const float t = std::max(0.f, std::min(1.f, (p - a).dot(ab) / ab.squaredNorm()));
-	const Mesh::Vertex proj = a + t * ab;
-	return (p - proj).squaredNorm();
-}
-
 } // anonymous namespace
 
 // ============================================================

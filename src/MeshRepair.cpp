@@ -132,11 +132,11 @@ Mesh::VIndex Mesh::RemoveDuplicateVertices(Type epsilon)
 	if (epsilon <= 0) {
 		std::unordered_map<std::tuple<uint32_t, uint32_t, uint32_t>, VIndex> seen;
 		seen.reserve(static_cast<std::size_t>(n) * 2);
+		// -0 and +0 are the same position: both key as +0
+		const auto bits = [](float c) { return c == 0.f ? 0u : std::bit_cast<uint32_t>(c); };
 		FOREACHIDX (VIndex, i, vertices) {
 			const Vertex& v = vertices[i];
-			const std::tuple<uint32_t, uint32_t, uint32_t> key{
-			    std::bit_cast<uint32_t>(v.x()), std::bit_cast<uint32_t>(v.y()),
-			    std::bit_cast<uint32_t>(v.z())};
+			const std::tuple<uint32_t, uint32_t, uint32_t> key{bits(v.x()), bits(v.y()), bits(v.z())};
 			const auto [it, inserted] = seen.emplace(key, static_cast<VIndex>(unique.size()));
 			if (inserted)
 				addUnique(i);

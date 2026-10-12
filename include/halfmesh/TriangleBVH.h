@@ -52,11 +52,8 @@ class TriangleBVH
 	explicit TriangleBVH(const Mesh& mesh, unsigned leafSize = 4) :
 	    mesh(mesh)
 	{
-		Build(mesh, leafSize);
+		Build(leafSize);
 	}
-
-	// Build the BVH from the given mesh (leafSize = max triangles per leaf).
-	void Build(const Mesh& mesh, unsigned leafSize = 4);
 
 	// Nearest point on the surface to `p`.
 	//   maxDist  — optional search-radius bound: only surface points strictly
@@ -93,6 +90,9 @@ class TriangleBVH
 #endif
 
 	private:
+	// Build the BVH over `mesh` (leafSize = max triangles per leaf); construction only.
+	void Build(unsigned leafSize);
+
 	// Flattened node: internal nodes (count == 0) store the index of their left
 	// child; the right child is the next slot (leftFirst + 1). Leaves store the
 	// first primitive index and the primitive count.
@@ -113,7 +113,7 @@ class TriangleBVH
 	const Mesh& mesh;
 	std::vector<Node> nodes;
 	std::vector<uint32_t> prims; // reordered face indices (leaves index ranges)
-	std::vector<Point> centroids; // per-face centroid (build only, kept small)
+	std::vector<Point> centroids; // per-face centroid (build scratch; cleared after Build)
 	std::vector<AABBox> faceBoxes; // per-face AABB (build scratch; cleared after Build)
 	AABBox bbox;
 };
