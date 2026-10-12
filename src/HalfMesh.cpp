@@ -71,7 +71,6 @@ void HalfMesh::Clear()
 	heFaces.clear();
 	vHalfedges.clear();
 	fHalfedges.clear();
-	alwaysEven = true; // empty mesh is vacuously canonical
 }
 
 bool HalfMesh::Build(const Mesh& mesh)
@@ -265,23 +264,21 @@ bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces)
 		}
 	}
 #endif
-	// Build produces the canonical all-even form: each vertex's representative is
-	// written directly (not via SetVHalfedge) as the freshly-created even half-edge
-	// of the first edge leaving it, and ConnectBorders only stores even boundary
-	// representatives. Because those direct writes bypass the alwaysEven
-	// bookkeeping — and the flag may be stale from an in-place mutation before this
-	// rebuild — set it true explicitly to record the invariant we just established.
-	alwaysEven = true;
 	return true;
+}
+
+bool HalfMesh::AllRepresentativesEven() const
+{
+	return std::none_of(vHalfedges.cbegin(), vHalfedges.cend(), [](HIndex he) { return (he & 1u) != 0; });
 }
 
 void HalfMesh::GuaranteeAlwaysEven()
 {
-	if (alwaysEven)
-		return; // already canonical: O(1) fast path
+	if (AllRepresentativesEven())
+		return; // already canonical
 	// The all-even form can only be restored by a rebuild (the parity is
 	// positional). Harvest the current faces and rebuild in place; Build sets
-	// alwaysEven = true. Vertex positions live in the Mesh and are untouched.
+	// the canonical form. Vertex positions live in the Mesh and are untouched.
 	const VIndex nv = VSize(); // capture before Build()'s Clear()
 	std::vector<Face> faces;
 	FFaces(faces); // FFaces appends, so pass an empty vector
@@ -330,7 +327,7 @@ bool ConnectBordersImpl(HalfMesh& mesh, HalfMesh::HIndex& iHeStart, BeforeNextWr
 	ASSERT(mesh.HeVertex(boundaryNext) == vertex);
 	const HIndex boundaryIn = mesh.HeTwin(boundaryOut);
 	ASSERT(mesh.heFaces[boundaryOut] != NO_ID && mesh.heFaces[boundaryIn] == NO_ID);
-	mesh.SetVHalfedge(vertex, boundaryOut);
+	mesh.vHalfedges[vertex] = boundaryOut;
 	// All in-tree callers pass the representative itself by reference. Preserve
 	// the public by-reference behavior for any caller that passes a local copy.
 	if (iHeStart != boundaryOut)
@@ -545,7 +542,7 @@ HalfMesh::HIndex HalfMesh::HeRemove(HIndex iHe)
 			iHeNext = HeNextOutgoingHalfedge(iHeNext);
 		} while (EHeIsBoundary(iHeNext) && iHeNext != iHe);
 		ASSERT(heVertices[iHe] == heVertices[iHeNext]);
-		SetVHalfedge(heVertices[iHe], iHeNext);
+		vHalfedges[heVertices[iHe]] = iHeNext;
 	}
 	if (iHe & 1) {
 		// full edge, half-edge already positioned correctly;
@@ -586,7 +583,7 @@ HalfMesh::HIndex HalfMesh::HeRemove(HIndex iHe)
 void HalfMesh::VRemoveOnly(VIndex iV)
 {
 	if (iV + 1 < vHalfedges.size()) {
-		SetVHalfedge(iV, vHalfedges.back());
+		vHalfedges[iV] = vHalfedges.back();
 		const HIndex iHeStart = vHalfedges[iV];
 		HIndex iHe = iHeStart;
 		while (true) {
@@ -625,7 +622,6 @@ HalfMesh::AddMark HalfMesh::AddUndoMark(const AddUndo& undo) const
 	mark.representatives = undo.representatives.size();
 	mark.numHalfedges = heNexts.size();
 	mark.numFaces = fHalfedges.size();
-	mark.alwaysEven = alwaysEven;
 	return mark;
 }
 
@@ -650,7 +646,6 @@ void HalfMesh::AddUndoRollback(AddUndo& undo, const AddMark& mark)
 		vHalfedges[undo.representatives.back().first] = undo.representatives.back().second;
 		undo.representatives.pop_back();
 	}
-	alwaysEven = mark.alwaysEven; // restored last: the writes above bypass SetVHalfedge
 }
 
 HalfMesh::FIndex HalfMesh::FAdd(const Face& face)
@@ -733,7 +728,7 @@ HalfMesh::FIndex HalfMesh::FAddImpl(const Face& face, AddUndo& undo)
 			const VIndex idxTail = face[v];
 			const VIndex idxHead = face[(v + 1) % numVertices];
 			iHe = static_cast<HIndex>(heNexts.size());
-			SetVHalfedge(idxTail, iHe);
+			vHalfedges[idxTail] = iHe;
 			heNexts.emplace_back(NO_ID);
 			heNexts.emplace_back(NO_ID);
 			heVertices.emplace_back(idxTail);
@@ -941,7 +936,7 @@ void HalfMesh::FRemoveBulk(std::vector<FIndex>& faceRemoves,
 		});
 		if (originalFan != fans.end() && originalFan != fans.begin())
 			std::iter_swap(fans.begin(), originalFan);
-		SetVHalfedge(vertex, fans.front().front());
+		vHalfedges[vertex] = fans.front().front();
 		if (fans.size() > 1)
 			TouchVertex(vertex);
 
@@ -955,7 +950,7 @@ void HalfMesh::FRemoveBulk(std::vector<FIndex>& faceRemoves,
 				heVertices[faceOut] = duplicate;
 				heVertices[HeTwin(previous)] = duplicate;
 			}
-			SetVHalfedge(duplicate, fans[fanIndex].front());
+			vHalfedges[duplicate] = fans[fanIndex].front();
 		}
 	}
 
@@ -990,7 +985,7 @@ void HalfMesh::FRemoveBulk(std::vector<FIndex>& faceRemoves,
 			heNexts[even] = heNexts[odd];
 			heNexts[odd] = NO_ID;
 			if (vHalfedges[survivingTail] == odd)
-				SetVHalfedge(survivingTail, even);
+				vHalfedges[survivingTail] = even;
 			std::swap(heVertices[even], heVertices[odd]);
 			heFaces[even] = survivingFace;
 			heFaces[odd] = NO_ID;
@@ -1050,7 +1045,7 @@ bool HalfMesh::FRemoveCorner(FIndex iF, RemovedData& removedData)
 				heNexts[HePrevBoundary(HeTwin(HeNext(iHeNext)))] = iHe;
 				heNexts[iHe] = heNexts[HeTwin(iHeNext)];
 				heFaces[iHe] = NO_ID;
-				SetVHalfedge(heVertices[HeTwin(iHe)], HeTwin(iHe));
+				vHalfedges[heVertices[HeTwin(iHe)]] = HeTwin(iHe);
 			}
 			if (iHeNext == iHeInterior)
 				break;
@@ -1325,14 +1320,14 @@ HalfMesh::VIndex HalfMesh::ERemove(EIndex iE, RemovedData& removedData)
 		const HIndex vRV1 = HeNext(v0VR);
 		UniteFaceHalfedges(vRV1, v0VR);
 		if (vHalfedges[heVertices[vRV1]] == HeTwin(v0VR))
-			SetVHalfedge(heVertices[vRV1], vRV1);
+			vHalfedges[heVertices[vRV1]] = vRV1;
 		if (vHalfedges[v1] == v1V0)
-			SetVHalfedge(v1, v1VL);
+			vHalfedges[v1] = v1VL;
 		removedData.edges[removedData.numEdges++] = HeEdge(v0VR);
 		// set v0 to v1
 		if (VIsBoundary(v0)) {
 			ASSERT(!EHeIsBoundary(v0VR) && v0VR != VHalfedge(v0));
-			SetVHalfedge(v1, VHalfedge(v0));
+			vHalfedges[v1] = VHalfedge(v0);
 		}
 		for (HIndex iHe = HeNext(vRV1); iHe != v0V1; iHe = HeNextOutgoingHalfedge(iHe)) {
 			ASSERT(heVertices[iHe] == v0);
@@ -1359,7 +1354,7 @@ HalfMesh::VIndex HalfMesh::ERemove(EIndex iE, RemovedData& removedData)
 	ASSERT(!HeIsBoundary(v0V1));
 	UniteFaceHalfedges(v1VL, vLV0);
 	if (vHalfedges[heVertices[vLV0]] == vLV0)
-		SetVHalfedge(heVertices[vLV0], HeTwin(v1VL));
+		vHalfedges[heVertices[vLV0]] = HeTwin(v1VL);
 	removedData.edges[removedData.numEdges++] = HeEdge(vLV0);
 	// remove vertex
 	VRemoveOnly(removedData.verts[removedData.numVerts++] = v0);
@@ -1433,9 +1428,9 @@ void HalfMesh::EFlip(EIndex iE)
 	const FIndex fb = HeFace(iHb0);
 	// update vertex pointers
 	if (vHalfedges[v0] == iHa0)
-		SetVHalfedge(v0, iHb1);
+		vHalfedges[v0] = iHb1;
 	if (vHalfedges[v2] == iHb0)
-		SetVHalfedge(v2, iHa1);
+		vHalfedges[v2] = iHa1;
 	// update face pointers
 	if (fHalfedges[fa] != iHa1)
 		fHalfedges[fa] = iHb2;
@@ -1518,7 +1513,7 @@ HalfMesh::VIndex HalfMesh::ESplit(EIndex iE)
 		// was b's representative (EFlip can leave an odd one there), replace it
 		// with a still-outgoing-from-b half-edge. a, c, d reps stay valid.
 		if (vHalfedges[b] == iHb0)
-			SetVHalfedge(b, heMbT); // b -> m
+			vHalfedges[b] = heMbT; // b -> m
 	} else {
 		// ---- boundary edge: only fa=(a,b,c); iHb0 is the boundary half-edge ----
 		const HIndex iHbNext = heNexts[iHb0]; // boundary he outgoing from a
@@ -1557,7 +1552,7 @@ HalfMesh::VIndex HalfMesh::ESplit(EIndex iE)
 		// iHb0's tail changed b -> m; replace b's representative if needed
 		// (heMbT is b's outgoing on the new boundary edge, so VIsBoundary(b) holds).
 		if (vHalfedges[b] == iHb0)
-			SetVHalfedge(b, heMbT); // b -> m (boundary)
+			vHalfedges[b] = heMbT; // b -> m (boundary)
 	}
 	return m;
 }
@@ -1575,7 +1570,7 @@ void HalfMesh::ERemoveOnly(EIndex iE)
 			heNexts[iHePrev] = iHe;
 			heVertices[iHe] = heVertices.back();
 			if (vHalfedges[heVertices[iHe]] == iHeLast)
-				SetVHalfedge(heVertices[iHe], iHe);
+				vHalfedges[heVertices[iHe]] = iHe;
 			heFaces[iHe] = heFaces.back();
 			if (!HeIsBoundary(iHe) && fHalfedges[heFaces[iHe]] == iHeLast)
 				fHalfedges[heFaces[iHe]] = iHe;

@@ -92,7 +92,7 @@ TEST(HalfMeshTest, Tetrahedron_BuildSlotAssignment)
 	EXPECT_EQ(hm.heNexts, (std::vector<HalfMesh::HIndex>{2, 9, 4, 11, 0, 6, 8, 3, 5, 10, 1, 7}));
 	EXPECT_EQ(hm.heVertices, (std::vector<HalfMesh::VIndex>{0, 1, 1, 2, 2, 0, 2, 3, 3, 0, 3, 1}));
 	EXPECT_EQ(hm.heFaces, (std::vector<HalfMesh::FIndex>{0, 2, 0, 3, 0, 1, 1, 3, 1, 2, 2, 3}));
-	EXPECT_TRUE(hm.alwaysEven);
+	EXPECT_TRUE(hm.AllRepresentativesEven());
 }
 
 TEST(HalfMeshTest, Tetrahedron_NoBoundary)
@@ -391,7 +391,7 @@ TEST(HalfMeshTest, FAddDiskPathologicalPatchRestoresExactStructure)
 	EXPECT_EQ(mesh.halfMesh.heNexts, before.heNexts);
 	EXPECT_EQ(mesh.halfMesh.heVertices, before.heVertices);
 	EXPECT_EQ(mesh.halfMesh.heFaces, before.heFaces);
-	EXPECT_EQ(mesh.halfMesh.alwaysEven, before.alwaysEven);
+	EXPECT_EQ(mesh.halfMesh.AllRepresentativesEven(), before.AllRepresentativesEven());
 }
 
 TEST(HalfMeshTest, FAddDiskRetriesDependencyOrder)

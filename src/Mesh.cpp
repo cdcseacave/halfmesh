@@ -210,8 +210,6 @@ bool Mesh::ValidateHalfMesh() const
 		const HIndex start = live.vHalfedges[iV];
 		if (start >= numHalfedges || live.heVertices[start] != iV || outgoingCount[iV] == 0)
 			return false;
-		if (live.alwaysEven && (start & 1u))
-			return false;
 		if (boundaryVertices[iV] && (live.heFaces[start] == NO_ID || live.heFaces[live.HeTwin(start)] != NO_ID))
 			return false;
 		HIndex current = start;
@@ -639,7 +637,6 @@ void Mesh::Join(const Mesh& other)
 	appendShifted(halfMesh.heNexts, other.halfMesh.heNexts, offsetH);
 	appendShifted(halfMesh.heVertices, other.halfMesh.heVertices, offsetV);
 	appendShifted(halfMesh.heFaces, other.halfMesh.heFaces, offsetF);
-	halfMesh.alwaysEven = halfMesh.alwaysEven && other.halfMesh.alwaysEven;
 	ASSERT(ValidateInvariants());
 }
 

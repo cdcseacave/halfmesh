@@ -35,9 +35,9 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
   `HALFMESH_TEST_HOOKS`, which the build sets with tests / perf / bench: a shipped library
   carries none of it and pays nothing for it. `HM_STATS(...)` (`src/ChartFlattenCache.h`)
   wraps one-line stats updates.
-- Vertex representatives are written only through `HalfMesh::SetVHalfedge` (the `alwaysEven`
-  choke point), never `vHalfedges[v] =`. `GuaranteeAlwaysEven()` is a full in-place rebuild:
-  it is never the fix for a parity problem.
+- Vertex representatives are all even only right after a Build; in-place mutators may leave
+  odd ones, which nothing reads. `AllRepresentativesEven()` scans for it and
+  `GuaranteeAlwaysEven()` is a full in-place rebuild: it is never the fix for a parity problem.
 - **Python bindings ship with the C++ change, not after it.** A change that adds or
   alters a user-facing feature in `include/halfmesh/` — a `Mesh` op, a parameter, a
   result field, a default, or its validation — updates the Python side in the same PR:

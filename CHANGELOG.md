@@ -66,6 +66,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   argument, `Mesh::ValidateHalfMesh`, `Mesh::ValidateVertexFaces`,
   `TriangleBVH::Height` / `MaxLeafSize` and `PriorityQueue::IsFaultless`.
   Outputs are unchanged.
+- **`HalfMesh::alwaysEven` is replaced by `AllRepresentativesEven()`**, an exact
+  O(V) scan, instead of a flag every representative write kept up to date
+  (`SetVHalfedge` is gone) and that could only be trusted when true.
+  `GuaranteeAlwaysEven()` scans before it rebuilds.
 
 ## [0.4.2]
 

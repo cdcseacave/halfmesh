@@ -82,7 +82,7 @@ class HalfMesh
 	// fixed back to even in place, because the vertex may have no even outgoing
 	// half-edge left and "even == EHalfedge == 2*edge" is positional (restoring it
 	// requires renumbering, i.e. a fresh Build). Nothing reads the parity, so this
-	// is benign; algorithms that want the all-even form back should rebuild.
+	// is benign; AllRepresentativesEven() tells, GuaranteeAlwaysEven() rebuilds.
 	//
 	// The part that IS always maintained (and load-bearing): for a BOUNDARY vertex
 	// the representative is the canonical even (interior-face) half-edge of one of
@@ -95,22 +95,6 @@ class HalfMesh
 	std::vector<HIndex> heNexts; // next half-edge and twin half-edge indices (all valid)
 	std::vector<VIndex> heVertices; // map half-edges to vertex indices (all valid)
 	std::vector<FIndex> heFaces; // map half-edges to face indices (invalid only for border edges)
-
-	// true iff every vHalfedges entry is an even (canonical) half-edge — see the
-	// vHalfedges note above. Established by Build(), conservatively cleared by any
-	// in-place mutation that stores an odd representative. Restore with
-	// GuaranteeAlwaysEven(). (Conservative: false may be a false-negative; true is
-	// always accurate.)
-	bool alwaysEven = true;
-
-	// single choke point for writing a vertex's representative half-edge: clears
-	// alwaysEven when an odd (non-canonical) representative is stored.
-	void SetVHalfedge(VIndex v, HIndex he)
-	{
-		vHalfedges[v] = he;
-		if (he & 1u)
-			alwaysEven = false;
-	}
 
 	HalfMesh() {}
 	explicit HalfMesh(const Mesh& mesh)
@@ -165,15 +149,17 @@ class HalfMesh
 	{
 		std::size_t nexts{0}, faces{0}, representatives{0};
 		std::size_t numHalfedges{0}, numFaces{0};
-		bool alwaysEven{true};
 	};
 	AddMark AddUndoMark(const AddUndo&) const;
 	void AddUndoRollback(AddUndo&, const AddMark&);
 	FIndex FAddImpl(const Face&, AddUndo&);
 
 	public:
-	// restore the canonical all-even vHalfedges form (see alwaysEven). No-op
-	// when already canonical; otherwise rebuilds in place from the current faces.
+	// whether every vertex representative is even, the canonical form a Build
+	// produces (see vHalfedges): one O(V) scan
+	bool AllRepresentativesEven() const;
+	// restore the canonical all-even vHalfedges form: a no-op when already
+	// canonical, otherwise an in-place rebuild from the current faces
 	void GuaranteeAlwaysEven();
 	// rearrange vertex start half-edge such that it is always
 	// a bounding half-edge if the vertex is on the border;
