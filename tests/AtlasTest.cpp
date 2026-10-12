@@ -23,6 +23,7 @@
 #include <halfmesh/Mesh.h>
 #include <halfmesh/Parametrize.h>
 #include <halfmesh/RectPacking.h>
+#include <halfmesh/Util/Raster.h>
 
 // Internal Module A<->B bridge header (src/ on this target's include path — see
 // tests/CMakeLists.txt): brings in detail::AtlasSegmentStats + the cache-aware
@@ -34,6 +35,7 @@
 #include "Corpus.h"
 
 #include <gtest/gtest.h>
+#include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -47,9 +49,6 @@
 
 namespace halfmesh {
 namespace detail {
-// Test seam: 3-arg fold verdict (defined in src/Parametrize.cpp).
-bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
-                    const ParametrizeParams& params);
 // Test seam (defined in src/AtlasCharting.cpp): delegate to
 // CarveFailureRegion with a default-params SegmentState built from `mesh`.
 // Mirrors the ComputeSegmentationSeeds seam pattern below.
@@ -379,6 +378,33 @@ static std::vector<BRect> ChartBBoxes(
 
 // Check that no two charts on the same page have overlapping bounding rects
 // (with a small epsilon to allow touching edges).
+// Texels (centre rule) claimed by two different charts of the same page: the
+// overlap check that holds for footprint packing, where bounding rects may
+// interleave but the charts themselves (plus their gutters) never touch.
+static unsigned CountChartTexelConflicts(const Mesh& mesh, const AtlasResult& res)
+{
+	std::vector<cv::Mat_<int>> owner;
+	for (unsigned p = 0; p < res.numPages; ++p)
+		owner.emplace_back(static_cast<int>(res.height), static_cast<int>(res.width), -1);
+	unsigned conflicts = 0;
+	for (size_t fi = 0; fi < mesh.faces.size(); ++fi) {
+		const unsigned c = res.faceChart[fi];
+		if (c >= res.chartPage.size())
+			continue;
+		cv::Mat_<int>& page = owner[res.chartPage[c]];
+		Eigen::Vector2f t[3];
+		for (int k = 0; k < 3; ++k)
+			t[k] = Eigen::Vector2f(mesh.faceTexcoords[fi * 3 + k].x() * res.width, mesh.faceTexcoords[fi * 3 + k].y() * res.height);
+		RasterizeTriangleBary<float>(t[0], t[1], t[2], page.cols, page.rows, [&](int x, int y, const Eigen::Vector3f&) {
+			int& o = page(y, x);
+			if (o >= 0 && o != static_cast<int>(c))
+				++conflicts;
+			o = static_cast<int>(c);
+		});
+	}
+	return conflicts;
+}
+
 static bool BoundingRectsDisjoint(const std::vector<BRect>& rects, unsigned numCharts)
 {
 	constexpr float eps = 1e-3f;
@@ -748,6 +774,7 @@ TEST(PackAtlas, RotationPreservesWinding)
 	params.orientCharts = false; // isolate the packer's own 90° rotation
 	params.powerOfTwo = false;
 	params.square = false;
+	params.packFootprints = false; // the rect packer's rotation (footprints: FootprintsKeepWindingAndDoNotOverlap)
 
 	const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
 	ASSERT_EQ(res.numPages, 1u);
@@ -1160,6 +1187,7 @@ TEST(PackAtlas, FitToResolutionConvergesInFewAttempts)
 	params.padding = 4; // padding-dominated: the production pathology
 	params.allowRotation = true;
 	params.fitToResolution = true;
+	params.packFootprints = false; // the rect fill bounds below (footprints: FootprintsKeepWindingAndDoNotOverlap)
 
 	NormalizeChartDensity(mesh, faceChart, numCharts, params);
 	const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
@@ -1182,6 +1210,66 @@ TEST(PackAtlas, FitToResolutionConvergesInFewAttempts)
 // ---------------------------------------------------------------------------
 // Test 10 — GenerateAtlas end-to-end on mesh.ply.
 // ---------------------------------------------------------------------------
+// Footprint packing (the default): every UV triangle keeps its winding through
+// the rotation and no two charts share a texel. These charts are rectangles, so
+// there is nothing to nest: the coverage stays within the conservative raster's
+// texel ring of the rect packer's (FootprintsRaiseCoverageOnMeshPly measures the gain).
+TEST(PackAtlas, FootprintsKeepWindingAndDoNotOverlap)
+{
+	Mesh mesh;
+	std::vector<unsigned> faceChart;
+	unsigned numCharts = 0;
+	BuildMixedCharts(mesh, faceChart, numCharts, 60u, 20u, 1.f);
+	AtlasParams params;
+	params.resolution = 256;
+	params.padding = 2;
+	params.fitToResolution = true;
+	NormalizeChartDensity(mesh, faceChart, numCharts, params);
+	std::vector<float> signs(mesh.faces.size());
+	for (size_t fi = 0; fi < mesh.faces.size(); ++fi)
+		signs[fi] = Mesh::ComputeTriangleDoubleArea2D(mesh.faceTexcoords[fi * 3 + 0], mesh.faceTexcoords[fi * 3 + 1], mesh.faceTexcoords[fi * 3 + 2]);
+	Mesh rectMesh = mesh;
+	params.packFootprints = false;
+	const AtlasResult rect = PackAtlas(rectMesh, faceChart, numCharts, params);
+	params.packFootprints = true;
+	const AtlasResult res = PackAtlas(mesh, faceChart, numCharts, params);
+	ASSERT_EQ(res.numPages, 1u);
+	EXPECT_LE(res.fitAttempts, 11u);
+	EXPECT_GE(res.coverage, 0.97f * rect.coverage);
+	EXPECT_EQ(CountChartTexelConflicts(mesh, res), 0u);
+	for (size_t fi = 0; fi < mesh.faces.size(); ++fi) {
+		const float area = Mesh::ComputeTriangleDoubleArea2D(mesh.faceTexcoords[fi * 3 + 0], mesh.faceTexcoords[fi * 3 + 1], mesh.faceTexcoords[fi * 3 + 2]);
+		if (std::abs(signs[fi]) > 1e-6f)
+			EXPECT_GT(area * signs[fi], 0.f) << "face " << fi << " flipped its UV winding";
+	}
+}
+
+// The point of footprint packing: on real charts (irregular, many of them) the
+// atlas puts far more of its texels under geometry than bounding-rect packing.
+// Measured 0.291 -> 0.502 coverage at 1024 (xatlas: 0.415).
+TEST(GenerateAtlas, FootprintsRaiseCoverageOnMeshPly)
+{
+	const std::string path = TestMeshPath();
+	if (!std::filesystem::exists(path))
+		GTEST_SKIP() << "mesh.ply not found at " << path;
+	Mesh input;
+	ASSERT_TRUE(input.Load(path));
+	ParametrizeParams pparams;
+	pparams.flattenIterations = 3; // fast for tests
+	AtlasParams aparams;
+	aparams.resolution = 1024;
+	float coverage[2];
+	for (int fp = 0; fp < 2; ++fp) {
+		Mesh mesh = input;
+		aparams.packFootprints = fp != 0;
+		const AtlasResult res = GenerateAtlas(mesh, pparams, aparams);
+		ASSERT_EQ(res.numPages, 1u);
+		coverage[fp] = res.coverage;
+	}
+	std::printf("[GenerateAtlas] mesh.ply coverage: rects %.3f, footprints %.3f\n", coverage[0], coverage[1]);
+	EXPECT_GT(coverage[1], 1.3f * coverage[0]);
+}
+
 TEST(GenerateAtlas, MeshPlyEndToEnd)
 {
 	const std::string path = TestMeshPath();
@@ -1236,15 +1324,11 @@ TEST(GenerateAtlas, MeshPlyEndToEnd)
 	EXPECT_GT(res.occupancy, 0.2f) << "Occupancy too low (packing regression?): " << res.occupancy;
 	EXPECT_LE(res.occupancy, 1.f) << "Occupancy must not exceed 1.0";
 
-	// Key invariant: no two charts on the same page may overlap.
-	// Use result.faceChart (now exposed by GenerateAtlas) + the ChartBBoxes /
-	// BoundingRectsDisjoint helpers so the real mesh.ply data exercises the same path as
-	// the synthetic-chart tests.
-	const auto rects = ChartBBoxes(
-	    mesh, res.faceChart, numCharts,
-	    res.chartPage, res.width, res.height);
-	EXPECT_TRUE(BoundingRectsDisjoint(rects, numCharts))
-	    << "Chart bounding rects overlap on mesh.ply — packing invariant violated";
+	// Key invariant: no two charts on the same page may overlap. Footprint
+	// packing (the default) nests charts into each other's bounding rects, so
+	// the check is on the texels the UV triangles cover.
+	EXPECT_EQ(CountChartTexelConflicts(mesh, res), 0u)
+	    << "Charts overlap on mesh.ply — packing invariant violated";
 }
 
 // ---------------------------------------------------------------------------
@@ -1876,7 +1960,15 @@ TEST(SegmentCharts, SegmentationStatsPopulatedOnChallengeMesh)
 	for (const auto& r : stats.rounds) {
 		EXPECT_GE(r.merges, r.dirtyCharts ? 1u : 0u);
 		EXPECT_LE(r.resplitCharts, r.dirtyCharts);
+		EXPECT_LE(r.heapPops, r.pairsPushed);
 	}
+	// A merge raises the cost of every pair its chart is in and pushes them again,
+	// so the entries left stale are dropped: never more pops than pushes. Re-queueing
+	// them instead (before 0.4.1) added a copy per merge of either side, quadratic
+	// in the merges a dominant chart absorbs: here 49,955 pops for 15,034 pushes in
+	// the initial merge.
+	EXPECT_EQ(stats.initialMerge.merges, stats.lloydCharts - stats.mergedCharts);
+	EXPECT_LE(stats.initialMerge.heapPops, stats.initialMerge.pairsPushed);
 }
 
 // ---------------------------------------------------------------------------
@@ -2164,6 +2256,193 @@ TEST(RectPacking, EstimatesRoundedSquareTextureSize)
 	    cv::Rect(0, 0, 10, 10)};
 	EXPECT_EQ(EstimateSquareTextureSize(rects, 8, 1.f), 16);
 	EXPECT_EQ(EstimateSquareTextureSize(rects, 0, 1.f), 16);
+}
+
+// a random filled triangle in a random rectangle: the irregular shape footprint
+// packing exists for (a texture patch, a UV chart)
+std::vector<cv::Mat> RandomTriangleMasks(unsigned count, unsigned seed)
+{
+	std::mt19937 rng(seed);
+	std::uniform_int_distribution<int> side(3, 60);
+	std::vector<cv::Mat> masks;
+	for (unsigned i = 0; i < count; ++i) {
+		const int w = side(rng), h = side(rng);
+		cv::Mat mask(h, w, CV_8UC1, cv::Scalar(0));
+		std::uniform_int_distribution<int> px(0, w - 1), py(0, h - 1);
+		const cv::Point tri[3] = {cv::Point(0, 0), cv::Point(w - 1, py(rng)), cv::Point(px(rng), h - 1)};
+		cv::fillConvexPoly(mask, tri, 3, cv::Scalar(255));
+		masks.emplace_back(mask);
+	}
+	return masks;
+}
+
+// stamp every packed mask on its page as documented (rotated:
+// cv::ROTATE_90_COUNTERCLOCKWISE) and count the texels claimed twice
+unsigned CountFootprintOverlaps(const std::vector<cv::Mat>& masks, const FootprintPackResult& result,
+                                const std::vector<FootprintPlacement>& placements)
+{
+	std::vector<cv::Mat> pages;
+	for (const cv::Size& size : result.pageSizes)
+		pages.emplace_back(size, CV_8UC1, cv::Scalar(0));
+	unsigned overlaps = 0;
+	for (size_t i = 0; i < masks.size(); ++i) {
+		const FootprintPlacement& placement = placements[i];
+		if (!placement.packed)
+			continue;
+		cv::Mat placed;
+		if (placement.rotated)
+			cv::rotate(masks[i], placed, cv::ROTATE_90_COUNTERCLOCKWISE);
+		else
+			placed = masks[i];
+		EXPECT_EQ(placed.size(), placement.rect.size());
+		EXPECT_LT(placement.page, pages.size());
+		EXPECT_TRUE((placement.rect & cv::Rect(cv::Point(0, 0), pages[placement.page].size())) == placement.rect);
+		cv::Mat page = pages[placement.page](placement.rect);
+		for (int r = 0; r < placed.rows; ++r)
+			for (int c = 0; c < placed.cols; ++c)
+				if (placed.at<uint8_t>(r, c)) {
+					if (page.at<uint8_t>(r, c))
+						++overlaps;
+					page.at<uint8_t>(r, c) = 1;
+				}
+	}
+	return overlaps;
+}
+
+TEST(FootprintPacking, PacksEveryMaskWithoutOverlapAndBeatsBoundingRects)
+{
+	const std::vector<cv::Mat> masks = RandomTriangleMasks(300, 7);
+	FootprintPackParams params;
+	std::vector<FootprintPlacement> placements;
+	const FootprintPackResult result = PackFootprints(masks, params, placements);
+	ASSERT_EQ(placements.size(), masks.size());
+	EXPECT_EQ(result.numPacked, masks.size());
+	ASSERT_EQ(result.pageSizes.size(), 1u);
+	EXPECT_EQ(CountFootprintOverlaps(masks, result, placements), 0u);
+	// power-of-two page dimensions by default
+	for (const cv::Size& size : result.pageSizes) {
+		EXPECT_EQ(size.width & (size.width - 1), 0);
+		EXPECT_EQ(size.height & (size.height - 1), 0);
+	}
+	// triangles nest into each other's empty halves: the page is smaller than the
+	// one their bounding rectangles need
+	std::vector<cv::Rect> rects;
+	for (const cv::Mat& mask : masks)
+		rects.emplace_back(cv::Point(0, 0), mask.size());
+	RectPackParams rectParams;
+	rectParams.padding = 0;
+	rectParams.powerOfTwo = true;
+	std::vector<RectPlacement> rectPlacements;
+	const RectPackResult rectResult = PackRectangles(rects, rectParams, rectPlacements);
+	EXPECT_LT(result.pageSizes.front().area(), rectResult.pageSize.area() * static_cast<int>(rectResult.numPages));
+}
+
+TEST(FootprintPacking, BoundedPagesOpenMorePagesAndRotateWhenNeeded)
+{
+	std::vector<cv::Mat> masks = RandomTriangleMasks(200, 11);
+	masks.emplace_back(cv::Mat(8, 100, CV_8UC1, cv::Scalar(255))); // 100 texels long either way: never fits
+	masks.emplace_back(cv::Mat(60, 20, CV_8UC1, cv::Scalar(255)));
+	masks.emplace_back(cv::Mat(10, 10, CV_8UC1, cv::Scalar(0))); // no footprint
+	FootprintPackParams params;
+	params.maxPageSize = 64;
+	params.sizeMultiple = 8;
+	std::vector<FootprintPlacement> placements;
+	const FootprintPackResult result = PackFootprints(masks, params, placements);
+	EXPECT_GT(result.pageSizes.size(), 1u);
+	for (const cv::Size& size : result.pageSizes) {
+		EXPECT_LE(size.width, 64);
+		EXPECT_LE(size.height, 64);
+		EXPECT_EQ(size.width % 8, 0);
+		EXPECT_EQ(size.height % 8, 0);
+	}
+	EXPECT_FALSE(placements[200].packed); // 100 texels long either way
+	EXPECT_TRUE(placements[201].packed);
+	EXPECT_FALSE(placements[202].packed);
+	EXPECT_EQ(result.numPacked, masks.size() - 2);
+	EXPECT_EQ(CountFootprintOverlaps(masks, result, placements), 0u);
+}
+
+TEST(FootprintPacking, UnboundedPageTakesAFootprintLongerThanTheAreaSuggests)
+{
+	std::vector<cv::Mat> masks = RandomTriangleMasks(20, 3);
+	masks.emplace_back(cv::Mat(3, 2000, CV_8UC1, cv::Scalar(255)));
+	FootprintPackParams params;
+	params.allowRotation = false;
+	std::vector<FootprintPlacement> placements;
+	const FootprintPackResult result = PackFootprints(masks, params, placements);
+	EXPECT_EQ(result.numPacked, masks.size());
+	EXPECT_FALSE(placements.back().rotated);
+	EXPECT_EQ(CountFootprintOverlaps(masks, result, placements), 0u);
+}
+
+TEST(FootprintPacking, PagesThatAreNotWholeBlocksTakeFootprintsUpToTheirSide)
+{
+	FootprintPackParams params;
+	params.sizeMultiple = 1;
+	params.allowRotation = false;
+	std::vector<FootprintPlacement> placements;
+	// a mask filling the page needs the partial last block column and row
+	params.blockSize = 4;
+	params.maxPageSize = 5;
+	FootprintPackResult result = PackFootprints({cv::Mat(5, 5, CV_8UC1, cv::Scalar(255))}, params, placements);
+	EXPECT_EQ(result.numPacked, 1u);
+	ASSERT_EQ(result.pageSizes.size(), 1u);
+	EXPECT_EQ(result.pageSizes.front(), cv::Size(5, 5));
+	// PackAtlas's grid for a 4097-texel page
+	params.blockSize = 2;
+	params.maxPageSize = 4097;
+	result = PackFootprints({cv::Mat(24, 4097, CV_8UC1, cv::Scalar(255))}, params, placements);
+	EXPECT_EQ(result.numPacked, 1u);
+	EXPECT_EQ(result.pageSizes.size(), 1u);
+	// the partial last block column takes a mask ending inside the page, and only
+	// such a mask: two 2-texel columns share a 6-texel page, two 3-texel ones do not
+	params.blockSize = 4;
+	params.maxPageSize = 6;
+	const std::vector<cv::Mat> narrow(2, cv::Mat(6, 2, CV_8UC1, cv::Scalar(255)));
+	result = PackFootprints(narrow, params, placements);
+	EXPECT_EQ(result.numPacked, 2u);
+	EXPECT_EQ(result.pageSizes.size(), 1u);
+	EXPECT_EQ(CountFootprintOverlaps(narrow, result, placements), 0u);
+	const std::vector<cv::Mat> wide(2, cv::Mat(6, 3, CV_8UC1, cv::Scalar(255)));
+	result = PackFootprints(wide, params, placements);
+	EXPECT_EQ(result.numPacked, 2u);
+	EXPECT_EQ(result.pageSizes.size(), 2u);
+	EXPECT_EQ(CountFootprintOverlaps(wide, result, placements), 0u);
+}
+
+TEST(FootprintPacking, LeftOverOnlyWhenThePageHasNoPlace)
+{
+	FootprintPackParams params;
+	params.blockSize = 1;
+	params.maxPageSize = 4;
+	params.sizeMultiple = 1;
+	params.allowRotation = false;
+	std::vector<FootprintPlacement> placements;
+	// left halves, then right halves, all of one bounding size: two pages, a right
+	// half taking the rows a left half found taken
+	cv::Mat left(4, 4, CV_8UC1, cv::Scalar(0)), right(4, 4, CV_8UC1, cv::Scalar(0));
+	left.colRange(0, 2).setTo(255);
+	right.colRange(2, 4).setTo(255);
+	const std::vector<cv::Mat> halves{left, left, right, right};
+	FootprintPackResult result = PackFootprints(halves, params, placements);
+	EXPECT_EQ(result.numPacked, 4u);
+	EXPECT_EQ(result.pageSizes.size(), 2u);
+	EXPECT_EQ(CountFootprintOverlaps(halves, result, placements), 0u);
+	// a square footprint whose only place is rotated, on the rows the unrotated
+	// search exhausted: an L of three texels takes the page's corner, the one texel
+	// left fits the second mask turned only
+	params.maxPageSize = 2;
+	params.allowRotation = true;
+	cv::Mat ell(2, 2, CV_8UC1, cv::Scalar(255)), dot(2, 2, CV_8UC1, cv::Scalar(0));
+	ell.at<uint8_t>(1, 1) = 0;
+	dot.at<uint8_t>(1, 0) = 255; // at (x=0, y=1); turned, at (1, 1)
+	const std::vector<cv::Mat> square{ell, dot};
+	result = PackFootprints(square, params, placements);
+	EXPECT_EQ(result.numPacked, 2u);
+	EXPECT_EQ(result.pageSizes.size(), 1u);
+	EXPECT_FALSE(placements[0].rotated);
+	EXPECT_TRUE(placements[1].rotated);
+	EXPECT_EQ(CountFootprintOverlaps(square, result, placements), 0u);
 }
 
 } // namespace

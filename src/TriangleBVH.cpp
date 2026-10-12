@@ -478,6 +478,7 @@ TriangleBVH::NearestNeighbor TriangleBVH::IntersectedPoint(
 	return best;
 }
 
+#ifdef HALFMESH_TEST_HOOKS
 unsigned TriangleBVH::MaxLeafSize() const
 {
 	unsigned maxCount = 0;
@@ -503,5 +504,6 @@ unsigned TriangleBVH::HeightRecurse(uint32_t nodeIdx) const
 	const unsigned hr = HeightRecurse(nd.leftFirst + 1);
 	return 1u + (hl > hr ? hl : hr);
 }
+#endif
 
 } // namespace halfmesh

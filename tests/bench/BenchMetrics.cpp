@@ -17,7 +17,13 @@
 #include <cmath>
 #include <limits>
 
-#include <sys/resource.h>
+#ifdef _WIN32
+	#define NOMINMAX
+	#include <windows.h>
+	#include <psapi.h>
+#else
+	#include <sys/resource.h>
+#endif
 
 namespace hmbench {
 
@@ -230,13 +236,20 @@ AtlasMetrics MeasureAtlas(const Mesh& mesh,
 // ---------------------------------------------------------------------------
 std::size_t PeakRssBytes()
 {
+#ifdef _WIN32
+	PROCESS_MEMORY_COUNTERS pmc;
+	if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+		return 0;
+	return static_cast<std::size_t>(pmc.PeakWorkingSetSize);
+#else
 	struct rusage ru;
 	if (getrusage(RUSAGE_SELF, &ru) != 0)
 		return 0;
-#ifdef __APPLE__
+	#ifdef __APPLE__
 	return static_cast<std::size_t>(ru.ru_maxrss); // bytes on macOS
-#else
+	#else
 	return static_cast<std::size_t>(ru.ru_maxrss) * 1024; // KiB on Linux
+	#endif
 #endif
 }
 

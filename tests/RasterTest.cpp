@@ -26,6 +26,7 @@ using halfmesh::Point2;
 using halfmesh::Vector3;
 using halfmesh::RasterizeTriangleBary;
 using halfmesh::Dilate;
+using halfmesh::PushPullFill;
 
 namespace {
 
@@ -125,4 +126,27 @@ TEST(RasterTest, DilateLeavesValidPixelsUntouched)
 
 	EXPECT_EQ(static_cast<int>(img(0, 0).x()), 10);
 	EXPECT_EQ(static_cast<int>(img(0, 2).x()), 30);
+}
+
+TEST(RasterTest, PushPullFillFillsEveryTexelFromTheKeptOnes)
+{
+	cv::Mat img(16, 24, CV_8UC3, cv::Scalar(0, 0, 0));
+	cv::Mat mask(16, 24, CV_8UC1, cv::Scalar(0));
+	// two kept regions of different colors, far apart
+	img(cv::Rect(0, 0, 4, 4)).setTo(cv::Scalar(200, 100, 50));
+	mask(cv::Rect(0, 0, 4, 4)).setTo(255);
+	img(cv::Rect(20, 12, 4, 4)).setTo(cv::Scalar(10, 20, 30));
+	mask(cv::Rect(20, 12, 4, 4)).setTo(255);
+	PushPullFill(img, mask);
+	// kept texels are untouched
+	EXPECT_EQ(img.at<cv::Vec3b>(1, 1), cv::Vec3b(200, 100, 50));
+	EXPECT_EQ(img.at<cv::Vec3b>(13, 21), cv::Vec3b(10, 20, 30));
+	// every empty texel got a color between the two, the nearest region's next to it
+	for (int r = 0; r < img.rows; ++r)
+		for (int c = 0; c < img.cols; ++c) {
+			const cv::Vec3b px = img.at<cv::Vec3b>(r, c);
+			EXPECT_TRUE(px[0] >= 10 && px[0] <= 200 && px[2] >= 30 && px[2] <= 50) << r << "," << c;
+		}
+	EXPECT_EQ(img.at<cv::Vec3b>(4, 4), cv::Vec3b(200, 100, 50));
+	EXPECT_EQ(img.at<cv::Vec3b>(11, 19), cv::Vec3b(10, 20, 30));
 }

@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+### Added
+
+- **Footprint packing.** `PackFootprints` (`RectPacking.h`) packs binary masks
+  by their footprints instead of their bounding rectangles: bottom-left first
+  fit on a block grid over per-row free intervals, both orientations
+  (winding-preserving rotation), pages cropped to their content. openMVS's
+  texturing packs its patches with it.
+- **`PackAtlas` packs chart footprints by default**
+  (`AtlasParams::packFootprints`, also driving the fit-to-resolution search):
+  triangle coverage 0.291 → 0.502 on `mesh.ply` at 1024 (xatlas 0.415), 0.387
+  → 0.637 on a 200k-face Truck at 4096 (xatlas 0.614), at 1.4 s and 13 s of
+  packing. `occupancy` is then footprint area over page area. The segment
+  quality ratchet now tracks `coverage`.
+- **`Mesh::SubdivideFaces`**: selective 1-to-4 midpoint subdivision with
+  red-green closure (moved from openMVS's mesh refinement, which now calls it).
+- **`Mesh::SamplePoints`**: area-uniform random surface sampling, optionally
+  colored from the texture (moved from openMVS).
+- **`PushPullFill`** (`Util/Raster.h`): fills every texel a mask leaves out by
+  push-pull over a box pyramid (moved from openMVS's texturing).
+- **Wavefront OBJ I/O** (`Mesh::LoadOBJ` / `Mesh::SaveOBJ`, and `.obj` through
+  `Load` / `Save`): streamed blocks parsed in parallel in two passes (count,
+  place, parse), correctly rounded floats (fast_float) written in their shortest
+  round-trip form, so a save → load cycle is bit-exact; every index form,
+  polygons triangulated facing their normal, line continuations, xyzrgb vertex
+  colors, MTL materials with `Kd` and `map_Kd` (a material without a loadable
+  map keeps its color as a one-texel texture), one `vt` per distinct UV of a
+  vertex on save. Against openMVS's previous codec, which it replaces: 26 M
+  faces saved in 0.82 s instead of 29.8 s and loaded in 0.99 s instead of 30.2
+  s. New dependency: `fast-float` (header-only, private).
+- **`Mesh::IsWatertight`**: closed, edge-manifold, consistently oriented, by an
+  O(F) bucket pass over the directed edges, read-only (moved from openMVS, which
+  only checked for boundary vertices).
+- **`Mesh::ComputeVolume`**: the enclosed volume referenced to the bounding-box
+  center, in double over fixed blocks (exact far from the origin, independent of
+  the thread count), and **`ComputeVolume(plane)`**: the volume between the
+  surface and a plane, split into the parts above and below it (fill and cut of
+  an open surface such as a stockpile).
+- **`Mesh::Join`** (attributes kept when both meshes carry them, textures
+  concatenated, a live half-edge structure appended without a rebuild) and
+  **`Mesh::SubMesh`** (faces with every attribute and only the textures they use;
+  a hashed renumbering for small selections), moved from openMVS.
+- `atlasbench --pack-footprints`, and the bench builds on Windows (peak RSS
+  through `GetProcessMemoryInfo`).
+- **Python:** `pack_footprints`, `subdivide_faces`, `sample_points`,
+  `is_watertight`, `compute_volume`, `sub_mesh`, `Mesh.join`, `.obj` in
+  `Mesh.load` / `Mesh.save`, and `unwrap(..., pack_footprints=True)`.
+
+### Changed
+
+- **Built with the newest C++ standard the compiler supports** (C++23, else
+  C++20, the minimum), the rule openMVS follows, unless the including project
+  sets `CMAKE_CXX_STANDARD`; the exported target requires at least that
+  standard. `BS::thread_pool` changes layout with the standard (it stores its
+  tasks in `std::move_only_function` from C++23 on), so a consumer built with a
+  different one held two definitions of the class, and on Linux called its own
+  worker on the library's pools.
+- **Test-only code is compiled only into test builds** (`HALFMESH_TEST_HOOKS`,
+  on automatically with `HALFMESH_BUILD_TESTS`, `_PERF` or `_BENCH`). A shipped
+  library no longer counts every half-edge build and face harvest in shared
+  atomics, times every `RemeshIsotropic` pass, or tests a stats pointer inside
+  the segmentation merge loop. Removed from release builds:
+  `HalfMesh::BuildCount` / `ResetBuildCount` / `FFacesCount` /
+  `ResetFFacesCount`, `Mesh::RemeshStats` and `RemeshIsotropic`'s `stats`
+  argument, `Mesh::ValidateHalfMesh`, `Mesh::ValidateVertexFaces`,
+  `TriangleBVH::Height` / `MaxLeafSize` and `PriorityQueue::IsFaultless`.
+  Outputs are unchanged.
+- **`HalfMesh::alwaysEven` is replaced by `AllRepresentativesEven()`**, an exact
+  O(V) scan, instead of a flag every representative write kept up to date
+  (`SetVHalfedge` is gone) and that could only be trusted when true.
+  `GuaranteeAlwaysEven()` scans before it rebuilds.
+
 ## [0.4.2]
 
 ### Fixed
@@ -800,6 +873,9 @@ Initial release.
   UV-atlas and remeshing benchmarks (`HALFMESH_BUILD_BENCH`), ASan+UBSan
   (`HALFMESH_SANITIZE`), and verbose atlas diagnostics (`HALFMESH_ATLAS_DEBUG`).
 
+[0.5.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.5.0
+[0.4.2]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.4.2
+[0.4.1]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.4.1
 [0.4.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.4.0
 [0.3.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cdcseacave/halfmesh/releases/tag/v0.2.0

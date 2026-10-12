@@ -160,6 +160,10 @@ Every tolerance is named and justified in the test; no silent magic numbers.
 - **Independent oracle (no golden needed):** build a brute-force adjacency from
   the face list; assert `VAdjacentVertices/Faces/Edges`, `FAdjacentFaces`,
   boundary flags, and degrees match exactly for every element.
+- **Test hooks:** the counters, stats and validators below exist only in test,
+  perf and benchmark builds (`HALFMESH_TEST_HOOKS`, set automatically by
+  `HALFMESH_BUILD_TESTS` / `_PERF` / `_BENCH`); a shipped library compiles them
+  out. Instrumentation added for a test goes behind the same macro.
 - **Invariants / `Mesh::ValidateHalfMesh()`:** the structural validator (twin
   pairing `he^1`, `heNexts` cycle consistency, `vHalfedges` even &
   boundary-pointing, `heFaces` NO_ID only on boundary) plus a semantic comparison

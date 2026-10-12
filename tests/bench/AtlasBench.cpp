@@ -79,7 +79,8 @@ void Usage()
 	             "  --repair-carve-rings N failure-localized repair split (default 0=off)\n"
 	             "  --fold-rescue-slits N  fold-rescue slit count (default 0=off)\n"
 	             "  --tiny-chart-side F    per-size padding: max unpadded side in texels (default 0=off)\n"
-	             "  --debris-chart-faces N per-size padding: chart face-count trigger (default 0=off)\n";
+	             "  --debris-chart-faces N per-size padding: chart face-count trigger (default 0=off)\n"
+	             "  --pack-footprints 0/1  pack chart footprints instead of bounding rects (default 0)\n";
 }
 
 } // namespace
@@ -157,6 +158,8 @@ int main(int argc, char* argv[])
 			cfg.tinyChartSide = std::stof(next("--tiny-chart-side"));
 		else if (a == "--debris-chart-faces")
 			cfg.debrisChartFaces = std::stoi(next("--debris-chart-faces"));
+		else if (a == "--pack-footprints")
+			cfg.packFootprints = std::stoi(next("--pack-footprints"));
 		else if (a == "-h" || a == "--help") {
 			Usage();
 			return EXIT_SUCCESS;

@@ -82,7 +82,7 @@ class HalfMesh
 	// fixed back to even in place, because the vertex may have no even outgoing
 	// half-edge left and "even == EHalfedge == 2*edge" is positional (restoring it
 	// requires renumbering, i.e. a fresh Build). Nothing reads the parity, so this
-	// is benign; algorithms that want the all-even form back should rebuild.
+	// is benign; AllRepresentativesEven() tells, GuaranteeAlwaysEven() rebuilds.
 	//
 	// The part that IS always maintained (and load-bearing): for a BOUNDARY vertex
 	// the representative is the canonical even (interior-face) half-edge of one of
@@ -95,22 +95,6 @@ class HalfMesh
 	std::vector<HIndex> heNexts; // next half-edge and twin half-edge indices (all valid)
 	std::vector<VIndex> heVertices; // map half-edges to vertex indices (all valid)
 	std::vector<FIndex> heFaces; // map half-edges to face indices (invalid only for border edges)
-
-	// true iff every vHalfedges entry is an even (canonical) half-edge — see the
-	// vHalfedges note above. Established by Build(), conservatively cleared by any
-	// in-place mutation that stores an odd representative. Restore with
-	// GuaranteeAlwaysEven(). (Conservative: false may be a false-negative; true is
-	// always accurate.)
-	bool alwaysEven = true;
-
-	// single choke point for writing a vertex's representative half-edge: clears
-	// alwaysEven when an odd (non-canonical) representative is stored.
-	void SetVHalfedge(VIndex v, HIndex he)
-	{
-		vHalfedges[v] = he;
-		if (he & 1u)
-			alwaysEven = false;
-	}
 
 	HalfMesh() {}
 	explicit HalfMesh(const Mesh& mesh)
@@ -126,14 +110,16 @@ class HalfMesh
 		return vHalfedges.empty();
 	}
 	void Clear();
-	// Instrumentation for the "one Build per pipeline" budget: process-wide
-	// counters of the Build / FFaces calls made through the public entry points
-	// (internal validation rebuilds are not counted). Atomic but not scoped, so
-	// Reset + read is only meaningful while one pipeline is running.
+#ifdef HALFMESH_TEST_HOOKS
+	// Test builds only: process-wide counters of the Build / FFaces calls made
+	// through the public entry points, for the "one Build per pipeline" budget
+	// (Mesh::ValidateHalfMesh's own rebuild is not counted). Atomic but not
+	// scoped, so Reset + read is only meaningful while one pipeline is running.
 	static uint64_t BuildCount();
 	static void ResetBuildCount();
 	static uint64_t FFacesCount();
 	static void ResetFFacesCount();
+#endif
 
 	// create half-edge data-structures for the given mesh
 	bool Build(const Mesh& mesh);
@@ -141,10 +127,9 @@ class HalfMesh
 
 	private:
 	friend class Mesh;
-	bool BuildForValidation(VIndex numVertices, const std::vector<Face>& faces);
-	bool BuildImpl(VIndex numVertices, const std::vector<Face>& faces, bool countBuild);
-	void FFacesForValidation(std::vector<Face>& faces) const { FFacesImpl(faces, false); }
-	void FFacesImpl(std::vector<Face>& faces, bool countHarvest) const;
+	// Build / FFaces without the test-build counters
+	bool BuildImpl(VIndex numVertices, const std::vector<Face>& faces);
+	void FFacesImpl(std::vector<Face>& faces) const;
 
 	// Undo log for FAdd: the previous value of every PRE-EXISTING slot an
 	// insertion overwrites. Slots the insertion appended need no record — the
@@ -164,15 +149,17 @@ class HalfMesh
 	{
 		std::size_t nexts{0}, faces{0}, representatives{0};
 		std::size_t numHalfedges{0}, numFaces{0};
-		bool alwaysEven{true};
 	};
 	AddMark AddUndoMark(const AddUndo&) const;
 	void AddUndoRollback(AddUndo&, const AddMark&);
 	FIndex FAddImpl(const Face&, AddUndo&);
 
 	public:
-	// restore the canonical all-even vHalfedges form (see alwaysEven). No-op
-	// when already canonical; otherwise rebuilds in place from the current faces.
+	// whether every vertex representative is even, the canonical form a Build
+	// produces (see vHalfedges): one O(V) scan
+	bool AllRepresentativesEven() const;
+	// restore the canonical all-even vHalfedges form: a no-op when already
+	// canonical, otherwise an in-place rebuild from the current faces
 	void GuaranteeAlwaysEven();
 	// rearrange vertex start half-edge such that it is always
 	// a bounding half-edge if the vertex is on the border;
@@ -637,10 +624,7 @@ class HalfMesh
 		return HeFace(HeTwin(iHe));
 	}
 	// fetch the array of faces back in the native Mesh format
-	void FFaces(std::vector<Face>& faces) const
-	{
-		FFacesImpl(faces, true);
-	}
+	void FFaces(std::vector<Face>& faces) const;
 	// create a new face between the vertices defined by the given face; a corner
 	// may be an isolated vertex (NO_ID representative) the caller pre-appended.
 	// Returns NO_ID if the face can not be added, as is the case if the face does

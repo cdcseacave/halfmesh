@@ -2337,18 +2337,6 @@ ChartFlattenEntry* ChartFlattenCache::Find(const std::vector<Mesh::FIndex>& glob
 }
 
 bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
-                    const ParametrizeParams& params)
-{
-	return ChartFacesFold(mesh, faces, params, nullptr);
-}
-
-bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
-                    const ParametrizeParams& params, ChartFlattenSlot* out)
-{
-	return ChartFacesFold(mesh, faces, params, out, nullptr);
-}
-
-bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
                     const ParametrizeParams& params, ChartFlattenSlot* out,
                     FoldDiagnosis* diag)
 {

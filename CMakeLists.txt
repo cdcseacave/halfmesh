@@ -39,6 +39,16 @@ option(HALFMESH_BENCH_WITH_CGAL   "atlasbench: enable the CGAL segmentation/para
 # remeshbench (tests/bench/RemeshBench) isotropic-remeshing baseline (opt-in):
 option(HALFMESH_REMESH_WITH_PMP   "remeshbench: compare against pmp::uniform_remeshing (links libpmp)" OFF)
 
+# Test hooks: the counters, stats and validators only the tests and benchmarks
+# use (HalfMesh::BuildCount, Mesh::ValidateHalfMesh, Mesh::RemeshStats, the
+# segmentation stats, ...). Compiled in only for those builds, so a shipped
+# library carries neither their code nor their runtime cost; on whenever tests,
+# the perf harness or the benchmarks are built. They never change any output.
+option(HALFMESH_TEST_HOOKS "Compile in the test-only counters, stats and validators" OFF)
+if(HALFMESH_BUILD_TESTS OR HALFMESH_BUILD_PERF OR HALFMESH_BUILD_BENCH)
+	set(HALFMESH_TEST_HOOKS ON)
+endif()
+
 # Wire vcpkg manifest features from the build options.
 if(HALFMESH_BUILD_TESTS OR HALFMESH_BUILD_PERF)
 	list(APPEND VCPKG_MANIFEST_FEATURES "tests")
@@ -84,7 +94,7 @@ endif()
 # so an absolute path works on all CMake versions >= 3.21.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Utils.cmake")
 
-project(halfmesh VERSION 0.4.2 LANGUAGES CXX)
+project(halfmesh VERSION 0.5.0 LANGUAGES CXX)
 
 # vcpkg.json cannot read the version above, so it carries a manual copy —
 # fail the configure the moment the two drift apart (a version bump must
@@ -135,8 +145,24 @@ set(HALFMESH_ARCH "" CACHE STRING "Target CPU architecture for -march=<arch> (e.
 # float rounding, so keep OFF whenever the exact-equality goldens run.
 option(HALFMESH_LTO "Enable interprocedural optimization / LTO on optimized builds. Opt-in" OFF)
 
-# C++20 is required throughout.
-set(CMAKE_CXX_STANDARD 20)
+# The newest C++ standard the compiler supports, C++20 the minimum, unless the
+# including project already set one. openMVS picks its standard by the same rule
+# (build/Utils.cmake), and the two must agree: both instantiate BS::thread_pool,
+# whose layout depends on the standard (std::move_only_function from C++23 on),
+# so different standards give two definitions of the same class across the
+# library boundary. Extend both lists together.
+if(NOT CMAKE_CXX_STANDARD)
+	foreach(CXX_STD 23 20)
+		if("cxx_std_${CXX_STD}" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+			set(CMAKE_CXX_STANDARD ${CXX_STD})
+			break()
+		endif()
+	endforeach()
+endif()
+if(NOT CMAKE_CXX_STANDARD OR CMAKE_CXX_STANDARD LESS 20)
+	message(FATAL_ERROR "C++20 or newer is required, not supported by ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+endif()
+message(STATUS "Compiling with C++${CMAKE_CXX_STANDARD}")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -180,6 +206,9 @@ find_path(TINYGLTF_INCLUDE_DIR tiny_gltf.h REQUIRED)
 # (no CMake config target), like tinygltf. PRIVATE: used by the parallel setup in
 # MeshRemesh.cpp and MeshSimplify.cpp.
 find_path(BS_THREAD_POOL_INCLUDE_DIR BS_thread_pool.hpp REQUIRED)
+# fast_float is header-only and read by src/MeshIOOBJ.cpp alone (correctly
+# rounded float parsing); PRIVATE, so the installed package does not need it.
+find_path(FAST_FLOAT_INCLUDE_DIR fast_float/fast_float.h REQUIRED)
 
 # -----------------------------------------------------------------------
 # Library target
@@ -192,6 +221,7 @@ add_library(halfmesh
 	src/TriangleBVH.cpp
 	src/Mesh.cpp
 	src/MeshIO.cpp
+	src/MeshIOOBJ.cpp
 	src/MeshRepair.cpp
 	src/MeshSimplify.cpp
 	src/MeshRemesh.cpp
@@ -201,6 +231,7 @@ add_library(halfmesh
 	src/Parametrize.cpp
 	src/AtlasCharting.cpp
 	src/AtlasPacking.cpp
+	src/FootprintPacking.cpp
 	src/TextureBake.cpp
 	src/GltfImageCodec.cpp
 )
@@ -215,7 +246,8 @@ set_target_properties(halfmesh PROPERTIES
 	VERSION ${PROJECT_VERSION}
 	SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
 
-target_compile_features(halfmesh PUBLIC cxx_std_20)
+# consumers build with at least the standard the library was built with
+target_compile_features(halfmesh PUBLIC cxx_std_${CMAKE_CXX_STANDARD})
 
 # Single source of truth for the version string: inject PROJECT_VERSION into
 # Version.cpp so the runtime Version() can never drift from the package version
@@ -265,7 +297,13 @@ target_compile_definitions(halfmesh PRIVATE
 	TINYGLTF_NOEXCEPTION
 	JSON_NOEXCEPTION
 )
-target_include_directories(halfmesh PRIVATE ${BS_THREAD_POOL_INCLUDE_DIR})
+target_include_directories(halfmesh PRIVATE ${BS_THREAD_POOL_INCLUDE_DIR} ${FAST_FLOAT_INCLUDE_DIR})
+# PUBLIC: the hooks add declarations to the public headers, which the library
+# and every target linking it must see alike.
+if(HALFMESH_TEST_HOOKS)
+	target_compile_definitions(halfmesh PUBLIC HALFMESH_TEST_HOOKS)
+	message(STATUS "halfmesh: test hooks compiled in (HALFMESH_TEST_HOOKS)")
+endif()
 
 halfmesh_set_warnings(halfmesh)
 

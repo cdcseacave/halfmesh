@@ -110,6 +110,7 @@ add_executable(mesh_core_test MeshCoreTest.cpp)
 target_link_libraries(mesh_core_test PRIVATE
     GTest::gtest
     GTest::gtest_main
+    halfmesh_corpus
     halfmesh::halfmesh
 )
 halfmesh_discover_tests(mesh_core_test)

@@ -480,8 +480,8 @@ TEST(HalfMeshInvariants, EdgeSplitIsConsistent)
 		m.ListHalfEdges();
 		HalfMesh& hm = m.halfMesh;
 
-		// Fresh Build => canonical all-even form, and the flag agrees.
-		EXPECT_TRUE(hm.alwaysEven) << "always_even must be true after Build";
+		// Fresh Build => canonical all-even form.
+		EXPECT_TRUE(hm.AllRepresentativesEven()) << "AllRepresentativesEven must agree";
 		EXPECT_TRUE(allRepsEven(hm)) << "fresh Build must be all-even";
 
 		const HalfMesh::VIndex v0 = hm.VSize();
@@ -517,10 +517,9 @@ TEST(HalfMeshInvariants, EdgeSplitIsConsistent)
 		}
 		ASSERT_GT(nInt + nBnd, 0u);
 
-		// The flag is a sound over-approximation: alwaysEven==true must imply the
-		// representatives are genuinely all-even (it may be conservatively false).
-		EXPECT_TRUE(!hm.alwaysEven || allRepsEven(hm)) << "always_even=true but an odd rep exists";
-		anyBecameDirty |= !hm.alwaysEven;
+		// the scan is exact
+		EXPECT_EQ(hm.AllRepresentativesEven(), allRepsEven(hm));
+		anyBecameDirty |= !hm.AllRepresentativesEven();
 
 		// Structural invariants hold on the in-place (un-rebuilt) structure.
 		CheckStructuralInvariants(hm);
@@ -578,11 +577,11 @@ TEST(HalfMeshInvariants, EdgeSplitIsConsistent)
 		EXPECT_EQ(rebuilt.FSize(), hm.FSize());
 		EXPECT_EQ(rebuilt.ESize(), hm.ESize());
 		CheckStructuralInvariants(rebuilt);
-		EXPECT_TRUE(rebuilt.alwaysEven) << "rebuilt mesh must be all-even";
+		EXPECT_TRUE(rebuilt.AllRepresentativesEven()) << "rebuilt mesh must be all-even";
 
 		// GuaranteeAlwaysEven restores the canonical all-even form in place.
 		hm.GuaranteeAlwaysEven();
-		EXPECT_TRUE(hm.alwaysEven);
+		EXPECT_TRUE(hm.AllRepresentativesEven());
 		EXPECT_TRUE(allRepsEven(hm)) << "GuaranteeAlwaysEven must restore all-even";
 		CheckStructuralInvariants(hm);
 	}
@@ -621,7 +620,7 @@ TEST(HalfMeshInvariants, FAddAfterSplitAndFlipOnDirtyHalfMesh)
 		}
 	}
 	ASSERT_TRUE(flipped);
-	ASSERT_FALSE(hm.alwaysEven);
+	ASSERT_FALSE(hm.AllRepresentativesEven());
 	ASSERT_TRUE(HasOddRepresentative(hm));
 	CheckReaddedFace(mesh);
 }
@@ -664,7 +663,7 @@ TEST(HalfMeshInvariants, RejectedFAddIsBitIdentical)
 	EXPECT_EQ(hm.heNexts, before.heNexts);
 	EXPECT_EQ(hm.heVertices, before.heVertices);
 	EXPECT_EQ(hm.heFaces, before.heFaces);
-	EXPECT_EQ(hm.alwaysEven, before.alwaysEven);
+	EXPECT_EQ(hm.AllRepresentativesEven(), before.AllRepresentativesEven());
 }
 
 TEST(HalfMeshInvariants, BoundaryRepresentativesStayCanonicalNearMutations)
@@ -844,10 +843,10 @@ TEST(HalfMeshInvariants, BulkRemoveWorksOnDirtyHalfMesh)
 		mesh.vertices.emplace_back(midpoint);
 		break;
 	}
-	for (HalfMesh::EIndex edge = 0; edge < hm.ESize() && hm.alwaysEven; ++edge)
+	for (HalfMesh::EIndex edge = 0; edge < hm.ESize() && hm.AllRepresentativesEven(); ++edge)
 		if (hm.EIsFlipValid(edge, mesh.vertices))
 			hm.EFlip(edge);
-	ASSERT_FALSE(hm.alwaysEven);
+	ASSERT_FALSE(hm.AllRepresentativesEven());
 	mesh.InvalidateFaces();
 
 	std::vector<Mesh::FIndex> removes{2, 17, 43};

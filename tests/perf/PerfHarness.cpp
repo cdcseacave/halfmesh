@@ -38,12 +38,14 @@
 
 #include "corpus/Corpus.h" // hmtest::corpus::LargeMesh
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <string>
@@ -526,6 +528,36 @@ TEST(PerfHarness, PrebuiltCloseHolesWithoutFillsPerformsZeroBuilds)
 	EXPECT_EQ(halfmesh::HalfMesh::BuildCount(), 0u);
 	EXPECT_LT(dt, MAX_WALL_SECONDS);
 }
+// A closed surface plus one isolated triangle: the triangle's 3-loop is the only
+// fill candidate and outlines its own component, so nothing is filled, and only
+// that component is flood-filled for its area -- not the closed surface beside it
+// (it was: 32 ms against 1.4 ms with no candidate, 800k faces, i7-13700KF).
+TEST(PerfHarness, PrebuiltCloseHolesSkipsComponentsWithoutCandidates)
+{
+	unsigned actual = 0;
+	const halfmesh::Mesh closed = hmtest::corpus::LargeMesh(LARGE_TARGET, &actual);
+	halfmesh::Mesh fragment = closed;
+	const halfmesh::Mesh::VIndex v = static_cast<halfmesh::Mesh::VIndex>(fragment.vertices.size());
+	fragment.vertices.emplace_back(10.f, 0.f, 0.f);
+	fragment.vertices.emplace_back(11.f, 0.f, 0.f);
+	fragment.vertices.emplace_back(10.f, 1.f, 0.f);
+	fragment.faces.emplace_back(v, v + 1, v + 2);
+	const auto best = [](halfmesh::Mesh mesh) {
+		mesh.ListHalfEdges();
+		double dt = std::numeric_limits<double>::max();
+		for (int i = 0; i < 3; ++i) {
+			const auto t0 = Clock::now();
+			EXPECT_EQ(mesh.CloseHoles(3), 0u);
+			dt = std::min(dt, elapsedS(t0));
+		}
+		return dt;
+	};
+	const double dtClosed = best(closed), dtFragment = best(fragment);
+	record("CloseHoles_Prebuild_IsolatedTriangle", dtFragment, actual);
+	std::cout << "  CloseHoles_Prebuild_IsolatedTriangle: " << dtFragment << " s (closed only " << dtClosed << " s)\n";
+	EXPECT_LT(dtFragment, 4 * dtClosed + 0.002);
+}
+
 // KD-tree speedup assertion: kd-tree queries must be >= 10x faster than brute-force
 TEST(PerfHarness, KdTree_50k_BuildAndQuery)
 {

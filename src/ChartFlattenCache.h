@@ -87,17 +87,6 @@ class ChartFlattenCache
 	std::unordered_map<Mesh::FIndex, ChartFlattenSlot> entries;
 };
 
-// Fold bridge (defined in src/Parametrize.cpp): true if the chart made of these
-// global faces folds when flattened exactly the way ParametrizeCharts ships it.
-bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
-                    const ParametrizeParams& params);
-
-// Extended fold bridge: identical verdict; additionally, when `out` is non-null
-// and the chart does NOT fold (it ships), deposits the flatten artifacts of the
-// accepting verdict into *out for ChartFlattenCache::Store.
-bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
-                    const ParametrizeParams& params, ChartFlattenSlot* out);
-
 // Where a folding verdict failed: the offending faces as GLOBAL face ids,
 // sorted ascending, deduplicated. Filled only when the verdict is "folds".
 struct FoldDiagnosis
@@ -105,21 +94,38 @@ struct FoldDiagnosis
 	std::vector<Mesh::FIndex> badFaces;
 };
 
-// Extended fold bridge: identical verdict; additionally, when `diag` is
-// non-null and the chart DOES fold, fills *diag with the offending faces so
-// the repair can carve around them. Never affects the verdict or `out`'s
-// artifacts — the diagnosis is collected from the already-judged map, only for
-// folding charts.
+// Fold bridge (defined in src/Parametrize.cpp): true if the chart made of these
+// global faces folds when flattened exactly the way ParametrizeCharts ships it.
+// When `out` is non-null and the chart does NOT fold (it ships), the flatten
+// artifacts of the accepting verdict are deposited into *out for
+// ChartFlattenCache::Store. When `diag` is non-null and the chart DOES fold,
+// *diag receives the offending faces so the repair can carve around them.
+// Neither affects the verdict: the diagnosis is collected from the
+// already-judged map, only for folding charts.
 bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
-                    const ParametrizeParams& params, ChartFlattenSlot* out,
-                    FoldDiagnosis* diag);
+                    const ParametrizeParams& params, ChartFlattenSlot* out = nullptr,
+                    FoldDiagnosis* diag = nullptr);
 
-// Segmentation instrumentation (opt-in via detail::SegmentCharts's trailing
-// `stats` out-param): per-stage chart counts plus, per post-repair merge round,
-// whether pairs were rejected by the cone budget, the wouldEnclose anti-fold
-// veto, or accepted and then split right back by the repair wave. Counted only
-// in the serial heap-pop loop and harvest, never in the parallel verdict wave,
-// so a non-null `stats` alters no decision; nullptr (the default) costs nothing.
+// Test builds (HALFMESH_TEST_HOOKS) fill AtlasSegmentStats; a shipped library has
+// neither the stats nor the code. HM_STATS(...) keeps a parameter or an argument;
+// HM_STAT_ADD / HM_STAT_SET update a field through a stats pointer that may be null.
+#ifdef HALFMESH_TEST_HOOKS
+	#define HM_STATS(...) __VA_ARGS__
+	#define HM_STAT_ADD(stats, field, value) ((stats) != nullptr ? void((stats)->field += (value)) : void())
+	#define HM_STAT_SET(stats, field, value) ((stats) != nullptr ? void((stats)->field = (value)) : void())
+#else
+	#define HM_STATS(...)
+	#define HM_STAT_ADD(stats, field, value) static_cast<void>(0)
+	#define HM_STAT_SET(stats, field, value) static_cast<void>(0)
+#endif
+
+#ifdef HALFMESH_TEST_HOOKS
+// Segmentation instrumentation for the tests (opt-in via detail::SegmentCharts's
+// trailing `stats` out-param, test builds only): per-stage chart counts plus, per
+// merge, whether pairs were rejected by the cone budget, the wouldEnclose
+// anti-fold veto, or accepted and then split right back by the repair wave.
+// Counted only in the serial heap-pop loop and harvest, never in the parallel
+// verdict wave, so a non-null `stats` alters no decision.
 struct AtlasSegmentStats
 {
 	unsigned lloydCharts = 0; // after ConeLloydSegment + EnforceConnectivity
@@ -130,6 +136,7 @@ struct AtlasSegmentStats
 	struct MergeRound
 	{
 		unsigned pairsPushed = 0; // tryPush accepted into the heap
+		unsigned heapPops = 0; // entries popped: at most pairsPushed (stale ones are dropped)
 		unsigned pairsBudgetRejected = 0; // combinedError > budget at push or pop
 		unsigned pairsEncloseRejected = 0; // wouldEnclose veto at push or pop
 		unsigned merges = 0; // doMerge calls
@@ -141,23 +148,17 @@ struct AtlasSegmentStats
 		// this round's repair wave split right back, i.e. folded. Blacklisted
 		// for every later round, so a key here never repeats across stats.rounds.
 		std::vector<std::pair<Mesh::FIndex, Mesh::FIndex>> refoldedPairs;
-		// How many of `refoldedPairs` were blacklisted WITHOUT evidence: a chart
-		// built by a chain of merges contributes one key per merge, and the repair
-		// reports only that the chart split, not which merge folded it -- so every
-		// key past the first for a given chart blocks a pair that may never have
-		// folded. Non-zero means this round over-blacklisted by that many pairs,
-		// which can only raise the final chart count.
-		unsigned refoldedPairsCollateral = 0;
 	};
+	MergeRound initialMerge; // the first DevelopableMerge (merge fields only)
 	std::vector<MergeRound> rounds; // one per post-repair merge round
 };
+#endif
 
 // Cache-aware pipeline internals. Byte-identical output to the public overloads
 // for ANY cache state (a lookup miss recomputes); the cache only removes the
 // duplicate flatten work. Defined in src/AtlasCharting.cpp / src/Parametrize.cpp.
 unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
-                       std::vector<unsigned>& faceChart, ChartFlattenCache* cache,
-                       AtlasSegmentStats* stats = nullptr);
+                       std::vector<unsigned>& faceChart, ChartFlattenCache* cache HM_STATS(, AtlasSegmentStats* stats = nullptr));
 void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
                        unsigned numCharts, const ParametrizeParams& params,
                        ChartFlattenCache* cache);

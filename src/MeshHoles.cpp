@@ -1176,8 +1176,9 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 	// Here rather than in CloseHoles because RemoveVerticesAndFill fills directly,
 	// and only when there is something to fill, so a mesh with no fillable loop
 	// keeps its normals.
-	if (!candidates.empty())
-		mesh.InvalidateVertexNormals();
+	if (candidates.empty())
+		return 0; // nor a thread pool to start
+	mesh.InvalidateVertexNormals();
 
 	// Fill holes in parallel and harvest sequentially (phased launch-then-harvest).
 	// Each HoleFilling only reads immutable parent state, and fixed harvest order
@@ -1282,7 +1283,9 @@ static unsigned FillBoundaryLoops(Mesh& mesh,
 // cap is the triangle reversed); a hole scores the share of the surface it would
 // add: small on a closed surface, 0.58 for a cube corner, 0.5 for a hemisphere.
 // The rule is by area, so a large hole in a thin sheet (a washer whose inner
-// radius is over 0.65 of its outer one) also stays open.
+// radius is over 0.65 of its outer one) also stays open, and so does the missing
+// side of a shallow shell (the base of a tetrahedron under 0.2 of its base
+// side tall).
 constexpr double OUTLINE_AREA_SHARE = 0.75;
 
 // Per loop of 3..maxHoleEdges vertices: does it outline its component (see
@@ -1298,16 +1301,39 @@ static std::vector<char> OutlineLoops(const HalfMesh& hm,
 	};
 	if (std::none_of(loops.begin(), loops.end(), fillable))
 		return outline;
-	std::vector<Mesh::FIndex> components;
-	const Mesh::FIndex numComponents = hm.ConnectedComponents(components);
-	std::vector<double> componentArea(numComponents, 0.0);
-	for (Mesh::FIndex f = 0; f < hm.FSize(); ++f) {
-		const HalfMesh::Face face = hm.F(f);
-		const Eigen::Vector3d a = vertices[face[0]].cast<double>();
-		const Eigen::Vector3d b = vertices[face[1]].cast<double>();
-		const Eigen::Vector3d c = vertices[face[2]].cast<double>();
-		componentArea[components[f]] += 0.5 * (b - a).cross(c - a).norm();
-	}
+	// the area of the component of a loop's face, flood-filled the first time it is
+	// asked for: a component holding no candidate loop is never visited
+	std::vector<Mesh::FIndex> component(hm.FSize(), math::NO_ID);
+	std::vector<double> componentArea;
+	std::vector<Mesh::FIndex> stack;
+	const auto areaOf = [&](Mesh::FIndex seed) {
+		if (component[seed] != math::NO_ID)
+			return componentArea[component[seed]];
+		const Mesh::FIndex id = static_cast<Mesh::FIndex>(componentArea.size());
+		double area = 0.0;
+		component[seed] = id;
+		stack.push_back(seed);
+		while (!stack.empty()) {
+			const Mesh::FIndex f = stack.back();
+			stack.pop_back();
+			const HalfMesh::Face face = hm.F(f);
+			const Eigen::Vector3d a = vertices[face[0]].cast<double>();
+			const Eigen::Vector3d b = vertices[face[1]].cast<double>();
+			const Eigen::Vector3d c = vertices[face[2]].cast<double>();
+			area += 0.5 * (b - a).cross(c - a).norm();
+			const HalfMesh::HIndex start = hm.FHalfedge(f);
+			HalfMesh::HIndex he = start;
+			do {
+				const Mesh::FIndex g = hm.HeFace(hm.HeTwin(he));
+				if (g != math::NO_ID && component[g] == math::NO_ID) {
+					component[g] = id;
+					stack.push_back(g);
+				}
+			} while ((he = hm.HeNext(he)) != start);
+		}
+		componentArea.push_back(area);
+		return area;
+	};
 	for (std::size_t idxLoop = 0; idxLoop < loops.size(); ++idxLoop) {
 		const BoundaryLoop& loop = loops[idxLoop];
 		if (!fillable(loop))
@@ -1323,7 +1349,7 @@ static std::vector<char> OutlineLoops(const HalfMesh& hm,
 			const Eigen::Vector3d q = vertices[loop.verts[(k + 1) % loop.verts.size()]].cast<double>() - centroid;
 			vectorArea += 0.5 * p.cross(q);
 		}
-		const double area = componentArea[components[loop.oppFace]];
+		const double area = areaOf(loop.oppFace);
 		outline[idxLoop] = area > 0 && vectorArea.norm() >= OUTLINE_AREA_SHARE * area;
 	}
 	return outline;

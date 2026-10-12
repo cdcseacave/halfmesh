@@ -5,7 +5,7 @@ dependency-light.
 
 ## What it does
 Half-edge connectivity + mesh repair, QEM decimation, isotropic remeshing,
-HC-Laplacian and Taubin smoothing, Liepa hole-filling, a triangle KD-tree, PLY/glTF I/O,
+HC-Laplacian and Taubin smoothing, Liepa hole-filling, a triangle KD-tree, PLY/glTF/OBJ I/O, volume/watertightness queries,
 and a UV pipeline (D-Charts chart
 segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed texture atlas).
 
@@ -31,9 +31,13 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 - Processing targets **untextured** meshes: half-edge mutators drop face-keyed attributes.
   A method that happens to keep them aligned is a documented bonus, never a contract —
   see the policy table in `docs/FEATURES.md`.
-- Vertex representatives are written only through `HalfMesh::SetVHalfedge` (the `alwaysEven`
-  choke point), never `vHalfedges[v] =`. `GuaranteeAlwaysEven()` is a full in-place rebuild:
-  it is never the fix for a parity problem.
+- Test-only code (counters, stats, validators, `*ForTest` seams) is compiled only under
+  `HALFMESH_TEST_HOOKS`, which the build sets with tests / perf / bench: a shipped library
+  carries none of it and pays nothing for it. `HM_STATS(...)` (`src/ChartFlattenCache.h`)
+  wraps one-line stats updates.
+- Vertex representatives are all even only right after a Build; in-place mutators may leave
+  odd ones, which nothing reads. `AllRepresentativesEven()` scans for it and
+  `GuaranteeAlwaysEven()` is a full in-place rebuild: it is never the fix for a parity problem.
 - **Python bindings ship with the C++ change, not after it.** A change that adds or
   alters a user-facing feature in `include/halfmesh/` — a `Mesh` op, a parameter, a
   result field, a default, or its validation — updates the Python side in the same PR:
@@ -79,14 +83,15 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 ## Build & test
 Set `$VCPKG_ROOT` (the toolchain auto-loads). Deps: eigen3, bshoshany-thread-pool,
 opencv4 (no default features — only core/imgproc/imgcodecs are used), tinyply,
-tinygltf.
+tinygltf, fast-float (header-only, OBJ parsing).
 ```sh
 cmake -S . -B make -DHALFMESH_BUILD_TESTS=ON -DHALFMESH_BUILD_TOOLS=ON
 cmake --build make -j
 ctest --test-dir make --output-on-failure
 ```
 Options: `HALFMESH_BUILD_TESTS`, `HALFMESH_BUILD_TOOLS`, `HALFMESH_BUILD_PERF`
-(scaling guards, Release), `HALFMESH_BUILD_CROSSCHECKS` (libigl), `HALFMESH_SANITIZE`
+(scaling guards, Release), `HALFMESH_BUILD_CROSSCHECKS` (libigl), `HALFMESH_TEST_HOOKS`
+(test-only counters/stats/validators; forced on by tests, perf and bench), `HALFMESH_SANITIZE`
 (ASan+UBSan, Linux), `HALFMESH_ATLAS_DEBUG` (compile in verbose cone-Lloyd /
 flip-repair / flatten-init diagnostics on stderr; off = zero cost, no runtime
 gate). Opt-in perf builds (all default OFF, and each changes float results so it

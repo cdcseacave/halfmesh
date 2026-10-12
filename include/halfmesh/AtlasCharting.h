@@ -156,6 +156,15 @@ struct AtlasParams
 	// behaviour).  OFF for raw PackAtlas (exact density preserved); GenerateAtlas
 	// turns it ON.  Honored only when packing the resolution is the goal.
 	bool fitToResolution = false;
+
+	// Pack the charts' footprints instead of their bounding rectangles: every
+	// texel a chart's UV triangles touch, grown by its gutter, packed with
+	// PackFootprints (halfmesh/RectPacking.h), so charts nest into each other's
+	// empty bounding-box corners. Under fitToResolution the scale search probes
+	// with footprints too, so the denser layout buys texel density. Pages are
+	// square, `resolution` texels (grown to the largest chart like the rect
+	// packer); `occupancy` is then footprint area over page area.
+	bool packFootprints = true;
 };
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,10 @@ parametrization and texture atlas pipeline.
 - **Smoothing** — HC Laplacian (anti-shrink) and Taubin lambda|mu band-pass
 - **Liepa hole-filling** — fill boundary holes using the minimum-area advancing-front approach
 - **Triangle KD-tree** — spatial index for ray-triangle intersection and closest-point queries
-- **PLY / glTF I/O** — load and save binary/ASCII PLY and glTF/GLB files
+- **PLY / glTF / OBJ I/O** — load and save binary/ASCII PLY, glTF/GLB, and Wavefront OBJ
+  with its MTL materials (streamed, parallel, exact-float parsing; polygons triangulated)
+- **Volume and topology queries** — exact enclosed volume and volume against a plane
+  (fill/cut), watertightness, mesh join and sub-mesh extraction with all attributes
 - **UV parametrization** — developable (D-Charts) chart segmentation + per-chart SLIM/ARAP flattening
 - **Texture atlas** — uniform-density normalisation + two-tier (skyline min-waste + shelf)
   packing into one or more atlas pages, also usable standalone on integer rectangles
@@ -38,6 +41,7 @@ and pointers to the examples — in [`docs/FEATURES.md`](docs/FEATURES.md).
 | `opencv4` (no default features; eigen, fs, intrinsics, jpeg, png, thread) | Image types used by the texture layer, and the codec for every image the library reads or writes (PLY sidecars and glTF textures alike) |
 | `tinyply` | PLY I/O |
 | `tinygltf` | glTF/GLB I/O (header-only; built with `TINYGLTF_NOEXCEPTION` / `JSON_NOEXCEPTION` and without the bundled stb image codecs) |
+| `fast-float` | Correctly rounded float parsing for OBJ (header-only, private to the build) |
 | `gtest` | Unit tests (test build only) |
 
 ## Build
@@ -57,6 +61,13 @@ git clone https://github.com/cdcseacave/halfmesh && cd halfmesh
 cmake -S . -B make
 cmake --build make --config Release -j
 ```
+
+The build uses the newest C++ standard the compiler supports (C++23, else
+C++20, the minimum), the rule openMVS follows too: both use `BS::thread_pool`,
+whose layout changes with the standard, so a consumer sharing it must build
+with the same one. A project that includes halfmesh with its own
+`CMAKE_CXX_STANDARD` keeps it, and the installed target requires at least the
+standard the library was built with.
 
 ### Build options
 
@@ -156,7 +167,7 @@ Build with `-DHALFMESH_BUILD_TOOLS=ON`.
 ./make/examples/texturebake fidelity --ref textured.glb --test rebaked.glb
 ```
 
-All CLIs load and save both PLY and glTF/GLB — the format is picked from the
+All CLIs load and save PLY, glTF/GLB and OBJ — the format is picked from the
 file extension (e.g. `unwrap tests/data/mesh.ply /tmp/uv.glb` writes a GLB).
 
 ## Consuming the library with CMake
@@ -169,8 +180,8 @@ target_link_libraries(myapp PRIVATE halfmesh::halfmesh)
 ```
 
 The package exports version compatibility files (`halfmeshConfigVersion.cmake`)
-with `SameMinorVersion` compatibility: `find_package(halfmesh 0.4 CONFIG REQUIRED)`
-accepts any 0.4.x and refuses every other minor, because before 1.0 a minor
+with `SameMinorVersion` compatibility: `find_package(halfmesh 0.5 CONFIG REQUIRED)`
+accepts any 0.5.x and refuses every other minor, because before 1.0 a minor
 release may reorder public struct fields.
 
 ## Python bindings
@@ -181,7 +192,7 @@ simplify, close holes, remove-vertices-and-fill, remesh) plus a `Mesh` facade,
 UV-atlas `unwrap` and the mesh-independent rectangle packer, all numpy in/out:
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.4.2/halfmesh-0.4.2-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.5.0/halfmesh-0.5.0-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 (replace `cp312-cp312` with your interpreter's tag — wheels are published for
