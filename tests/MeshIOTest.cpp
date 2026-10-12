@@ -1088,6 +1088,45 @@ TEST(MeshIoAccuracy, PLYUntexturedNormalizedUVsStayInUnitSquare)
 }
 
 // ---------------------------------------------------------------------------
+// The texture pages of a PLY may differ in size (openMVS shrinks the last one):
+// each face's UVs must be converted with its own page's size, so LoadPLY has to
+// read the texture ids before it un-normalizes the UVs.
+// ---------------------------------------------------------------------------
+TEST(MeshIoAccuracy, PLYMultiPageUVsUseEachPageSize)
+{
+	halfmesh::Mesh mesh;
+	mesh.vertices = {
+	    halfmesh::Mesh::Vertex(0.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(1.f, 0.f, 0.f),
+	    halfmesh::Mesh::Vertex(0.f, 1.f, 0.f),
+	    halfmesh::Mesh::Vertex(1.f, 1.f, 0.f),
+	};
+	mesh.faces = {halfmesh::Mesh::Face(0, 1, 2), halfmesh::Mesh::Face(1, 3, 2)};
+	mesh.faceTexcoords = {{1.f, 1.f}, {6.f, 1.f}, {1.f, 6.f}, // page 0: 8x8
+	                      {0.5f, 0.5f},
+	                      {3.f, 0.5f},
+	                      {0.5f, 3.f}}; // page 1: 4x4
+	mesh.faceTexblobs = {0, 1};
+	mesh.texturesDiffuse.emplace_back(cv::Mat(8, 8, CV_8UC3, cv::Scalar(10, 20, 30)));
+	mesh.texturesDiffuse.emplace_back(cv::Mat(4, 4, CV_8UC3, cv::Scalar(30, 20, 10)));
+	ASSERT_TRUE(mesh.HasTexture());
+
+	const std::filesystem::path dir = std::filesystem::temp_directory_path() / "halfmesh_multipage";
+	std::filesystem::create_directories(dir);
+	const std::string ply = (dir / "multipage.ply").string();
+	ASSERT_TRUE(mesh.SavePLY(ply, /*binary=*/true));
+	halfmesh::Mesh reloaded;
+	ASSERT_TRUE(reloaded.LoadPLY(ply));
+	ASSERT_EQ(reloaded.texturesDiffuse.size(), 2u);
+	ASSERT_EQ(reloaded.faceTexblobs, mesh.faceTexblobs);
+	ASSERT_EQ(reloaded.faceTexcoords.size(), mesh.faceTexcoords.size());
+	for (size_t i = 0; i < mesh.faceTexcoords.size(); ++i)
+		EXPECT_LT((reloaded.faceTexcoords[i] - mesh.faceTexcoords[i]).norm(), 1e-4f)
+		    << "UV " << i << " (page " << int(mesh.faceTexblobs[i / 3]) << ") did not round-trip";
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
 // LoadGLTF must keep texture coordinates aligned when an untextured primitive
 // precedes a UV-bearing one (backfill earlier faces with (0,0)) rather than
 // discarding the whole faceTexcoords array.
@@ -1172,6 +1211,72 @@ TEST(MeshIoAccuracy, GLTFUntexturedPrimitiveBeforeUVKeepsTexcoords)
 	for (const auto& uv : mesh.faceTexcoords)
 		maxUv = std::max(maxUv, std::max(std::abs(uv.x()), std::abs(uv.y())));
 	EXPECT_GT(maxUv, 0.5f) << "second primitive's UVs did not survive";
+}
+
+// ---------------------------------------------------------------------------
+// COLOR_0 is per primitive: vertex colors survive only when every primitive
+// carries them. An uncolored primitive BEFORE a colored one used to leave its
+// vertices with uninitialized colors in an array of the full length.
+// ---------------------------------------------------------------------------
+TEST(MeshIoAccuracy, GLTFVertexColorsOnlyWhenEveryPrimitiveHasThem)
+{
+	const auto load = [](bool firstColored) {
+		tinygltf::Model model;
+		model.asset.version = "2.0";
+		tinygltf::Buffer buffer;
+		const std::vector<float> aPos{0, 0, 0, 1, 0, 0, 0, 1, 0};
+		const std::vector<float> bPos{0, 0, 1, 1, 0, 1, 0, 1, 1};
+		const std::vector<float> color{1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1};
+		const std::vector<uint32_t> idx{0, 1, 2};
+		auto addAcc = [&](const auto& data, int comp, int type) {
+			tinygltf::BufferView bv;
+			bv.buffer = 0;
+			bv.byteOffset = AppendToBuffer(buffer, data);
+			bv.byteLength = data.size() * 4;
+			model.bufferViews.push_back(bv);
+			tinygltf::Accessor a;
+			a.bufferView = static_cast<int>(model.bufferViews.size() - 1);
+			a.componentType = comp;
+			a.type = type;
+			a.count = 3;
+			model.accessors.push_back(a);
+			return static_cast<int>(model.accessors.size() - 1);
+		};
+		tinygltf::Mesh gmesh;
+		for (const std::vector<float>* pos : {&aPos, &bPos}) {
+			tinygltf::Primitive prim;
+			prim.mode = TINYGLTF_MODE_TRIANGLES;
+			prim.attributes["POSITION"] = addAcc(*pos, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC3);
+			if (pos == &bPos || firstColored)
+				prim.attributes["COLOR_0"] = addAcc(color, TINYGLTF_COMPONENT_TYPE_FLOAT, TINYGLTF_TYPE_VEC4);
+			prim.indices = addAcc(idx, TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT, TINYGLTF_TYPE_SCALAR);
+			gmesh.primitives.push_back(prim);
+		}
+		model.buffers.push_back(buffer);
+		model.meshes.push_back(gmesh);
+		tinygltf::Node node;
+		node.mesh = 0;
+		model.nodes.push_back(node);
+		tinygltf::Scene scene;
+		scene.nodes.push_back(0);
+		model.scenes.push_back(scene);
+		model.defaultScene = 0;
+
+		const std::string tmp = (std::filesystem::temp_directory_path() / "halfmesh_mixed_colors.glb").string();
+		tinygltf::TinyGLTF writer;
+		halfmesh::detail::SetGltfImageCodec(writer);
+		EXPECT_TRUE(writer.WriteGltfSceneToFile(&model, tmp, true, true, false, true));
+		halfmesh::Mesh mesh;
+		EXPECT_TRUE(mesh.LoadGLTF(tmp));
+		std::filesystem::remove(tmp);
+		return mesh;
+	};
+	const halfmesh::Mesh mixed = load(false);
+	EXPECT_EQ(mixed.vertices.size(), 6u);
+	EXPECT_TRUE(mixed.vertexColors.empty()) << "the uncolored primitive's vertices have no color";
+	const halfmesh::Mesh colored = load(true);
+	ASSERT_EQ(colored.vertexColors.size(), colored.vertices.size());
+	EXPECT_EQ(colored.vertexColors[0], halfmesh::Mesh::Pixel(uint8_t(0), uint8_t(0), uint8_t(255))); // red, stored BGR
 }
 
 // ---------------------------------------------------------------------------
@@ -1337,6 +1442,28 @@ TEST(MeshIoTest, GltfOutOfRangeIndicesRejected)
 	EXPECT_FALSE(mesh.Load(gltfPath));
 	fs::remove(gltfPath);
 	fs::remove(dir / binName);
+}
+
+// PLY face indices are file-supplied too: one past the vertex count must fail
+// the load, not reach the half-edge build (or any per-vertex array) unchecked.
+TEST(MeshIoTest, PlyOutOfRangeIndicesRejected)
+{
+	const std::string path =
+	    (std::filesystem::temp_directory_path() / "halfmesh_oob.ply").string();
+	{
+		std::ofstream f(path);
+		f << "ply\nformat ascii 1.0\n"
+		     "element vertex 3\n"
+		     "property float x\nproperty float y\nproperty float z\n"
+		     "element face 1\n"
+		     "property list uchar int vertex_indices\n"
+		     "end_header\n"
+		     "0 0 0\n1 0 0\n0 1 0\n"
+		     "3 0 1 7\n"; // 7 >= vertex count 3: out of range
+	}
+	halfmesh::Mesh mesh;
+	EXPECT_FALSE(mesh.Load(path));
+	std::filesystem::remove(path);
 }
 
 // SavePLY must survive an empty texturesDiffuse entry — exactly what LoadPLY

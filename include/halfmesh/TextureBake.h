@@ -220,7 +220,8 @@ BakeResult RebakeTexture(const Mesh& source, Mesh& target, const BakeParams& par
 // preserved. Same source query as RebakeTexture -- correspondence must be Nearest
 // or Raycast, SameUV is upgraded to Nearest -- but target.faceTexcoords is read,
 // never written, and is assumed absolute pixel coords in a params.resolution
-// square. Set params.faceMask to bake only part of that atlas in place.
+// square, so params.resolution must be set (0 does not auto-size here). Set
+// params.faceMask to bake only part of that atlas in place.
 // Preconditions are checked in every build mode: both meshes need faces, `source`
 // needs per-corner UVs and at least one texture, `target` needs per-corner UVs,
 // and any texture `target` already carries must be params.resolution squared --

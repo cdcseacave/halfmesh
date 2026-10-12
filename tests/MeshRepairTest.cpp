@@ -1085,6 +1085,25 @@ TEST(MeshRepairTest, RemoveDuplicateVerticesWeldsCoincident)
 	EXPECT_TRUE(m.IsManifold());
 }
 
+// -0 and +0 are the same position: the exact (epsilon == 0) weld merges them,
+// as the grid-snap (epsilon > 0) weld always did.
+TEST(MeshRepairTest, RemoveDuplicateVerticesWeldsSignedZeros)
+{
+	Mesh m;
+	m.vertices = {
+	    {0.f, 0.f, 0.f},
+	    {1.f, 0.f, 0.f},
+	    {1.f, 1.f, 0.f}, // tri 0
+	    {-0.f, 0.f, -0.f}, // v0 with negative zeros
+	    {1.f, 1.f, 0.f},
+	    {0.f, 1.f, 0.f}, // tri 1
+	};
+	m.faces = {{0, 1, 2}, {3, 4, 5}};
+	EXPECT_EQ(m.RemoveDuplicateVertices(), 2u);
+	EXPECT_EQ(m.vertices.size(), 4u);
+	EXPECT_TRUE(m.IsManifold());
+}
+
 TEST(MeshRepairTest, RemoveDuplicateVerticesNoOpWhenUnique)
 {
 	Mesh m = MakeTetra();

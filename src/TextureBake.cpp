@@ -428,6 +428,7 @@ BakeResult BakeAtlas(Mesh& target, const std::vector<Image3u>& sourceImages,
                      const SourceResolver& resolver, const BakeParams& params)
 {
 	target.SyncFaces();
+	ASSERT(params.resolution > 0);
 	BakeResult res;
 	const int W = static_cast<int>(params.resolution);
 	const int H = static_cast<int>(params.resolution);
@@ -872,6 +873,10 @@ BakeResult BakeOntoAtlas(const Mesh& source, Mesh& target, const BakeParams& par
 	target.SyncFaces();
 	// Same fail-fast contract as RebakeTexture, plus the target UVs this variant
 	// reads instead of generating (documented in TextureBake.h).
+	if (params.resolution == 0) {
+		REPORT_WARNING("BakeOntoAtlas: resolution must be the target texture size (0 does not auto-size here); nothing baked");
+		return BakeResult{};
+	}
 	if (source.faces.empty() || target.faces.empty() || source.faceTexcoords.size() != source.faces.size() * 3 || source.texturesDiffuse.empty() || target.faceTexcoords.size() != target.faces.size() * 3) {
 		REPORT_WARNING("BakeOntoAtlas: source must carry per-corner UVs ({} needed, {} present) and "
 		               "textures ({} present), and target must carry its own per-corner UVs "

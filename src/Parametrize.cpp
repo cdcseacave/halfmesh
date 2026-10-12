@@ -45,8 +45,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint> // int32_t (ChartUVSelfOverlaps' collector first-owner buffer)
+#include <exception> // std::exception_ptr (flatten worker errors)
 #include <functional> // std::function (cut-to-disk union-find)
 #include <limits> // std::numeric_limits (cut-to-disk Dijkstra)
+#include <mutex> // flatten worker error capture
 #include <numeric> // std::iota (cut-to-disk union-find)
 #include <queue> // std::queue (cut-to-disk BFS)
 #include <unordered_map>
@@ -216,8 +218,8 @@ bool BuildBoundaryLoop(ChartMesh& cm, int& numLoops)
 	// PINCH detection (a vertex where the boundary touches itself → non-disk). At a
 	// pinch (out-degree > 1) keep the SMALLEST successor so the result is a pure
 	// function of geometry (the old hash map overwrote by unspecified iteration
-	// order; pinched charts route to the fallback regardless — AllBoundaryLoops is
-	// hardened the same way). Sorted keys are deduped so each directed edge counts once.
+	// order; pinched charts route to the fallback regardless, and AllBoundaryLoops
+	// splits a pinch into simple loops). Sorted keys are deduped so each directed edge counts once.
 	std::vector<int> nxt(n, -1);
 	std::vector<int> outdeg(n, 0), indeg(n, 0);
 	for (size_t i = 0; i < dirkeys.size(); ++i) {
@@ -1279,59 +1281,67 @@ inline long long EdgeKeyLL(int a, int b)
 	return static_cast<long long>(a) * 2147483647LL + b;
 }
 
-// All boundary loops (each an ordered vertex sequence) of a chart submesh.
-// DETERMINISTIC: a vertex with two outgoing boundary half-edges (a pinch) keeps
-// the successor with the smallest id; loop start vertices are sorted, so each cycle
-// is emitted once, walked from its smallest-id vertex, and the loops are returned in
-// ascending min-vertex-id order (the tie-break CutChartToDisk relies on).
+// All boundary loops (each an ordered vertex sequence) of a chart submesh, as
+// simple cycles covering every boundary half-edge: a vertex where the boundary
+// touches itself (a pinch, with two outgoing boundary half-edges) closes a loop
+// of its own each time a walk meets it again, so a pinched chart never reads as
+// fewer loops than it has (CutChartToDisk counts them to decide it is a disk).
+// DETERMINISTIC: walks start from the vertices in ascending id order and take the
+// smallest unused successor at a pinch; each loop starts at its smallest-id vertex
+// and the loops are returned in ascending min-vertex-id order (the tie-break
+// CutChartToDisk relies on).
 std::vector<std::vector<int>> AllBoundaryLoops(const ChartMesh& cm)
 {
 	auto dkey = [](int a, int b) { return static_cast<long long>(a) * 2147483647LL + b; };
-	std::unordered_map<long long, int> dir; // directed edge a->b count
+	std::vector<long long> dirkeys; // directed edges a->b, sorted and unique
+	dirkeys.reserve(cm.faces.size() * 3);
 	for (const auto& f : cm.faces)
 		for (int k = 0; k < 3; ++k)
-			dir[dkey(f[k], f[(k + 1) % 3])]++;
-	std::unordered_map<int, int> nxt; // boundary half-edge successor a->b
-	std::vector<int> starts; // boundary start vertices (then sorted)
-	for (const auto& kv : dir) {
-		const int a = static_cast<int>(kv.first / 2147483647LL);
-		const int b = static_cast<int>(kv.first % 2147483647LL);
-		if (dir.find(dkey(b, a)) == dir.end()) {
-			auto it = nxt.find(a);
-			if (it == nxt.end()) {
-				nxt.emplace(a, b);
-				starts.push_back(a);
-			} else if (b < it->second) {
-				it->second = b; // deterministic pinch tie-break: smallest successor
-			}
-		}
+			dirkeys.push_back(dkey(f[k], f[(k + 1) % 3]));
+	std::sort(dirkeys.begin(), dirkeys.end());
+	dirkeys.erase(std::unique(dirkeys.begin(), dirkeys.end()), dirkeys.end());
+	// the boundary successors of each vertex (a->b whose reverse no face has),
+	// ascending since the keys are; more than one only at a pinch
+	const int n = static_cast<int>(cm.verts.size());
+	std::vector<std::vector<int>> out(n);
+	for (const long long kk : dirkeys) {
+		const int a = static_cast<int>(kk / 2147483647LL);
+		const int b = static_cast<int>(kk % 2147483647LL);
+		if (!std::binary_search(dirkeys.begin(), dirkeys.end(), dkey(b, a)))
+			out[a].push_back(b);
 	}
-	std::sort(starts.begin(), starts.end());
+	std::vector<size_t> used(n, 0); // successors of each vertex walked so far (smallest first)
+	std::vector<int> pos(n, -1); // position of each vertex on the current walk
 	std::vector<std::vector<int>> loops;
-	std::unordered_set<int> seen;
-	for (int s : starts) {
-		if (seen.count(s))
+	std::vector<int> path;
+	for (int s = 0; s < n; ++s) {
+		if (used[s] == out[s].size())
 			continue;
-		std::vector<int> L;
-		int c = s;
-		size_t guard = 0;
-		while (guard++ <= nxt.size()) {
-			if (seen.count(c))
-				break;
-			seen.insert(c);
-			L.push_back(c);
-			auto it = nxt.find(c);
-			if (it == nxt.end()) {
-				L.clear();
-				break;
+		path.assign(1, s);
+		pos[s] = 0;
+		for (int c = s; used[c] < out[c].size();) {
+			c = out[c][used[c]++];
+			if (pos[c] < 0) {
+				pos[c] = static_cast<int>(path.size());
+				path.push_back(c);
+				continue;
 			}
-			c = it->second;
-			if (c == s)
-				break;
+			// back on the walk: the part from c on is a loop; walk on from c
+			const size_t first = static_cast<size_t>(pos[c]);
+			std::vector<int> L(path.begin() + first, path.end());
+			for (size_t i = first + 1; i < path.size(); ++i)
+				pos[path[i]] = -1;
+			path.resize(first + 1);
+			if (L.size() >= 3) {
+				std::rotate(L.begin(), std::min_element(L.begin(), L.end()), L.end());
+				loops.push_back(std::move(L));
+			}
 		}
-		if (L.size() >= 3)
-			loops.push_back(std::move(L));
+		// what is left is the start alone, or an open chain (non-manifold): no loop
+		for (const int v : path)
+			pos[v] = -1;
 	}
+	std::stable_sort(loops.begin(), loops.end(), [](const std::vector<int>& a, const std::vector<int>& b) { return a[0] < b[0]; });
 	return loops;
 }
 
@@ -2356,6 +2366,18 @@ bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
 	return false;
 }
 
+#ifdef HALFMESH_TEST_HOOKS
+// Test-only seam (declared by ParametrizeTest with a forward declaration): the
+// boundary loops CutChartToDisk sees for a chart with these faces.
+std::vector<std::vector<int>> AllBoundaryLoopsForTest(const std::vector<Eigen::Vector3i>& faces, int numVerts)
+{
+	ChartMesh cm;
+	cm.verts.assign(static_cast<size_t>(numVerts), Vec3::Zero());
+	cm.faces = faces;
+	return AllBoundaryLoops(cm);
+}
+#endif
+
 } // namespace detail
 
 // ===========================================================================
@@ -2560,10 +2582,24 @@ void ParametrizeCharts(Mesh& mesh, const std::vector<unsigned>& faceChart,
 			cached->cm = ChartMesh{}; // release the consumed bulk early (value-only
 		// mutation of this task's entry — no rehash)
 	};
+	// the pool's workers swallow exceptions (see ParallelFor.h): keep the first one
+	// and rethrow it once every chart is done, so a failed flatten is never silent
+	std::exception_ptr firstError = nullptr;
+	std::mutex errorMutex;
 	BS::light_thread_pool pool;
 	for (std::size_t ci : order)
-		pool.detach_task([ci, &flattenOne]() { flattenOne(ci); });
+		pool.detach_task([ci, &flattenOne, &firstError, &errorMutex]() {
+			try {
+				flattenOne(ci);
+			} catch (...) {
+				const std::lock_guard<std::mutex> lock(errorMutex);
+				if (firstError == nullptr)
+					firstError = std::current_exception();
+			}
+		});
 	pool.wait();
+	if (firstError != nullptr)
+		std::rethrow_exception(firstError);
 	if (keptFolded.load() != 0)
 		REPORT_WARNING("ParametrizeCharts: {} chart(s) kept a self-overlapping map — no injective "
 		               "fallback within the distortion cap; expect localized double-painted texels "

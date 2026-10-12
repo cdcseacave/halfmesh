@@ -521,8 +521,10 @@ TEST(HalfMeshInvariants, EdgeSplitIsConsistent)
 		EXPECT_EQ(hm.AllRepresentativesEven(), allRepsEven(hm));
 		anyBecameDirty |= !hm.AllRepresentativesEven();
 
-		// Structural invariants hold on the in-place (un-rebuilt) structure.
+		// Structural invariants hold on the in-place (un-rebuilt) structure, boundary
+		// representatives included (HePrevBoundary relies on them).
 		CheckStructuralInvariants(hm);
+		CheckBoundaryRepresentatives(hm);
 
 		// Vertex orbits must close on the IN-PLACE structure (the remesher walks
 		// these via HeNextOutgoingHalfedge; a broken umbrella that the face-orbit

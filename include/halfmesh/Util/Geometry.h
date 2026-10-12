@@ -364,6 +364,7 @@ bool RayTriangleIntersectBarycentric(
 
 // -------------------------------------------------------------------------
 // RayTriangleIntersect
+// (RayTriangleIntersectBarycentric also returns the barycentric coordinates)
 // -------------------------------------------------------------------------
 template <typename Scalar>
 bool RayTriangleIntersect(
@@ -374,13 +375,11 @@ bool RayTriangleIntersect(
     const Scalar minT = Scalar(0),
     const Scalar maxT = std::numeric_limits<Scalar>::max(),
     Scalar* pt = nullptr,
-    Eigen::Matrix<Scalar, 3, 1>* pbary = nullptr,
     const Scalar eps = std::numeric_limits<Scalar>::epsilon() * Scalar(100))
 {
 	Eigen::Matrix<Scalar, 3, 1> bary;
 	if (!RayTriangleIntersectBarycentric(ray, v0, v1, v2, bary, minT, maxT, pt, eps))
 		return false;
-	// NOTE: matches original — pbary is accepted but intentionally not written.
 	return IsTriangleBarycentricValid(bary, eps);
 }
 

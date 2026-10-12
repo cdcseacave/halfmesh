@@ -13,7 +13,7 @@ re-exports it.
 [GitHub Release](https://github.com/cdcseacave/halfmesh/releases):
 
 ```sh
-pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.5.0/halfmesh-0.5.0-cp312-cp312-manylinux_2_28_x86_64.whl
+pip install https://github.com/cdcseacave/halfmesh/releases/download/v0.5.1/halfmesh-0.5.1-cp312-cp312-manylinux_2_28_x86_64.whl
 ```
 
 Pick the `cpXY-cpXY` tag matching your interpreter (`cp310`, `cp311`, `cp312`,
@@ -69,7 +69,7 @@ any C++ work happens. The GIL is released around all native computation (see
 
 ### `version() -> str`
 
-The halfmesh library version string (`"0.5.0"`), single-sourced from
+The halfmesh library version string (`"0.5.1"`), single-sourced from
 `project(halfmesh VERSION …)` in `CMakeLists.txt`. Also exposed as
 `halfmesh.__version__`.
 
@@ -111,7 +111,8 @@ QEM (quadric error metric) edge-collapse decimation. `target` is
   roughly half the input face count".
 - `target > 1` — an **absolute face count**: `500.0` means "decimate to
   roughly 500 faces".
-- `target <= 0` raises `ValueError`.
+- `target <= 0`, NaN or infinity raises `ValueError`, as does a negative or
+  non-finite `aggressiveness`.
 
 `aggressiveness` trades exactness for speed: `0.0` is exact priority-queue
 QEM (collapses evaluated and applied in strict error order); larger values
@@ -250,8 +251,8 @@ Isotropic remeshing (flip/collapse/relocate/refine) toward a uniform target
 `edge_length`, in the same world units as the input vertices — not a ratio.
 `iterations` is the number of remeshing passes (more passes converge closer
 to uniform edge length; 3 is a reasonable default for moderately
-non-uniform input). Both `edge_length <= 0` and `iterations <= 0` raise
-`ValueError`.
+non-uniform input). An `edge_length` that is not finite and `> 0`, and
+`iterations <= 0`, raise `ValueError`.
 
 #### Per-vertex sizing field
 
@@ -331,8 +332,9 @@ array ops above.
 - `load(path)` — load `.ply` / `.gltf` / `.glb` / `.obj` (format from the
   extension). Raises `RuntimeError` on failure (missing file, malformed data).
 - `save(path, binary=True)` — save as `.ply` / `.gltf` / `.glb` / `.obj`
-  (format from the extension). `binary=False` writes ASCII PLY; OBJ is always
-  text. Raises `RuntimeError` on failure.
+  (format from the extension). `binary=False` writes ASCII PLY; the glTF
+  container follows the extension (`.glb` binary, `.gltf` JSON) and OBJ is
+  always text. Raises `RuntimeError` on failure.
 - `join(other)` — append a copy of `other`: its vertices and faces after this
   mesh's, indices shifted, nothing welded. An attribute (colors, normals,
   texture) survives only when both meshes carry it; textures are concatenated
@@ -340,6 +342,8 @@ array ops above.
 - `n_vertices: int`, `n_faces: int` — read-only counts.
 - `has_texcoords: bool` — whether the mesh carries per-face-corner UVs
   (read-only).
+- `has_texture: bool` — whether it also carries texture images, not only the
+  UV layout (read-only).
 
 ### `sample_points(vertices, faces, density, seed=0) -> points`
 
@@ -379,9 +383,9 @@ of first reference; `vertex_map` holds each new vertex's source index
 Split every face flagged in `selected` (a boolean array, one entry per face)
 1-to-4 at its edge midpoints, and every neighbour sharing a split edge into 2
 or 3 (red-green closure), so the mesh stays conforming. Returns the new arrays
-and the number of vertices added. Raises `ValueError` if `selected` is not one
-flag per face, or if the input needs topology repair (the flags are indexed by
-input face).
+and the number of vertices added. Raises `ValueError` if `selected` is not a
+boolean array with one flag per face, or if the input needs topology repair
+(the flags are indexed by input face).
 
 ### `unwrap(input_path, output_path, resolution=4096, padding=2, allow_rotation=True, max_cone_error=0.05, cut_to_disk=False, max_uv_distortion=0.0, repair_carve_rings=0, fold_rescue_slits=0, tiny_chart_side=0.0, debris_chart_faces=0, pack_footprints=True) -> dict`
 
@@ -546,16 +550,16 @@ x, y, w, h = out["rects"][i]  # where sprite i goes (w/h swapped if out["rotated
 
 ### `pack_footprints(masks, max_page_size=0, size_multiple=0, block_size=4, allow_rotation=True) -> dict`
 
-Pack a list of binary masks (2-D `uint8` arrays, non-zero = footprint) by their
+Pack a list of binary masks (2-D boolean or integer arrays, non-zero = footprint) by their
 footprints instead of their bounding rectangles, so irregular shapes nest into
 each other's empty corners; any gutter must be part of the masks.
 `max_page_size` bounds the page side (0: unbounded); each page is cropped to
 its content and rounded up to `size_multiple` (0: a power of two). A rotated
 mask is placed as `np.rot90(mask)`. Returns `{rects [N,4] int32 (x, y, w, h),
 page [N], rotated [N], packed [N], page_sizes [(w, h)], n_packed,
-footprint_area, occupancy}`, each per-mask array in input order. Raises
-`ValueError` for a mask that is not 2-D, `block_size` outside 1..65536 or a
-negative bound.
+footprint_area, occupancy}`, each per-mask array in input order; an empty mask
+is left unpacked. Raises `ValueError` for a mask that is not 2-D or not boolean
+or integer, `block_size` outside 1..65536 or a negative bound.
 
 ### `estimate_square_texture_size(sizes, multiple=0, target_occupancy=0.9) -> int`
 
@@ -641,6 +645,13 @@ oversights:
 - **Per-element attributes on `Mesh`** — vertex colors and normals, per-corner
   UVs and textures are carried through `load`/`save`, but `to_arrays` returns
   geometry only. The array ops take and return bare geometry.
+- **`AtlasResult::faceChart` / `chartPage`** — `unwrap()` is file-based, and
+  the OBJ and glTF writers regroup the faces by texture page, so a per-face
+  array would index the saved faces only for a PLY output.
+- **Geometry queries with a numpy one-liner** — `ComputeArea`,
+  `ComputeAABBox` and `ComputeMeanEdgeLength` are a line each on
+  `to_arrays()`'s output; `IsManifold` is the half-edge build's pre-check and
+  belongs with the representation API below (`repair()` fixes what it flags).
 - **Low-level editing and the representation API** — index-level editing
   (`RemoveFaces`, `RemoveVertices`, `ECollapse`, `RemoveFacesOutside`),
   `HalfMesh`, adjacency queries, spatial indices, and the half-edge pipeline

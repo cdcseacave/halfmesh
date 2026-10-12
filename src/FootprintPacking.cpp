@@ -33,7 +33,7 @@ namespace {
 // a page dimension: up to the multiple, or to a power of two
 int RoundPageSize(int size, int multiple)
 {
-	ASSERT(size > 0);
+	ASSERT(size > 0 && size <= (1 << 30)); // the doubling below stays in int range
 	if (multiple > 0)
 		return (size + multiple - 1) / multiple * multiple;
 	int pow2 = 1;

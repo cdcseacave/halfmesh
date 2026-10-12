@@ -7,7 +7,7 @@
 * See the LICENSE file in the project root for the full license text.
 */
 
-#include "halfmesh/Version.h"
+#include <halfmesh/Version.h>
 
 // Injected by the build from project(VERSION ...) in CMakeLists.txt so the
 // runtime string cannot drift from the package version; the fallback only

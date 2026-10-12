@@ -71,9 +71,11 @@ class Mesh
 	// means "derive them yourself", not "not built yet".
 	std::vector<Normal> vertexNormals;
 	std::vector<Normal> faceNormals; // normal for each face
-	std::vector<TexCoord> faceTexcoords; // absolute texture-coordinates for each face vertex (no.faces*3)
-	// For each face, the corresponding texture ID, or empty if only one blob
-	// (no.faces or 0). Capped at MAX_TEXBLOBS -- see the note on TexIndex.
+	// Absolute texture-coordinates, one per face corner (no.faces*3); the
+	// per-vertex layout of ToTexCoordPerVertex() holds one per vertex instead.
+	std::vector<TexCoord> faceTexcoords;
+	// The texture ID of each face (of each vertex in the per-vertex layout), or
+	// empty if only one blob. Capped at MAX_TEXBLOBS -- see the note on TexIndex.
 	std::vector<TexIndex> faceTexblobs;
 	std::vector<Image3u> texturesDiffuse; // diffuse color images, one for each texture blob (no.blobs)
 
@@ -132,7 +134,8 @@ class Mesh
 	void SyncFacesOnPublicExit();
 	bool Empty() const
 	{
-		ASSERT(vertices.empty() == faces.empty() || vertices.empty() == halfMesh.Empty());
+		// vertices without faces are a valid mesh (every face removed), faces without vertices are not
+		ASSERT(!vertices.empty() || (faces.empty() && halfMesh.Empty()));
 		return vertices.empty();
 	}
 	bool HasTextureCoordinates() const
@@ -407,7 +410,7 @@ class Mesh
 	std::vector<TexCoord> FTexcoordsUnNormalize() const;
 	// unnormalize and flip Y axis texture coordinates
 	std::vector<TexCoord> FTexcoordsUnNormalizeFlipY() const;
-	// get the texture blob corresponding to the given face
+	// get the texture blob of the given face (of the given vertex in the per-vertex layout)
 	TexIndex FTexblob(FIndex i) const
 	{
 		ASSERT(HasTextureCoordinates());
@@ -425,7 +428,7 @@ class Mesh
 	// per-vertex colors are remapped).  This recovers shared connectivity from
 	// formats that split/duplicate vertices at seams (e.g. glTF stores textured
 	// meshes unwelded, one disconnected sub-mesh per texture).
-	//  - epsilon == 0: exact bit-match (glTF/seam duplicates are bit-identical)
+	//  - epsilon == 0: exact bit-match, -0 == +0 (glTF/seam duplicates are bit-identical)
 	//  - epsilon  > 0: snap to a grid of this cell size before matching
 	// faces that collapse to a repeated vertex are NOT removed here; follow with
 	// RemoveDegenerateFaces().  returns the number of vertices removed.

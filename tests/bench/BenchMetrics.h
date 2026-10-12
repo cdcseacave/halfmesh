@@ -81,9 +81,9 @@ double ComputeQuasiConformalDistortion(const halfmesh::Mesh& mesh);
 
 struct AreaDistortion
 {
-	double scaleMin = 0.0;
-	double scaleMax = 0.0;
-	double ratio = 0.0; // scaleMax / scaleMin (1 = equiareal up to global scale)
+	double scaleMin = UNSET;
+	double scaleMax = UNSET;
+	double ratio = UNSET; // scaleMax / scaleMin (1 = equiareal up to global scale)
 };
 
 AreaDistortion ComputeAreaDistortion(const halfmesh::Mesh& mesh);

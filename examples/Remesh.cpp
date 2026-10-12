@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 int main(int argc, char* argv[])
@@ -57,7 +58,12 @@ int main(int argc, char* argv[])
 	// Determine target edge length.
 	float edgeLength = 0.f;
 	if (argc == 4) {
-		edgeLength = std::stof(argv[3]);
+		try {
+			edgeLength = std::stof(argv[3]);
+		} catch (const std::exception&) {
+			std::cerr << "Error: edge_length must be a number\n";
+			return EXIT_FAILURE;
+		}
 	} else {
 		const auto aabb = mesh.ComputeAABBox();
 		edgeLength = static_cast<float>(aabb.diagonal().norm()) / 50.f;
@@ -65,7 +71,7 @@ int main(int argc, char* argv[])
 		          << " (bbox diagonal / 50)\n";
 	}
 
-	if (edgeLength <= 0.f) {
+	if (!(edgeLength > 0.f)) {
 		std::cerr << "Error: edge_length must be positive\n";
 		return EXIT_FAILURE;
 	}

@@ -449,6 +449,39 @@ bool Mesh::LoadPLY(const std::string& fileName)
 	}
 	if (this->vertices.empty() || this->faces.empty())
 		return false;
+	// file-supplied indices are untrusted: one past the vertex count would index
+	// out of every per-vertex array (the half-edge build writes through them)
+	for (const Face& face : this->faces)
+		if ((face.array() >= static_cast<VIndex>(this->vertices.size())).any()) {
+			REPORT_WARNING("{}: face vertex index out of range", fileName);
+			return false;
+		}
+	// the texture ids come first: un-normalizing the UVs below scales each face
+	// by the size of its own texture
+	if (texnumber) {
+		// faceTexblobs is a uint8 array, but PLY stores texnumber as a wider
+		// int and PlyCopyToIndex writes 32-bit scalars -- pointing it at the
+		// uint8 buffer would overrun it by 4x. Land the ids in a 32-bit
+		// scratch, then narrow once the range is known to fit.
+		std::vector<uint32_t> texnumbers(texnumber->count);
+		const PlyCopy r = PlyCopyToIndex(*texnumber, texnumbers.data(), texnumber->count);
+		if (r == PlyCopy::Unsupported) {
+			REPORT_WARNING("unsupported texnumber type in {}; ignoring texture ids", fileName);
+		} else {
+			narrowed = narrowed || r == PlyCopy::Narrowed;
+			const uint32_t maxId = texnumbers.empty()
+			                           ? 0u
+			                           : *std::max_element(texnumbers.begin(), texnumbers.end());
+			if (maxId > MAX_TEXBLOB_ID) {
+				REPORT_WARNING("{}: texnumber {} exceeds the {}-blob limit; ignoring texture ids",
+				               fileName, maxId, MAX_TEXBLOBS);
+			} else {
+				this->faceTexblobs.resize(texnumbers.size());
+				for (size_t i = 0; i < texnumbers.size(); ++i)
+					this->faceTexblobs[i] = static_cast<TexIndex>(texnumbers[i]);
+			}
+		}
+	}
 	if (texcoords) {
 		this->faceTexcoords.resize(texcoords->count * 3);
 		const PlyCopy r = PlyCopyToFloat(*texcoords, reinterpret_cast<float*>(this->faceTexcoords.data()), texcoords->count * 6);
@@ -502,34 +535,6 @@ bool Mesh::LoadPLY(const std::string& fileName)
 					               texFileNames[i], fileName);
 			}
 			this->faceTexcoords = FTexcoordsUnNormalizeFlipY();
-		}
-	}
-	if (texnumber) {
-		// LoadPLY does not reset the mesh, so drop any ids left over from an
-		// earlier load up front: every bail-out below then leaves the array
-		// empty rather than stale.
-		this->faceTexblobs.clear();
-		// faceTexblobs is a uint8 array, but PLY stores texnumber as a wider
-		// int and PlyCopyToIndex writes 32-bit scalars -- pointing it at the
-		// uint8 buffer would overrun it by 4x. Land the ids in a 32-bit
-		// scratch, then narrow once the range is known to fit.
-		std::vector<uint32_t> texnumbers(texnumber->count);
-		const PlyCopy r = PlyCopyToIndex(*texnumber, texnumbers.data(), texnumber->count);
-		if (r == PlyCopy::Unsupported) {
-			REPORT_WARNING("unsupported texnumber type in {}; ignoring texture ids", fileName);
-		} else {
-			narrowed = narrowed || r == PlyCopy::Narrowed;
-			const uint32_t maxId = texnumbers.empty()
-			                           ? 0u
-			                           : *std::max_element(texnumbers.begin(), texnumbers.end());
-			if (maxId > MAX_TEXBLOB_ID) {
-				REPORT_WARNING("{}: texnumber {} exceeds the {}-blob limit; ignoring texture ids",
-				               fileName, maxId, MAX_TEXBLOBS);
-			} else {
-				this->faceTexblobs.resize(texnumbers.size());
-				for (size_t i = 0; i < texnumbers.size(); ++i)
-					this->faceTexblobs[i] = static_cast<TexIndex>(texnumbers[i]);
-			}
 		}
 	}
 	if (narrowed)
@@ -936,6 +941,7 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 	}
 
 	bool anyTexcoords = false;
+	bool allColored = true; // every primitive so far carried COLOR_0
 	std::vector<int> texblobOfFace; // texturesDiffuse slot per face (-1 = none)
 	std::vector<int> gltfImageToSlot(model.images.size(), -1);
 
@@ -971,12 +977,16 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 					UV.clear();
 			}
 
-			if (const auto it = prim.attributes.find("COLOR_0"); it != prim.attributes.end()) {
-				const std::vector<Eigen::Vector4f> C = ReadAccessorVec<4>(model, model.accessors[it->second]);
+			if (allColored) {
+				std::vector<Eigen::Vector4f> C;
+				if (const auto it = prim.attributes.find("COLOR_0"); it != prim.attributes.end())
+					C = ReadAccessorVec<4>(model, model.accessors[it->second]);
 				if (C.size() == P.size()) {
 					vertexColors.resize(vertices.size());
 					for (size_t i = 0; i < C.size(); ++i) // glTF RGBA -> our BGR uint8
 						vertexColors[base + i] = Pixel(toU8(C[i].z()), toU8(C[i].y()), toU8(C[i].x()));
+				} else {
+					allColored = false;
 				}
 			}
 
@@ -1081,10 +1091,11 @@ bool Mesh::LoadGLTF(const std::string& fileName)
 		faceTexcoords.clear();
 	}
 	// COLOR_0 is per primitive, so a file mixing colored and uncolored ones leaves
-	// the array short; the contract is empty-or-parallel, so short means empty.
-	// (NORMAL is not imported: glTF stores it per primitive in the node's local
-	// frame, and halfmesh never fabricates the array -- see Mesh::vertexNormals.)
-	if (!vertexColors.empty() && vertexColors.size() != vertices.size())
+	// some vertices without a color; the contract is empty-or-parallel, so that
+	// means empty. (NORMAL is not imported: glTF stores it per primitive in the
+	// node's local frame, and halfmesh never fabricates the array -- see
+	// Mesh::vertexNormals.)
+	if (!allColored)
 		vertexColors.clear();
 
 	REPORT_STATUS_NOW("Mesh loaded{}: {}",
@@ -1541,6 +1552,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalize() const
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	if (faceTexcoords.size() == faces.size() * 3) {
+		ASSERT(faceTexblobs.empty() || faceTexblobs.size() == faces.size());
 		FOREACHIDX (FIndex, iF, faces) {
 			const FIndex idxTexblob = FTexblob(iF);
 			const cv::Size textureSize(TextureSizeOrUnit(texturesDiffuse, idxTexblob));
@@ -1553,6 +1565,9 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalize() const
 			}
 		}
 	} else {
+		// per-vertex layout: the texture ids are per vertex too
+		ASSERT(faceTexcoords.size() == vertices.size());
+		ASSERT(faceTexblobs.empty() || faceTexblobs.size() == vertices.size());
 		FOREACHIDX (FIndex, iV, vertices) {
 			const FIndex idxTexblob = FTexblob(iV);
 			const cv::Size textureSize(TextureSizeOrUnit(texturesDiffuse, idxTexblob));
@@ -1585,6 +1600,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalizeFlipY() const
 		return normFaceTexcoords;
 	}
 	if (faceTexcoords.size() == faces.size() * 3) {
+		ASSERT(faceTexblobs.empty() || faceTexblobs.size() == faces.size());
 		FOREACHIDX (FIndex, iF, faces) {
 			const FIndex idxTexblob = FTexblob(iF);
 			const cv::Size textureSize(TextureSizeOrUnit(texturesDiffuse, idxTexblob));
@@ -1599,6 +1615,9 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsNormalizeFlipY() const
 			}
 		}
 	} else {
+		// per-vertex layout: the texture ids are per vertex too
+		ASSERT(faceTexcoords.size() == vertices.size());
+		ASSERT(faceTexblobs.empty() || faceTexblobs.size() == vertices.size());
 		FOREACHIDX (FIndex, iV, vertices) {
 			const FIndex idxTexblob = FTexblob(iV);
 			const cv::Size textureSize(TextureSizeOrUnit(texturesDiffuse, idxTexblob));
@@ -1623,6 +1642,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalize() const
 	ASSERT(HasTextureCoordinates());
 	std::vector<TexCoord> normFaceTexcoords(faceTexcoords.size());
 	if (faceTexcoords.size() == faces.size() * 3) {
+		ASSERT(faceTexblobs.empty() || faceTexblobs.size() == faces.size());
 		FOREACHIDX (FIndex, iF, faces) {
 			const FIndex idxTexblob = FTexblob(iF);
 			const cv::Size textureSize(TextureSizeOrUnit(texturesDiffuse, idxTexblob));
@@ -1635,6 +1655,9 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalize() const
 			}
 		}
 	} else {
+		// per-vertex layout: the texture ids are per vertex too
+		ASSERT(faceTexcoords.size() == vertices.size());
+		ASSERT(faceTexblobs.empty() || faceTexblobs.size() == vertices.size());
 		FOREACHIDX (FIndex, iV, vertices) {
 			const FIndex idxTexblob = FTexblob(iV);
 			const cv::Size textureSize(TextureSizeOrUnit(texturesDiffuse, idxTexblob));
@@ -1665,6 +1688,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalizeFlipY() const
 		return normFaceTexcoords;
 	}
 	if (faceTexcoords.size() == faces.size() * 3) {
+		ASSERT(faceTexblobs.empty() || faceTexblobs.size() == faces.size());
 		FOREACHIDX (FIndex, iF, faces) {
 			const FIndex idxTexblob = FTexblob(iF);
 			const cv::Size textureSize(TextureSizeOrUnit(texturesDiffuse, idxTexblob));
@@ -1675,10 +1699,13 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalizeFlipY() const
 				const TexCoord& coord = faceTexcoords[iF * 3 + v];
 				normFaceTexcoords[iF * 3 + v] = TexCoord(
 				    coord.x() * invNorm.x() - halfPixel.x(),
-				    (1.f - coord.y()) * invNorm.y() - halfPixel.x());
+				    (1.f - coord.y()) * invNorm.y() - halfPixel.y());
 			}
 		}
 	} else {
+		// per-vertex layout: the texture ids are per vertex too
+		ASSERT(faceTexcoords.size() == vertices.size());
+		ASSERT(faceTexblobs.empty() || faceTexblobs.size() == vertices.size());
 		FOREACHIDX (FIndex, iV, vertices) {
 			const FIndex idxTexblob = FTexblob(iV);
 			const cv::Size textureSize(TextureSizeOrUnit(texturesDiffuse, idxTexblob));
@@ -1688,7 +1715,7 @@ std::vector<Mesh::TexCoord> Mesh::FTexcoordsUnNormalizeFlipY() const
 			const TexCoord& coord = faceTexcoords[iV];
 			normFaceTexcoords[iV] = TexCoord(
 			    coord.x() * invNorm.x() - halfPixel.x(),
-			    (1.f - coord.y()) * invNorm.y() - halfPixel.x());
+			    (1.f - coord.y()) * invNorm.y() - halfPixel.y());
 		}
 	}
 	return normFaceTexcoords;

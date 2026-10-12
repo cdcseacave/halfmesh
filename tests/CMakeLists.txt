@@ -23,6 +23,70 @@ macro(halfmesh_discover_tests target)
     gtest_discover_tests(${target} DISCOVERY_TIMEOUT ${HALFMESH_GTEST_DISCOVERY_TIMEOUT})
 endmacro()
 
+# Shared test infra (also used by the perf harness).
+# halfmesh_corpus: analytic mesh generators + dirty synthesizers.
+# Namespace: hmtest::corpus. Links halfmesh::halfmesh only (no metrics in lib).
+add_library(halfmesh_corpus STATIC
+    corpus/Corpus.cpp
+)
+target_include_directories(halfmesh_corpus PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/corpus
+)
+target_link_libraries(halfmesh_corpus PUBLIC
+    halfmesh::halfmesh
+)
+
+# ---------------------------------------------------------------------------
+# Performance regression harness (docs/TESTING.md §7 perf)
+#
+# Only built when HALFMESH_BUILD_PERF=ON.  Excluded from the default fast
+# ctest run (labelled 'perf').  Run with:
+#   ctest --test-dir <build> -L perf --output-on-failure
+# or directly: ./tests/perf/perf_harness
+#
+# Requires halfmesh_corpus (for LargeMesh generator), defined above.
+# Build in RELEASE for realistic numbers:
+#   cmake -DHALFMESH_BUILD_PERF=ON -DCMAKE_BUILD_TYPE=Release
+# ---------------------------------------------------------------------------
+if(HALFMESH_BUILD_PERF)
+    add_executable(perf_harness perf/PerfHarness.cpp)
+    target_include_directories(perf_harness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/corpus
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_libraries(perf_harness PRIVATE
+        GTest::gtest
+        halfmesh_corpus
+        halfmesh::halfmesh
+    )
+    # Use a generous discovery timeout — the harness is slow.
+    set_target_properties(perf_harness PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/perf"
+    )
+    # Register with ctest under the 'perf' label and a long per-test timeout.
+    # Using add_test directly (not gtest_discover_tests) to avoid running
+    # the harness during the PRE_TEST discovery phase and to tag with 'perf'.
+    add_test(
+        NAME perf_harness
+        COMMAND perf_harness
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/perf"
+    )
+    set_tests_properties(perf_harness PROPERTIES
+        LABELS "perf"
+        TIMEOUT 3600   # generous: 1 hour for slow machines
+        # The harness times wall-clock, so co-scheduled tests read as a slowdown:
+        # under `ctest -j` the Build scaling ratio drifts past its bound purely
+        # from contention. RUN_SERIAL keeps the machine to itself.
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "halfmesh: perf harness enabled (ctest -L perf)")
+endif()
+
+# Everything below is the unit-test suite; the perf harness above needs only the corpus.
+if(NOT HALFMESH_BUILD_TESTS)
+    return()
+endif()
+
 # util_test: parity tests for types + assert/log/loop/math/hash
 add_executable(util_test UtilTest.cpp)
 target_link_libraries(util_test PRIVATE
@@ -312,18 +376,6 @@ halfmesh_discover_tests(metrics_test)
 # Test corpus library
 # ---------------------------------------------------------------------------
 
-# halfmesh_corpus: analytic mesh generators + dirty synthesizers.
-# Namespace: hmtest::corpus. Links halfmesh::halfmesh only (no metrics in lib).
-add_library(halfmesh_corpus STATIC
-    corpus/Corpus.cpp
-)
-target_include_directories(halfmesh_corpus PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/corpus
-)
-target_link_libraries(halfmesh_corpus PUBLIC
-    halfmesh::halfmesh
-)
-
 # corpus_test: validates every generator via the metrics toolkit.
 add_executable(corpus_test corpus/CorpusTest.cpp)
 target_include_directories(corpus_test PRIVATE
@@ -401,63 +453,3 @@ target_link_libraries(half_mesh_invariants_test PRIVATE
     halfmesh::halfmesh
 )
 halfmesh_discover_tests(half_mesh_invariants_test)
-
-# ---------------------------------------------------------------------------
-# Performance regression harness (docs/TESTING.md §7 perf)
-#
-# Only built when HALFMESH_BUILD_PERF=ON.  Excluded from the default fast
-# ctest run (labelled 'perf').  Run with:
-#   ctest --test-dir <build> -L perf --output-on-failure
-# or directly: ./tests/perf/perf_harness
-#
-# Requires halfmesh_corpus (for LargeMesh generator).
-# Build in RELEASE for realistic numbers:
-#   cmake -DHALFMESH_BUILD_PERF=ON -DCMAKE_BUILD_TYPE=Release
-# ---------------------------------------------------------------------------
-if(HALFMESH_BUILD_PERF)
-    # halfmesh_corpus may not exist yet (if HALFMESH_BUILD_TESTS=OFF).
-    # Define it if not already defined.
-    if(NOT TARGET halfmesh_corpus)
-        add_library(halfmesh_corpus STATIC
-            corpus/Corpus.cpp
-        )
-        target_include_directories(halfmesh_corpus PUBLIC
-            ${CMAKE_CURRENT_SOURCE_DIR}/corpus
-        )
-        target_link_libraries(halfmesh_corpus PUBLIC
-            halfmesh::halfmesh
-        )
-    endif()
-
-    add_executable(perf_harness perf/PerfHarness.cpp)
-    target_include_directories(perf_harness PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/corpus
-        ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-    target_link_libraries(perf_harness PRIVATE
-        GTest::gtest
-        halfmesh_corpus
-        halfmesh::halfmesh
-    )
-    # Use a generous discovery timeout — the harness is slow.
-    set_target_properties(perf_harness PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/perf"
-    )
-    # Register with ctest under the 'perf' label and a long per-test timeout.
-    # Using add_test directly (not gtest_discover_tests) to avoid running
-    # the harness during the PRE_TEST discovery phase and to tag with 'perf'.
-    add_test(
-        NAME perf_harness
-        COMMAND perf_harness
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/perf"
-    )
-    set_tests_properties(perf_harness PROPERTIES
-        LABELS "perf"
-        TIMEOUT 3600   # generous: 1 hour for slow machines
-        # The harness times wall-clock, so co-scheduled tests read as a slowdown:
-        # under `ctest -j` the Build scaling ratio drifts past its bound purely
-        # from contention. RUN_SERIAL keeps the machine to itself.
-        RUN_SERIAL TRUE
-    )
-    message(STATUS "halfmesh: perf harness enabled (ctest -L perf)")
-endif()

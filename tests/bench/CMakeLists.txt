@@ -61,11 +61,12 @@ set(BENCH_ENGINE_LIBS "")
 set(BENCH_ENGINE_INCLUDES "")
 set(BENCH_ENGINE_DEFINES "HMBENCH_WITH_XATLAS=1")
 
+set(HALFMESH_PMP_DIR "" CACHE PATH "pmp-library checkout (source + build/ with libpmp) for the pmp baselines")
+
 # --- pmp-library parametrization baseline (LSCM + harmonic) ----------------
 if(HALFMESH_BENCH_WITH_PMP)
-    set(HALFMESH_PMP_DIR "$ENV{HOME}/Pro/pmp-library" CACHE PATH "pmp-library source dir")
     find_library(PMP_LIB NAMES pmp HINTS "${HALFMESH_PMP_DIR}/build")
-    if(PMP_LIB AND EXISTS "${HALFMESH_PMP_DIR}/src/pmp/algorithms/parameterization.h")
+    if(HALFMESH_PMP_DIR AND PMP_LIB AND EXISTS "${HALFMESH_PMP_DIR}/src/pmp/algorithms/parameterization.h")
         list(APPEND BENCH_ENGINE_SOURCES engines/EnginePmp.cpp)
         list(APPEND BENCH_ENGINE_LIBS ${PMP_LIB})
         list(APPEND BENCH_ENGINE_INCLUDES ${HALFMESH_PMP_DIR}/src)
@@ -102,8 +103,7 @@ if(HALFMESH_BENCH_WITH_BFF)
     include(FetchContent)
     FetchContent_Declare(geometry-central
         GIT_REPOSITORY https://github.com/nmwsharp/geometry-central.git
-        GIT_TAG master
-        GIT_SHALLOW TRUE)
+        GIT_TAG 019669ddabda05e0f71fa3587cfb3c1dadf19cb8)
     FetchContent_MakeAvailable(geometry-central)
     list(APPEND BENCH_ENGINE_SOURCES engines/EngineBff.cpp)
     list(APPEND BENCH_ENGINE_LIBS geometry-central)
@@ -163,9 +163,8 @@ set(REMESHBENCH_DEFINES "")
 set(REMESHBENCH_INCLUDES "")
 
 if(HALFMESH_REMESH_WITH_PMP)
-    set(HALFMESH_PMP_DIR "$ENV{HOME}/Pro/pmp-library" CACHE PATH "pmp-library source dir")
     find_library(PMP_LIB NAMES pmp HINTS "${HALFMESH_PMP_DIR}/build")
-    if(PMP_LIB AND EXISTS "${HALFMESH_PMP_DIR}/src/pmp/algorithms/remeshing.h")
+    if(HALFMESH_PMP_DIR AND PMP_LIB AND EXISTS "${HALFMESH_PMP_DIR}/src/pmp/algorithms/remeshing.h")
         list(APPEND REMESHBENCH_SOURCES remesh_engines/RemeshEnginePmp.cpp)
         list(APPEND REMESHBENCH_LIBS ${PMP_LIB})
         list(APPEND REMESHBENCH_INCLUDES ${HALFMESH_PMP_DIR}/src)

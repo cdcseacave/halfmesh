@@ -54,6 +54,8 @@ namespace halfmesh {
 // spreads the extra seeds instead of clustering them.
 namespace detail {
 std::vector<Mesh::FIndex> ComputeSegmentationSeeds(Mesh& mesh, const ParametrizeParams& params);
+// Test-only seam defined in src/Parametrize.cpp: the boundary loops of a chart.
+std::vector<std::vector<int>> AllBoundaryLoopsForTest(const std::vector<Eigen::Vector3i>& faces, int numVerts);
 } // namespace detail
 
 namespace {
@@ -669,6 +671,25 @@ TEST(Parametrize, RescueSlitPublicPathMatchesCachedPipelineWithRealCut)
 		EXPECT_EQ(uncached.faceTexcoords[i].y(), cached.faceTexcoords[i].y())
 		    << "UV.y differs at corner " << i;
 	}
+}
+
+// A chart whose boundary touches itself at a vertex (a pinch) has two boundary
+// loops, each a closed simple cycle: the walk through the pinch must not chain
+// both lobes into one open "loop" that reads as a disk to CutChartToDisk.
+TEST(Parametrize, BoundaryLoopsSplitAtPinch)
+{
+	// lobe A: boundary 1->7->5->9->1 fanned around the interior vertex 10
+	std::vector<Eigen::Vector3i> faces = {{1, 7, 10}, {7, 5, 10}, {5, 9, 10}, {9, 1, 10}};
+	const std::vector<std::vector<int>> disk = detail::AllBoundaryLoopsForTest(faces, 11);
+	ASSERT_EQ(disk.size(), 1u);
+	EXPECT_EQ(disk[0], (std::vector<int>{1, 7, 5, 9}));
+	// lobe B: the triangle 5->3->8 touching lobe A at vertex 5 only; at the pinch
+	// the smallest successor (3) leads into lobe B
+	faces.emplace_back(5, 3, 8);
+	const std::vector<std::vector<int>> loops = detail::AllBoundaryLoopsForTest(faces, 11);
+	ASSERT_EQ(loops.size(), 2u);
+	EXPECT_EQ(loops[0], (std::vector<int>{1, 7, 5, 9}));
+	EXPECT_EQ(loops[1], (std::vector<int>{3, 8, 5}));
 }
 
 } // namespace

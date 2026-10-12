@@ -148,6 +148,7 @@ bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces)
 		for (Eigen::Index v = 0; v < face.rows(); ++v) {
 			const VIndex idxTail = face[v];
 			const VIndex idxHead = face[(v + 1) % face.rows()];
+			ASSERT(idxTail < vHalfedges.size()); // the loaders reject out-of-range indices
 			// Non-manifold guard (active in Release, not just _DEBUG): a self-edge
 			// (face[i]==face[i+1]) cannot be represented as a half-edge.  One cheap
 			// integer compare on values already in hand; bail on the first one so a
@@ -585,6 +586,7 @@ void HalfMesh::VRemoveOnly(VIndex iV)
 	if (iV + 1 < vHalfedges.size()) {
 		vHalfedges[iV] = vHalfedges.back();
 		const HIndex iHeStart = vHalfedges[iV];
+		ASSERT(iHeStart != NO_ID); // a live structure has no unreferenced vertex
 		HIndex iHe = iHeStart;
 		while (true) {
 			ASSERT(heVertices[iHe] == vHalfedges.size() - 1);
@@ -1549,10 +1551,9 @@ HalfMesh::VIndex HalfMesh::ESplit(EIndex iE)
 		fHalfedges[fc] = heMb;
 
 		vHalfedges.emplace_back(heMb); // m's even outgoing; edge (m,b) is boundary
-		// iHb0's tail changed b -> m; replace b's representative if needed
-		// (heMbT is b's outgoing on the new boundary edge, so VIsBoundary(b) holds).
-		if (vHalfedges[b] == iHb0)
-			vHalfedges[b] = heMbT; // b -> m (boundary)
+		// b keeps its representative: the twin of iHbPrev (HePrevBoundary above relies
+		// on it), an interior half-edge the surgery leaves in place
+		ASSERT(!HeIsBoundary(vHalfedges[b]));
 	}
 	return m;
 }

@@ -170,3 +170,10 @@ def test_pack_footprints_rejects_bad_input():
         hm.pack_footprints([np.ones((2, 2), np.uint8)], block_size=0)
     with pytest.raises(ValueError):
         hm.pack_footprints([np.ones((2, 2), np.uint8)], block_size=2**31)
+    with pytest.raises(ValueError):  # a float mask would be truncated
+        hm.pack_footprints([np.full((2, 2), 0.3, np.float32)])
+
+
+def test_pack_footprints_leaves_an_empty_mask_unpacked():
+    result = hm.pack_footprints([np.zeros((0, 3), np.uint8), np.ones((2, 2), bool)])
+    assert result["n_packed"] == 1 and list(result["packed"]) == [False, True]
