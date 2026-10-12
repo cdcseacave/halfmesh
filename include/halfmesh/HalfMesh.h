@@ -126,14 +126,16 @@ class HalfMesh
 		return vHalfedges.empty();
 	}
 	void Clear();
-	// Instrumentation for the "one Build per pipeline" budget: process-wide
-	// counters of the Build / FFaces calls made through the public entry points
-	// (internal validation rebuilds are not counted). Atomic but not scoped, so
-	// Reset + read is only meaningful while one pipeline is running.
+#ifdef HALFMESH_TEST_HOOKS
+	// Test builds only: process-wide counters of the Build / FFaces calls made
+	// through the public entry points, for the "one Build per pipeline" budget
+	// (Mesh::ValidateHalfMesh's own rebuild is not counted). Atomic but not
+	// scoped, so Reset + read is only meaningful while one pipeline is running.
 	static uint64_t BuildCount();
 	static void ResetBuildCount();
 	static uint64_t FFacesCount();
 	static void ResetFFacesCount();
+#endif
 
 	// create half-edge data-structures for the given mesh
 	bool Build(const Mesh& mesh);
@@ -141,10 +143,9 @@ class HalfMesh
 
 	private:
 	friend class Mesh;
-	bool BuildForValidation(VIndex numVertices, const std::vector<Face>& faces);
-	bool BuildImpl(VIndex numVertices, const std::vector<Face>& faces, bool countBuild);
-	void FFacesForValidation(std::vector<Face>& faces) const { FFacesImpl(faces, false); }
-	void FFacesImpl(std::vector<Face>& faces, bool countHarvest) const;
+	// Build / FFaces without the test-build counters
+	bool BuildImpl(VIndex numVertices, const std::vector<Face>& faces);
+	void FFacesImpl(std::vector<Face>& faces) const;
 
 	// Undo log for FAdd: the previous value of every PRE-EXISTING slot an
 	// insertion overwrites. Slots the insertion appended need no record — the
@@ -637,10 +638,7 @@ class HalfMesh
 		return HeFace(HeTwin(iHe));
 	}
 	// fetch the array of faces back in the native Mesh format
-	void FFaces(std::vector<Face>& faces) const
-	{
-		FFacesImpl(faces, true);
-	}
+	void FFaces(std::vector<Face>& faces) const;
 	// create a new face between the vertices defined by the given face; a corner
 	// may be an isolated vertex (NO_ID representative) the caller pre-appended.
 	// Returns NO_ID if the face can not be added, as is the case if the face does

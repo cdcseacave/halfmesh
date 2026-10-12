@@ -31,6 +31,10 @@ segmentation → SLIM/ARAP flattening → uniform-density + skyline-packed textu
 - Processing targets **untextured** meshes: half-edge mutators drop face-keyed attributes.
   A method that happens to keep them aligned is a documented bonus, never a contract —
   see the policy table in `docs/FEATURES.md`.
+- Test-only code (counters, stats, validators, `*ForTest` seams) is compiled only under
+  `HALFMESH_TEST_HOOKS`, which the build sets with tests / perf / bench: a shipped library
+  carries none of it and pays nothing for it. `HM_STATS(...)` (`src/ChartFlattenCache.h`)
+  wraps one-line stats updates.
 - Vertex representatives are written only through `HalfMesh::SetVHalfedge` (the `alwaysEven`
   choke point), never `vHalfedges[v] =`. `GuaranteeAlwaysEven()` is a full in-place rebuild:
   it is never the fix for a parity problem.
@@ -86,7 +90,8 @@ cmake --build make -j
 ctest --test-dir make --output-on-failure
 ```
 Options: `HALFMESH_BUILD_TESTS`, `HALFMESH_BUILD_TOOLS`, `HALFMESH_BUILD_PERF`
-(scaling guards, Release), `HALFMESH_BUILD_CROSSCHECKS` (libigl), `HALFMESH_SANITIZE`
+(scaling guards, Release), `HALFMESH_BUILD_CROSSCHECKS` (libigl), `HALFMESH_TEST_HOOKS`
+(test-only counters/stats/validators; forced on by tests, perf and bench), `HALFMESH_SANITIZE`
 (ASan+UBSan, Linux), `HALFMESH_ATLAS_DEBUG` (compile in verbose cone-Lloyd /
 flip-repair / flatten-init diagnostics on stderr; off = zero cost, no runtime
 gate). Opt-in perf builds (all default OFF, and each changes float results so it

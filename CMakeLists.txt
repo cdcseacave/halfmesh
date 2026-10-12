@@ -39,6 +39,16 @@ option(HALFMESH_BENCH_WITH_CGAL   "atlasbench: enable the CGAL segmentation/para
 # remeshbench (tests/bench/RemeshBench) isotropic-remeshing baseline (opt-in):
 option(HALFMESH_REMESH_WITH_PMP   "remeshbench: compare against pmp::uniform_remeshing (links libpmp)" OFF)
 
+# Test hooks: the counters, stats and validators only the tests and benchmarks
+# use (HalfMesh::BuildCount, Mesh::ValidateHalfMesh, Mesh::RemeshStats, the
+# segmentation stats, ...). Compiled in only for those builds, so a shipped
+# library carries neither their code nor their runtime cost; on whenever tests,
+# the perf harness or the benchmarks are built. They never change any output.
+option(HALFMESH_TEST_HOOKS "Compile in the test-only counters, stats and validators" OFF)
+if(HALFMESH_BUILD_TESTS OR HALFMESH_BUILD_PERF OR HALFMESH_BUILD_BENCH)
+	set(HALFMESH_TEST_HOOKS ON)
+endif()
+
 # Wire vcpkg manifest features from the build options.
 if(HALFMESH_BUILD_TESTS OR HALFMESH_BUILD_PERF)
 	list(APPEND VCPKG_MANIFEST_FEATURES "tests")
@@ -271,6 +281,12 @@ target_compile_definitions(halfmesh PRIVATE
 	JSON_NOEXCEPTION
 )
 target_include_directories(halfmesh PRIVATE ${BS_THREAD_POOL_INCLUDE_DIR} ${FAST_FLOAT_INCLUDE_DIR})
+# PUBLIC: the hooks add declarations to the public headers, which the library
+# and every target linking it must see alike.
+if(HALFMESH_TEST_HOOKS)
+	target_compile_definitions(halfmesh PUBLIC HALFMESH_TEST_HOOKS)
+	message(STATUS "halfmesh: test hooks compiled in (HALFMESH_TEST_HOOKS)")
+endif()
 
 halfmesh_set_warnings(halfmesh)
 

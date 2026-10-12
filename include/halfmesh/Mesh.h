@@ -122,7 +122,11 @@ class Mesh
 	void EndHalfEdgePipeline();
 	void InvalidateHalfMesh();
 	bool ValidateInvariants() const;
+#ifdef HALFMESH_TEST_HOOKS
+	// test builds only: O(F log F) rebuild-and-compare of the live half-edge
+	// structure and the face snapshot (tests/AGENTS.md)
 	bool ValidateHalfMesh() const;
+#endif
 	// Public native methods use this at exit; it is suppressed only between
 	// BeginHalfEdgePipeline and EndHalfEdgePipeline.
 	void SyncFacesOnPublicExit();
@@ -335,8 +339,10 @@ class Mesh
 	// enumerate the array of triangles incident to each vertex;
 	// the list of faces per vertex is stored in increasing index order
 	void ListVertexFaces();
-	// check that vertex-faces are correct (debug use only)
+#ifdef HALFMESH_TEST_HOOKS
+	// check that vertex-faces are correct (test builds only)
 	bool ValidateVertexFaces();
+#endif
 	// initialize the half-edge structure to represent the mesh surface.
 	// Non-manifold input is detected (the manifold-only build fails cleanly)
 	// and auto-repaired via ListHalfEdgesSafe with a logged warning — a
@@ -770,7 +776,9 @@ class Mesh
 			maxAdaptiveMult = maxMult;
 		}
 	};
-	// Operation counts + per-pass wall-time accumulated over a RemeshIsotropic run.
+#ifdef HALFMESH_TEST_HOOKS
+	// Operation counts + per-pass wall-time accumulated over a RemeshIsotropic
+	// run (test and benchmark builds only).
 	struct RemeshStats
 	{
 		unsigned splitCount{0};
@@ -783,12 +791,17 @@ class Mesh
 		double smoothSeconds{0};
 		double projectSeconds{0};
 	};
+#endif
 
 	// explicit remeshing of a triangular mesh, by repeatedly applying edge-flip, edge-collapse,
 	// vertex-relax and vertex-refine operations to regularize triangles size and aspect ratio;
 	// the input mesh should be manifold and have no duplicate or zero area faces.
-	// If stats is non-null it receives per-operation counts.
+#ifdef HALFMESH_TEST_HOOKS
+	// If stats is non-null it receives per-operation counts and pass times.
 	void RemeshIsotropic(RemeshParams params, RemeshStats* stats = nullptr);
+#else
+	void RemeshIsotropic(RemeshParams params);
+#endif
 
 	// selective 1-to-4 subdivision: every face flagged in `selected` (one flag
 	// per face) is split at its edge midpoints into four, and every unflagged

@@ -131,6 +131,7 @@ bool Mesh::ValidateInvariants() const
 	       && (vertexNormals.empty() || vertexNormals.size() == vertices.size());
 }
 
+#ifdef HALFMESH_TEST_HOOKS
 bool Mesh::ValidateHalfMesh() const
 {
 	if (!ValidateInvariants())
@@ -179,10 +180,10 @@ bool Mesh::ValidateHalfMesh() const
 			if (++degree > numHalfedges)
 				return false;
 		} while (current != start);
-#if HALFMESH_TRIS
+	#if HALFMESH_TRIS
 		if (degree != 3)
 			return false;
-#endif
+	#endif
 	}
 	for (HIndex iHe = 0; iHe < numHalfedges; ++iHe)
 		if (live.heFaces[iHe] != NO_ID && !visitedFaceHalfedges[iHe])
@@ -227,7 +228,7 @@ bool Mesh::ValidateHalfMesh() const
 	}
 
 	std::vector<Face> harvestedFaces;
-	live.FFacesForValidation(harvestedFaces);
+	live.FFacesImpl(harvestedFaces);
 	if (!faces.empty()) {
 		if (faces.size() != harvestedFaces.size())
 			return false;
@@ -238,7 +239,7 @@ bool Mesh::ValidateHalfMesh() const
 	}
 
 	HalfMesh rebuilt;
-	if (!rebuilt.BuildForValidation(numVertices, harvestedFaces) || rebuilt.VSize() != numVertices || rebuilt.FSize() != numFaces || rebuilt.ESize() != live.ESize())
+	if (!rebuilt.BuildImpl(numVertices, harvestedFaces) || rebuilt.VSize() != numVertices || rebuilt.FSize() != numFaces || rebuilt.ESize() != live.ESize())
 		return false;
 
 	const auto SortedAdjacentVertices = [](const HalfMesh& mesh, VIndex vertex) {
@@ -272,6 +273,7 @@ bool Mesh::ValidateHalfMesh() const
 	CanonicalizeHoles(rebuiltHoles);
 	return liveHoles == rebuiltHoles;
 }
+#endif
 
 void Mesh::ComputeFaceNormals()
 {
@@ -819,6 +821,7 @@ void Mesh::ListVertexFaces()
 	}
 }
 
+#ifdef HALFMESH_TEST_HOOKS
 bool Mesh::ValidateVertexFaces()
 {
 	std::vector<VertexFaces> prevVertexFaces = std::move(vertexFaces);
@@ -831,6 +834,7 @@ bool Mesh::ValidateVertexFaces()
 	}
 	return true;
 }
+#endif
 
 void Mesh::ListHalfEdges()
 {

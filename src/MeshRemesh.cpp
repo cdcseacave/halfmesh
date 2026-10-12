@@ -30,8 +30,10 @@
 #include <cmath>
 #include <limits>
 #include <algorithm>
-#include <chrono>
 #include <BS_thread_pool.hpp>
+#ifdef HALFMESH_TEST_HOOKS
+	#include <chrono>
+#endif
 
 namespace halfmesh {
 namespace {
@@ -1230,7 +1232,11 @@ void RemeshData::ProjectVerticesToSurface()
 // Mesh::RemeshIsotropic
 // Isotropic remeshing: repeated split / collapse / flip / smooth / project.
 // ---------------------------------------------------------------------------
+#ifdef HALFMESH_TEST_HOOKS
 void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
+#else
+void Mesh::RemeshIsotropic(RemeshParams params)
+#endif
 {
 	static_assert(HALFMESH_TRIS, "mesh faces must be triangs");
 	if (vertices.empty() || (faces.empty() && halfMesh.Empty()))
@@ -1259,48 +1265,57 @@ void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats)
 		data.BuildSizingField();
 	if (!params.vertexSizing.empty())
 		data.AdoptSizingField();
+#ifdef HALFMESH_TEST_HOOKS
+	// test builds: count the operations and time the passes for `stats`
 	RemeshStats acc;
-	using RClock = std::chrono::steady_clock;
-	auto secs = [](RClock::time_point t0) {
-		return std::chrono::duration<double>(RClock::now() - t0).count();
+	struct PassTimer
+	{
+		double& seconds;
+		std::chrono::steady_clock::time_point t0{std::chrono::steady_clock::now()};
+		~PassTimer() { seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); }
 	};
+	#define HM_REMESH_PASS(pass) \
+		const PassTimer timer { acc.pass##Seconds }
+	#define HM_REMESH_COUNT(pass, ops) acc.pass##Count += (ops)
+#else
+	#define HM_REMESH_PASS(pass)
+	#define HM_REMESH_COUNT(pass, ops) static_cast<void>(ops)
+#endif
 	for (int iter = 0; iter < params.iterations; ++iter) {
 		if (params.doSplit) {
-			const auto t0 = RClock::now();
-			acc.splitCount += data.SplitLongEdges();
-			acc.splitSeconds += secs(t0);
+			HM_REMESH_PASS(split);
+			HM_REMESH_COUNT(split, data.SplitLongEdges());
 		}
 		if (params.doCollapse) {
-			const auto t0 = RClock::now();
-			acc.collapseCount += data.CollapseShortEdges();
-			acc.collapseSeconds += secs(t0);
+			HM_REMESH_PASS(collapse);
+			HM_REMESH_COUNT(collapse, data.CollapseShortEdges());
 		}
 		{
-			const auto t0 = RClock::now();
+			HM_REMESH_PASS(tag);
 			data.TagCreaseEdges();
-			acc.tagSeconds += secs(t0);
 		}
 		if (params.doFlip) {
-			const auto t0 = RClock::now();
-			acc.flipCount += data.ImproveValence();
-			acc.flipSeconds += secs(t0);
+			HM_REMESH_PASS(flip);
+			HM_REMESH_COUNT(flip, data.ImproveValence());
 		}
 		if (params.doSmooth) {
-			const auto t0 = RClock::now();
+			HM_REMESH_PASS(smooth);
 			if (params.smoothTangential)
 				data.TangentialSmoothing(params.smoothIterations, params.smoothDelta);
 			else
 				data.VertexCoordLaplacian(params.smoothIterations, params.smoothDelta);
-			acc.smoothSeconds += secs(t0);
 		}
 		if (params.doProject) {
-			const auto t0 = RClock::now();
+			HM_REMESH_PASS(project);
 			data.ProjectVerticesToSurface();
-			acc.projectSeconds += secs(t0);
 		}
 	}
+#undef HM_REMESH_PASS
+#undef HM_REMESH_COUNT
+#ifdef HALFMESH_TEST_HOOKS
 	if (stats != nullptr)
 		*stats = acc;
+#endif
 	SyncFacesOnPublicExit();
 	ASSERT(ValidateInvariants());
 }

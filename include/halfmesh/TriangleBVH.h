@@ -80,15 +80,17 @@ class TriangleBVH
 	const AABBox& GetAABBox() const { return bbox; }
 	const Mesh& GetMesh() const { return mesh; }
 
-	// Tree height in edges (deepest root-to-leaf path); 0 for a single-leaf/empty
-	// tree. The build bounds this below the traversal stack capacity, so it is safe
-	// to use as a diagnostic / invariant check.
+#ifdef HALFMESH_TEST_HOOKS
+	// Test builds only. Tree height in edges (deepest root-to-leaf path); 0 for a
+	// single-leaf/empty tree. The build bounds this below the traversal stack
+	// capacity.
 	unsigned Height() const;
 
-	// Largest leaf primitive count (0 for an empty tree). The build caps this at
-	// max(leafSize, SAH-leaf cap): oversized "SAH says leaf" sets are split anyway,
-	// so no query ever degrades to a giant linear scan.
+	// Test builds only. Largest leaf primitive count (0 for an empty tree). The
+	// build caps this at max(leafSize, SAH-leaf cap): oversized "SAH says leaf"
+	// sets are split anyway, so no query ever degrades to a giant linear scan.
 	unsigned MaxLeafSize() const;
+#endif
 
 	private:
 	// Flattened node: internal nodes (count == 0) store the index of their left
@@ -104,7 +106,9 @@ class TriangleBVH
 
 	void Subdivide(uint32_t nodeIdx, uint32_t first, uint32_t count, unsigned leafSize,
 	               unsigned depth);
+#ifdef HALFMESH_TEST_HOOKS
 	unsigned HeightRecurse(uint32_t nodeIdx) const;
+#endif
 
 	const Mesh& mesh;
 	std::vector<Node> nodes;

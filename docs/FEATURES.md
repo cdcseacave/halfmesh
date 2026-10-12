@@ -411,7 +411,7 @@ Implementation: `src/MeshSimplify.cpp` · example: `examples/Decimate.cpp`.
 
 ```cpp
 struct Mesh::RemeshParams { /* see Mesh.h */ };
-void Mesh::RemeshIsotropic(RemeshParams params, RemeshStats* stats = nullptr);
+void Mesh::RemeshIsotropic(RemeshParams params);
 ```
 
 Botsch–Kobbelt split / collapse / flip / tangential-smooth / project loop that
@@ -429,7 +429,8 @@ regularizes edge lengths and triangle aspect ratios. Key knobs:
   surface; projection runs against a `TriangleBVH` of the original geometry.
 - Per-pass toggles (`doSplit/doCollapse/doFlip/doSmooth/doProject`),
   `iterations`, and tangential-smoothing controls.
-- `RemeshStats` returns per-phase op counts and timings.
+- Test and benchmark builds (`HALFMESH_TEST_HOOKS`) add a `RemeshStats* stats`
+  argument returning per-phase op counts and timings.
 
 Changes vertex/face counts; UVs are not preserved (rebake afterwards).
 Implementation: `src/MeshRemesh.cpp` · example: `examples/Remesh.cpp`.

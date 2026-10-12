@@ -49,9 +49,6 @@
 
 namespace halfmesh {
 namespace detail {
-// Test seam: 3-arg fold verdict (defined in src/Parametrize.cpp).
-bool ChartFacesFold(const Mesh& mesh, const std::vector<Mesh::FIndex>& faces,
-                    const ParametrizeParams& params);
 // Test seam (defined in src/AtlasCharting.cpp): delegate to
 // CarveFailureRegion with a default-params SegmentState built from `mesh`.
 // Mirrors the ComputeSegmentationSeeds seam pattern below.

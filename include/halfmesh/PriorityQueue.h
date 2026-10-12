@@ -200,7 +200,8 @@ class TPriorityQueue
 		return true;
 	}
 
-	// check the mapping is correct
+#ifdef HALFMESH_TEST_HOOKS
+	// check the mapping is correct (test builds only)
 	bool IsFaultless() const
 	{
 		FOREACH (i, heap) {
@@ -210,6 +211,7 @@ class TPriorityQueue
 		}
 		return true;
 	}
+#endif
 
 	private:
 	// maintains queue ordering

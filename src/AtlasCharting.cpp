@@ -491,9 +491,8 @@ unsigned long long PairKey(Mesh::FIndex minFidA, Mesh::FIndex minFidB)
 
 unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params,
                           std::vector<unsigned>& chart, unsigned numCharts, double budget,
-                          detail::AtlasSegmentStats::MergeRound* mr = nullptr,
                           const std::unordered_set<unsigned long long>* blockedPairs = nullptr,
-                          std::vector<std::tuple<Mesh::FIndex, Mesh::FIndex, unsigned>>* mergedPairs = nullptr)
+                          std::vector<std::tuple<Mesh::FIndex, Mesh::FIndex, unsigned>>* mergedPairs = nullptr HM_STATS(, detail::AtlasSegmentStats::MergeRound* mr = nullptr))
 {
 	if (numCharts <= 1 || budget <= 0.0)
 		return numCharts;
@@ -641,18 +640,15 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 			return; // this identity pair already folded in an earlier round
 		const double e = combinedError(a, b);
 		if (e > budget) {
-			if (mr != nullptr)
-				++mr->pairsBudgetRejected;
+			HM_STAT_ADD(mr, pairsBudgetRejected, 1);
 			return;
 		}
 		if (wouldEnclose(a, b)) {
-			if (mr != nullptr)
-				++mr->pairsEncloseRejected;
+			HM_STAT_ADD(mr, pairsEncloseRejected, 1);
 			return;
 		}
 		pq.emplace(e, std::min(a, b), std::max(a, b));
-		if (mr != nullptr)
-			++mr->pairsPushed;
+		HM_STAT_ADD(mr, pairsPushed, 1);
 	};
 	for (unsigned c = 0; c < numCharts; ++c) {
 		if (find(c) != c)
@@ -663,8 +659,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 	while (!pq.empty()) {
 		const auto [e, a, b] = pq.top();
 		pq.pop();
-		if (mr != nullptr)
-			++mr->heapPops;
+		HM_STAT_ADD(mr, heapPops, 1);
 		const unsigned ar = find(a), br = find(b);
 		if (ar == br)
 			continue;
@@ -675,8 +670,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 			continue;
 		const double cur = combinedError(ar, br);
 		if (cur > budget) {
-			if (mr != nullptr)
-				++mr->pairsBudgetRejected;
+			HM_STAT_ADD(mr, pairsBudgetRejected, 1);
 			continue;
 		}
 		// Stale: the moments changed, and the merge that changed them pushed this pair
@@ -686,8 +680,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 		if (cur > e + 1e-12)
 			continue;
 		if (wouldEnclose(ar, br)) {
-			if (mr != nullptr)
-				++mr->pairsEncloseRejected;
+			HM_STAT_ADD(mr, pairsEncloseRejected, 1);
 			continue; // would enclose a cone/saddle vertex → fold; skip
 		}
 		// Capture the pair's identity (each side's smallest global face id)
@@ -704,8 +697,7 @@ unsigned DevelopableMerge(const SegmentState& s, const ParametrizeParams& params
 				std::swap(fa, fb);
 		}
 		const unsigned r = doMerge(ar, br);
-		if (mr != nullptr)
-			++mr->merges;
+		HM_STAT_ADD(mr, merges, 1);
 		if (mergedPairs != nullptr)
 			mergedPairs->emplace_back(fa, fb, r); // 3rd field: pre-Compact root id (translated below)
 		for (unsigned n : adj[r])
@@ -1072,12 +1064,16 @@ unsigned ConeLloydSegment(const SegmentState& s, const ParametrizeParams& params
 		for (unsigned c = 0; c < k; ++c)
 			if (m.error(c) > F_max && worstf[c] != NONE)
 				add.push_back(worstf[c]);
-		// cap-blocked / unreached faces must be re-seeded (they cover real geometry).
+				// cap-blocked / unreached faces must be re-seeded (they cover real geometry).
+#ifdef HM_ATLAS_DEBUG
 		unsigned blocked = 0;
+#endif
 		for (FIndex f = 0; f < nf; ++f)
 			if (chart[f] == NONE && !isSeed[f]) {
 				add.push_back(f);
+#ifdef HM_ATLAS_DEBUG
 				++blocked;
+#endif
 			}
 		// Diminishing returns: once each round adds few seeds relative to the chart
 		// count, the fine partition has settled — more splitting won't lower the
@@ -1086,7 +1082,6 @@ unsigned ConeLloydSegment(const SegmentState& s, const ParametrizeParams& params
 		// faces still stranded are absorbed by AssignLeftovers (the final merge's cap
 		// keeps the consolidated charts flip-free regardless). -----------------------
 		const unsigned stopThr = std::max(2u, k / 25u);
-		(void)blocked;
 		if (add.size() <= stopThr)
 			break;
 		// dedup within the batch (all are distinct non-seed faces already).
@@ -1248,8 +1243,7 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
                                 std::vector<unsigned>& chart, unsigned numCharts,
                                 detail::ChartFlattenCache* cache,
                                 const std::vector<unsigned>* frontierIn = nullptr,
-                                unsigned* splitCount = nullptr,
-                                std::vector<unsigned>* splitFrontierIds = nullptr)
+                                std::vector<unsigned>* splitFrontierIds = nullptr HM_STATS(, unsigned* splitCount = nullptr))
 {
 	const Mesh& mesh = s.mesh;
 
@@ -1289,7 +1283,9 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 	// (the dominant cost) is parallelised.
 	std::vector<char> mark(s.numFaces, 0);
 	const unsigned cap = 4u * static_cast<unsigned>(s.numFaces); // runaway backstop
-	std::size_t splits = 0;
+#if defined(HM_ATLAS_DEBUG) || defined(HALFMESH_TEST_HOOKS)
+	std::size_t splits = 0; // for the debug print and the stats
+#endif
 	std::vector<unsigned> frontier;
 	if (frontierIn != nullptr)
 		frontier = *frontierIn;
@@ -1364,7 +1360,10 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 				fl.push_back(std::move(comps[j]));
 				next.push_back(nid);
 			}
-			if (++splits, numCharts > cap) {
+#if defined(HM_ATLAS_DEBUG) || defined(HALFMESH_TEST_HOOKS)
+			++splits;
+#endif
+			if (numCharts > cap) {
 				capped = true;
 				break;
 			}
@@ -1373,11 +1372,11 @@ unsigned RepairDevelopableFlips(SegmentState& s, const ParametrizeParams& params
 	}
 #ifdef HM_ATLAS_DEBUG
 	std::cerr << "[flip-repair] splits=" << splits << " charts=" << numCharts << "\n";
-#else
-	(void)splits;
 #endif
+#ifdef HALFMESH_TEST_HOOKS
 	if (splitCount != nullptr)
 		*splitCount += static_cast<unsigned>(splits);
+#endif
 	return Compact(chart);
 }
 
@@ -1398,8 +1397,7 @@ namespace detail {
 // overload; when `cache` is non-null the flip-repair additionally deposits each
 // accepted (shipping) chart's flatten artifacts for ParametrizeCharts to reuse.
 unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
-                       std::vector<unsigned>& faceChart, ChartFlattenCache* cache,
-                       AtlasSegmentStats* stats)
+                       std::vector<unsigned>& faceChart, ChartFlattenCache* cache HM_STATS(, AtlasSegmentStats* stats))
 {
 	mesh.SyncFaces();
 	faceChart.clear();
@@ -1426,29 +1424,22 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 	// Connectivity is enforced over TOPO edges (charts span creases when the surface
 	// is developable across them), so the result is robust to noisy MVS normals.
 	//
-	// `stats` (opt-in, default nullptr) records per-stage chart counts plus,
-	// for every post-repair merge round, whether pairs are rejected by the cone
-	// budget, the wouldEnclose anti-fold veto, or accepted then split right back
-	// by the repair wave — the three candidate explanations for why
-	// postRepairMergeRounds recovers so little. Every write below is guarded on
-	// `stats != nullptr`, so a nullptr caller pays nothing and gets byte-identical
-	// output.
+	// `stats` (test builds only, default nullptr) records per-stage chart counts
+	// plus, for every merge, whether pairs are rejected by the cone budget, the
+	// wouldEnclose anti-fold veto, or accepted then split right back by the repair
+	// wave -- the three candidate explanations for why postRepairMergeRounds
+	// recovers so little. It never changes the output.
 	std::vector<unsigned> chart;
 	unsigned numCharts = ConeLloydSegment(s, params, chart);
 	numCharts = EnforceConnectivity(s, chart);
-	if (stats != nullptr)
-		stats->lloydCharts = numCharts;
+	HM_STAT_SET(stats, lloydCharts, numCharts);
 	numCharts = DevelopableMerge(s, params, chart, numCharts,
-	                             static_cast<double>(params.developableMaxConeError),
-	                             stats != nullptr ? &stats->initialMerge : nullptr);
-	if (stats != nullptr)
-		stats->mergedCharts = numCharts;
+	                             static_cast<double>(params.developableMaxConeError), nullptr, nullptr HM_STATS(, stats != nullptr ? &stats->initialMerge : nullptr));
+	HM_STAT_SET(stats, mergedCharts, numCharts);
 	numCharts = EnforceConnectivity(s, chart);
 	if (params.developableFlipRepairRounds > 0) {
-		numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, nullptr,
-		                                   stats != nullptr ? &stats->repairSplits : nullptr);
-		if (stats != nullptr)
-			stats->repairedCharts = numCharts;
+		numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, nullptr, nullptr HM_STATS(, stats != nullptr ? &stats->repairSplits : nullptr));
+		HM_STAT_SET(stats, repairedCharts, numCharts);
 		// Post-repair re-merge: recombine the bisection fragments the repair
 		// left behind (nothing else ever merges again), then repair ONLY the
 		// merged charts — a merge that re-folds is split right back, so the
@@ -1464,12 +1455,13 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 		for (unsigned round = 0; round < params.postRepairMergeRounds; ++round) {
 			const unsigned before = numCharts;
 			std::vector<unsigned> pre(chart);
+#ifdef HALFMESH_TEST_HOOKS
 			AtlasSegmentStats::MergeRound roundStats;
+#endif
 			std::vector<std::tuple<Mesh::FIndex, Mesh::FIndex, unsigned>> mergedPairs;
 			numCharts = DevelopableMerge(s, params, chart, numCharts,
 			                             static_cast<double>(params.developableMaxConeError),
-			                             stats != nullptr ? &roundStats : nullptr,
-			                             &foldedUnions, &mergedPairs);
+			                             &foldedUnions, &mergedPairs HM_STATS(, stats != nullptr ? &roundStats : nullptr));
 			// Charts containing faces from ≥2 pre-merge charts are the merged
 			// ("dirty") ones — the only ones whose fold verdict changed.
 			std::vector<unsigned> firstPre(numCharts, NONE);
@@ -1488,14 +1480,17 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 			if (dirty.empty()) {
 				// Converged. Still record the round: its budget/enclose rejections
 				// are why nothing merged, and they should not vanish from stats.
+#ifdef HALFMESH_TEST_HOOKS
 				if (stats != nullptr) {
 					roundStats.chartsAfter = numCharts;
 					stats->rounds.push_back(roundStats);
 				}
+#endif
 				break;
 			}
-			if (stats != nullptr)
-				roundStats.dirtyCharts = static_cast<unsigned>(dirty.size());
+#ifdef HALFMESH_TEST_HOOKS
+			roundStats.dirtyCharts = static_cast<unsigned>(dirty.size());
+#endif
 			// Ask RepairDevelopableFlips which of THIS call's frontier ids it actually
 			// bisected (recorded in its serial harvest, before its trailing whole-array
 			// Compact() — which renumbers every id by first-face-appearance order and
@@ -1505,25 +1500,22 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 			// (not gated on stats): the fold-blacklist below needs it regardless of
 			// whether the caller wants instrumentation.
 			std::vector<unsigned> splitFrontierIds;
-			numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, &dirty,
-			                                   stats != nullptr ? &stats->repairSplits : nullptr,
-			                                   &splitFrontierIds);
+			numCharts = RepairDevelopableFlips(s, params, chart, numCharts, cache, &dirty, &splitFrontierIds HM_STATS(, stats != nullptr ? &stats->repairSplits : nullptr));
 			const std::unordered_set<unsigned> splitSet(splitFrontierIds.begin(), splitFrontierIds.end());
 			// Blacklist maintenance: mergedPairs reports (minFidA, minFidB,
 			// compactedChartId) for this round's merges in the SAME post-Compact
 			// numbering `dirty`/`splitSet` use. A merged chart the repair wave just
 			// split back folded — memoize its pair key so it is never retried.
-			std::unordered_set<unsigned> foldedChartsSeen; // stats only; see refoldedPairsCollateral
 			for (const auto& [fa, fb, compactedId] : mergedPairs) {
 				if (splitSet.count(compactedId) == 0)
 					continue; // shipped merged — not a fold, stays available to future rounds
 				foldedUnions.insert(PairKey(fa, fb));
-				if (stats != nullptr) {
+#ifdef HALFMESH_TEST_HOOKS
+				if (stats != nullptr)
 					roundStats.refoldedPairs.emplace_back(fa, fb);
-					if (!foldedChartsSeen.insert(compactedId).second)
-						++roundStats.refoldedPairsCollateral;
-				}
+#endif
 			}
+#ifdef HALFMESH_TEST_HOOKS
 			if (stats != nullptr) {
 				unsigned resplit = 0;
 				for (unsigned d : dirty)
@@ -1533,30 +1525,21 @@ unsigned SegmentCharts(Mesh& mesh, const ParametrizeParams& params,
 				roundStats.chartsAfter = numCharts;
 				stats->rounds.push_back(roundStats);
 			}
+#endif
 #ifdef HM_ATLAS_DEBUG
-			std::cerr << "[re-merge] round " << round << ": " << before << " -> " << numCharts << " charts";
-			if (stats != nullptr) {
-				const AtlasSegmentStats::MergeRound& r = stats->rounds.back();
-				std::cerr << " pushed=" << r.pairsPushed
-				          << " budget-rejects=" << r.pairsBudgetRejected
-				          << " enclose-rejects=" << r.pairsEncloseRejected
-				          << " merges=" << r.merges
-				          << " dirty=" << r.dirtyCharts
-				          << " resplit=" << r.resplitCharts;
-			}
-			std::cerr << "\n";
+			std::cerr << "[re-merge] round " << round << ": " << before << " -> " << numCharts << " charts\n";
 #endif
 			if (static_cast<long>(before) - static_cast<long>(numCharts) < static_cast<long>(before / 100))
 				break; // <1% net change — not worth another round
 		}
 	}
 
-	if (stats != nullptr)
-		stats->finalCharts = numCharts;
+	HM_STAT_SET(stats, finalCharts, numCharts);
 	faceChart.assign(chart.begin(), chart.end());
 	return numCharts;
 }
 
+#ifdef HALFMESH_TEST_HOOKS
 // Test-only seam (not in any public header — declared by AtlasTest with an extern
 // forward declaration): return the initial cone-Lloyd seed set (one seed per topo
 // region + the farthest-point extras) so tests can verify farthest-point seeding
@@ -1607,6 +1590,7 @@ bool CarveFailureRegionForTest(Mesh& mesh, const std::vector<Mesh::FIndex>& face
 	std::vector<char> mark(s.numFaces, 0);
 	return CarveFailureRegion(s, faces, badFaces, rings, mark, A, B);
 }
+#endif
 } // namespace detail
 
 namespace {

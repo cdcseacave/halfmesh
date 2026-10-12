@@ -19,6 +19,8 @@
 using namespace math;
 
 namespace halfmesh {
+
+#ifdef HALFMESH_TEST_HOOKS
 namespace {
 
 std::atomic<uint64_t> gBuildCount{0};
@@ -45,11 +47,18 @@ void HalfMesh::ResetFFacesCount()
 {
 	gFFacesCount.store(0, std::memory_order_relaxed);
 }
+#endif
 
-void HalfMesh::FFacesImpl(std::vector<Face>& faces, bool countHarvest) const
+void HalfMesh::FFaces(std::vector<Face>& faces) const
 {
-	if (countHarvest)
-		gFFacesCount.fetch_add(1, std::memory_order_relaxed);
+#ifdef HALFMESH_TEST_HOOKS
+	gFFacesCount.fetch_add(1, std::memory_order_relaxed);
+#endif
+	FFacesImpl(faces);
+}
+
+void HalfMesh::FFacesImpl(std::vector<Face>& faces) const
+{
 	faces.reserve(faces.size() + fHalfedges.size());
 	for (HIndex iHe : fHalfedges)
 		faces.emplace_back(FHe(iHe));
@@ -69,26 +78,23 @@ bool HalfMesh::Build(const Mesh& mesh)
 {
 	const VIndex numVertices = static_cast<VIndex>(mesh.vertices.size());
 	if (!mesh.faces.empty() || mesh.halfMesh.Empty())
-		return BuildImpl(numVertices, mesh.faces, true);
+		return Build(numVertices, mesh.faces);
 	// half-edge-only source: harvest into a scratch snapshot rather than forcing
 	// the caller's derived array to materialize (works for an in-place rebuild
 	// too -- the copy is taken before BuildImpl's Clear())
 	std::vector<Face> harvested;
 	mesh.halfMesh.FFaces(harvested);
-	return BuildImpl(numVertices, harvested, true);
+	return Build(numVertices, harvested);
 }
 bool HalfMesh::Build(VIndex numVertices, const std::vector<Face>& faces)
 {
-	return BuildImpl(numVertices, faces, true);
+#ifdef HALFMESH_TEST_HOOKS
+	gBuildCount.fetch_add(1, std::memory_order_relaxed);
+#endif
+	return BuildImpl(numVertices, faces);
 }
-bool HalfMesh::BuildForValidation(VIndex numVertices, const std::vector<Face>& faces)
+bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces)
 {
-	return BuildImpl(numVertices, faces, false);
-}
-bool HalfMesh::BuildImpl(VIndex numVertices, const std::vector<Face>& faces, bool countBuild)
-{
-	if (countBuild)
-		gBuildCount.fetch_add(1, std::memory_order_relaxed);
 	Clear();
 	if (numVertices == 0 || faces.empty())
 		return true;

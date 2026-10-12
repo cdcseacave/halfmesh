@@ -54,6 +54,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `is_watertight`, `compute_volume`, `sub_mesh`, `Mesh.join`, `.obj` in
   `Mesh.load` / `Mesh.save`, and `unwrap(..., pack_footprints=True)`.
 
+### Changed
+
+- **Test-only code is compiled only into test builds** (`HALFMESH_TEST_HOOKS`,
+  on automatically with `HALFMESH_BUILD_TESTS`, `_PERF` or `_BENCH`). A shipped
+  library no longer counts every half-edge build and face harvest in shared
+  atomics, times every `RemeshIsotropic` pass, or tests a stats pointer inside
+  the segmentation merge loop. Removed from release builds:
+  `HalfMesh::BuildCount` / `ResetBuildCount` / `FFacesCount` /
+  `ResetFFacesCount`, `Mesh::RemeshStats` and `RemeshIsotropic`'s `stats`
+  argument, `Mesh::ValidateHalfMesh`, `Mesh::ValidateVertexFaces`,
+  `TriangleBVH::Height` / `MaxLeafSize` and `PriorityQueue::IsFaultless`.
+  Outputs are unchanged.
+
 ## [0.4.2]
 
 ### Fixed
